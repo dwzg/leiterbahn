@@ -91,6 +91,37 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
 Then render front and back, with and without the pour, and look before showing anyone. The
 `layout-reviewer` agent does an independent pass.
 
+## A schematic that reads as a circuit
+
+`Schematic(..., autowire=True)` and a `frame()` around each functional block: `finish()`
+wires the nets inside a block and puts a label only where a net leaves it. Supply nets keep
+their power symbols.
+
+- Do not show a schematic that is connected by labels alone. The first complete schematic
+  of a 480-part board was ERC-clean with parity 0 and was sent back: "Wire separate blocks
+  inside with real wires and only connect blocks through labels." Feedback loops, dividers
+  and which resistor sits in which line cannot be read from labels.
+- The router only follows the placement. With the passives of a block stacked in a column
+  next to the IC, every net was correct and the page looked like a wiring loom. Place each
+  part where it sits in the circuit: a series resistor in line with its pin, a pull-up above
+  the line, a divider as a vertical pair, the feedback network above the amplifier.
+- Leave 2.54 mm between two part ends that face each other. A pull-up and a pull-down placed
+  end to end on one point gave "autowire: no path to R3.1": each pin's way out was the other
+  part's body.
+- At an IC with a part on almost every pin, fan the pins out to a row of parts and give the
+  pin nearest the row the nearest part. A part hung on an upper pin's line crossed the lines
+  of all pins below it; with the nested order no two wires cross.
+- A rail local to one block (a controller's VCC) is better a power symbol than a wire: put
+  it in `power_symbols`. A pull-up from a pin in the middle of the IC to a wired rail at the
+  top has to cross everything between.
+- Redrawing must not change the netlist. Before re-placing parts, store for every net the
+  sorted list of (part value, pin) and compare after each step; reference numbers shift
+  when parts move, values and pins do not.
+- A wrong pin type in a library symbol can make a correct circuit fail ERC. KiCad's LM5175
+  has the output-sense pin as an output: with the power flag the rail needs, ERC said "Pins
+  of type Output and Power output are connected". The fix was a project copy of the symbol
+  with that pin as input, not removing the flag.
+
 ## Several sheets
 
 `page = sch.sheet("UART", "uart.kicad_sch")` gives a page with the same drawing API.

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0
+
+Added
+- `Schematic(..., autowire=True)`: `finish()` connects the pins of each net inside a block
+  with wires and uses a label only where a net leaves the block. A block is a `frame()` and
+  the parts in it. A schematic connected by labels alone was rejected in review: it is a
+  netlist, the circuit cannot be read from it. `hwdesign.kicad.autowire` holds the router
+  (orthogonal, 1.27 mm grid, never along or over a foreign wire's end, pins entered
+  straight); `Page.autowire()` runs it on one page. Pins it cannot reach keep a label and
+  give a warning.
+
+Changed
+- `autoplace_fields()` tries above and below first for a part lying on its side. Left and
+  right of it are its wires.
+- The name of a power symbol that lies on its side (pin on the left or right of a part) is
+  written beyond the symbol's tip. At the library's position it lay along the stub, struck
+  through by the wire.
+
+Fixed
+- Pins of a part placed with `mirror=True` and `rot=90` or `270` were modelled at the
+  opposite points: the library mirrored before rotating, KiCad rotates first. KiCad's ERC
+  reported all pins of such FETs as not connected and parity failed. 0 and 180 degrees were
+  not affected.
+- Field justification on parts rotated by 90 degrees or mirrored: KiCad swaps left and right
+  for 90 and 180 degrees and once more for a mirrored part; the library knew only 180.
+  Texts moved by `autoplace_fields()` were drawn on the body of every resistor lying on its
+  side while `overlaps()` reported nothing.
+
 ## 0.2.1
 
 Added

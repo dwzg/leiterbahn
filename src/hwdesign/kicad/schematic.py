@@ -60,11 +60,26 @@ def _font(size=1.27, hide=False, justify=None, bold=False):
     return eff
 
 
-def _just(rot, j):
-    """KiCad mirrors field justification on parts rotated 180 deg; pre-compensate."""
-    if rot % 360 == 180:
+def _flips(rot, mx=1):
+    """Does KiCad draw a field of a part with this rotation and mirror (mx = -1) with left and right
+    justification swapped? It turns the text with the part and then keeps it readable, which swaps
+    the two at 90 and 180 deg; mirroring swaps them once more."""
+    return (rot % 360 in (90, 180)) != (mx < 0)
+
+
+def _just(rot, j, mx=1):
+    """The justification to write so that the field is drawn justified as j."""
+    if _flips(rot, mx):
         return {"left": "right", "right": "left"}.get(j, j)
     return j
+
+
+def _turn(x, y, rot, mx=1):
+    """Screen offset (y down) of the symbol-library point x, y (y up) on a part that is rotated by
+    rot and, with mx = -1, mirrored. KiCad rotates first and mirrors what is then on the sheet;
+    the other order gives the same for 0 and 180 deg and the opposite point for 90 and 270."""
+    vx, vy = _rot(x, -y, rot)
+    return mx * vx, vy
 
 
 def _rot(vx, vy, deg):
@@ -274,9 +289,9 @@ class Page:
                 eff = find1(p, "effects")
                 eff[:] = [e for e in eff if not (isinstance(e, list) and e[0] == "justify")]
                 if just != "center":
-                    eff.append(["justify", Sym(_just(rot, just))])
+                    eff.append(["justify", Sym(_just(rot, just, mx))])
             else:
-                dx, dy = _rot(mx * float(at[1]), -float(at[2]), rot)
+                dx, dy = _turn(float(at[1]), float(at[2]), rot, mx)
             at[1], at[2] = _n(X + dx), _n(Y + dy)
             while len(at) < 4:
                 at.append(_n(0))
@@ -297,7 +312,7 @@ class Page:
                 node.append(["property", name, val,
                              ["at", vat[1], _n(float(vat[2]) + self.LINE * (1 + list(show).index(name))),
                               _n(rot % 180)], *copy.deepcopy(flags),
-                             _font(justify=_just(rot, vjust) if vjust else None)])
+                             _font(justify=_just(rot, vjust, mx) if vjust else None)])
             else:
                 node.append(["property", name, val, ["at", _n(X), _n(Y), _n(0)], ["hide", Sym("yes")],
                              *copy.deepcopy(flags), _font()])
@@ -314,9 +329,9 @@ class Page:
 
         pins = {}
         for num, p in lpins.items():
-            vx, vy = _rot(mx * p["x"], -p["y"], rot)
+            vx, vy = _turn(p["x"], p["y"], rot, mx)
             a = math.radians(p["angle"])
-            dvx, dvy = _rot(mx * math.cos(a), -math.sin(a), rot)   # toward the body
+            dvx, dvy = _turn(math.cos(a), math.sin(a), rot, mx)   # toward the body
             pins[num] = dict(p, at=(_snap(X + vx), _snap(Y + vy)),
                              out=(-round(dvx), -round(dvy)))
         self.placed.append((ref, list(pins)))
@@ -365,6 +380,8 @@ class Page:
             self._seg(pa, (pa[0], pb[1]))
             self._seg((pa[0], pb[1]), pb)
 
+    POWER_TIP = 3.3      # mm from a power symbol's pin to just beyond its drawing
+
     def power(self, net, at, length=2.54, direction=None):
         """Attach a power symbol for net to a pin or point.
 
@@ -395,8 +412,11 @@ class Page:
             rot = 90 if is_gnd else 270
         elif out == (-1, 0):
             rot = 270 if is_gnd else 90
+        # a symbol lying on its side: the library's place for the name is then on the stub, so the
+        # name goes beyond the symbol's tip instead
+        beside = {(1, 0): (self.POWER_TIP, 0, "left"), (-1, 0): (-self.POWER_TIP, 0, "right")}.get(tuple(out))
         self.add(ref, lib_id, end, net, None, {"1": net}, rot=rot, in_bom=False, on_board=False,
-                 hide_value=False)
+                 hide_value=False, val_at=beside)
         self.drawn.add((ref, "1"))
 
     def tag(self, at, net=None, length=2.54, direction=None):
@@ -444,6 +464,7 @@ class Page:
         direction) or sit on top of each other are joined by a wire and get one label or power
         symbol between them, not one each.
         """
+        todo = {}                                           # ref -> signal pins still without a connection
         for ref, nums in list(self.placed):
             if ref.startswith("#"):
                 continue
@@ -451,6 +472,7 @@ class Page:
             self._join_neighbours(ref, nums)
             wired = {n for n in nums if (ref, n) in self.drawn}      # by the script: these get no label
             unlisted = []
+            pending = todo.setdefault(ref, [])
             for num in nums:
                 p = part["pins"][num]
                 declared = part["declared"]
@@ -465,13 +487,205 @@ class Page:
                 if net in self.design.power_symbols:
                     self.power(net, (ref, num), length=self._clear_of_labels(ref, num, wired))
                 else:
-                    self.tag((ref, num))
+                    pending.append(num)
             if unlisted:
                 self.warnings.append("%s: unlisted pins marked no-connect: %s" % (
                     ref, ", ".join("%s(%s)" % (n, part["pins"][n]["name"]) for n in sorted(unlisted))))
+        if self.design.wire_blocks:
+            self.autowire()
+        for ref, nums in todo.items():
+            for num in nums:
+                if (ref, num) not in self.drawn:
+                    self.tag((ref, num))
         self.autoplace_fields()
         self._junctions()
         self.finished = True
+
+    # ---- wiring inside blocks ---------------------------------------------
+    def _wire_nets(self):
+        """Net of every wire drawn so far, from the pins and labels it touches (None: unknown)."""
+        from . import autowire as aw
+        known = {}                                       # cell -> net, where a wire end connects
+        for ref, nums in self.placed:
+            part = self.parts[ref]
+            for num in nums:
+                known.setdefault(aw.cell(part["pins"][num]["at"]), part["declared"].get(num))
+        for net, x, y, _a in self.labels:
+            known.setdefault(aw.cell((x, y)), net)
+        cells = []
+        for a, b in self.segments:
+            ca, cb = aw.cell(a), aw.cell(b)
+            dx, dy = aw._sign(cb[0] - ca[0]), aw._sign(cb[1] - ca[1])
+            n = max(abs(cb[0] - ca[0]), abs(cb[1] - ca[1]))
+            cells.append([(ca[0] + k * dx, ca[1] + k * dy) for k in range(n + 1)])
+        nets = [None] * len(cells)
+        found = [False] * len(cells)
+        changed = True
+        while changed:
+            changed = False
+            for i, line in enumerate(cells):
+                if found[i]:
+                    continue
+                hit = [c for c in line if c in known]
+                if hit:
+                    nets[i], found[i], changed = known[hit[0]], True, True
+                    for c in line:
+                        known.setdefault(c, nets[i])
+        return [(n if f else object(), line) for n, f, line in zip(nets, found, cells, strict=True)]
+
+    def autowire(self):
+        """Connect the pins of each net inside a block with wires; labels only where a net leaves.
+
+        A block is a frame() and the parts placed in it; parts outside every frame form one
+        more block. Inside a block the still unconnected pins of a net are joined by
+        orthogonal wires (hwdesign.kicad.autowire has the rules). A net that also has pins
+        in another block or on another sheet gets one label per block, at the end of a short
+        wire where there is room; a block's only pin of a net keeps its label at the pin.
+        Supply nets keep their power symbols. Called by finish() when the design was created
+        with autowire=True. Pins that cannot be reached keep a label, with a warning.
+
+        Place the parts of a block where a reader expects them (series resistor in line with
+        its pin, pull-up above the line): the wires only follow the placement.
+        """
+        from . import autowire as aw
+        g = aw.Grid()
+        power = self.design.power_symbols
+        w, h = PAPER.get(self.paper, PAPER["A3"])
+        boxes = [box for _t, box in self.frames] + [(10.0, 10.0, w - 10.0, h - 10.0)]
+
+        def block_of(x, y):
+            for i, b in enumerate(boxes[:-1]):
+                if b[0] <= x <= b[2] and b[1] <= y <= b[3]:
+                    return i
+            return len(boxes) - 1
+
+        def bounds(i):
+            b = boxes[i]
+            return (int(-(-(b[0] + 1.0) // aw.CELL)), int(-(-(b[1] + 1.0) // aw.CELL)),
+                    int((b[2] - 1.0) // aw.CELL), int((b[3] - 1.0) // aw.CELL))
+
+        keys = list(self.syminfo)
+        for key in keys:
+            info = self.syminfo[key]
+            bb = self.body_box(key)
+            if bb:
+                g.hard.update(aw.box_cells(bb, 1.0))
+            for prop in info["fields"].values():
+                fb = self._field_box(prop, info["rot"], info["mx"])
+                if fb:
+                    for c in aw.box_cells(fb, 0.2):
+                        g.soft[c] = 6.0
+        for s, x, y, size in self.texts:
+            g.hard.update(aw.box_cells((x, y - size, x + len(s) * size * self.CHAR_W, y), 0.3))
+        for _name, box in self.blocks:
+            g.hard.update(aw.box_cells(box, 0.3))
+        groups = {}                                      # (block, net) -> pins
+        for key, (ref, nums) in zip(keys, self.placed, strict=True):
+            part = self.parts[ref]
+            blk = block_of(self.syminfo[key]["X"], self.syminfo[key]["Y"])
+            for num in nums:
+                net = part["declared"].get(num)
+                g.add_pin(part["pins"][num]["at"], part["pins"][num]["out"], net)
+                if net is not None and net not in power and not ref.startswith("#"):
+                    groups.setdefault((blk, net), []).append((ref, num))
+        seen = [0, 0]                                    # wires and labels already on the grid
+
+        def take_in(net=None):
+            """Put what was drawn since the last call on the grid."""
+            if net is None:
+                for n, line in self._wire_nets()[seen[0]:]:
+                    g.add_wire(n, line[0], line[-1])
+            else:
+                for a, b in self.segments[seen[0]:]:
+                    g.add_wire(net, aw.cell(a), aw.cell(b))
+            for lab, x, y, a in self.labels[seen[1]:]:
+                g.hard.update(aw.box_cells(self._label_box(lab, x, y, a), 0.3))
+            seen[0], seen[1] = len(self.segments), len(self.labels)
+
+        take_in()
+        total = {net: len(pins) for net, pins in self.design.netlist().items()}
+        wires = {}                                       # (block, net) -> connected pieces of wire drawn by the script
+        for n, line in self._wire_nets():
+            if isinstance(n, str):
+                mid = aw.point(line[len(line) // 2])
+                pieces = wires.setdefault((block_of(*mid), n), [])
+                touching = [q for q in pieces if not q.isdisjoint(line)]
+                for q in touching:
+                    pieces.remove(q)
+                pieces.append(set(line).union(*touching))
+        work = []
+        for (blk, net), pins in groups.items():
+            open_pins = [p for p in pins if p not in self.drawn]
+            if not open_pins and len(wires.get((blk, net), ())) < 2:
+                continue
+            if len(open_pins) == 1 and not wires.get((blk, net)):
+                self.tag(open_pins[0])                   # the block's only pin of this net: label at the pin
+                take_in(net)
+                continue
+            at = [self.parts[r]["pins"][n]["at"] for r, n in pins]
+            span = max(p[0] for p in at) - min(p[0] for p in at) + max(p[1] for p in at) - min(p[1] for p in at)
+            work.append((span, blk, net, pins, open_pins))
+        for _span, blk, net, pins, open_pins in sorted(work, key=lambda t: t[:3]):
+            lim = bounds(blk)
+            pieces = [set(q) for q in wires.get((blk, net), ())]      # each has to be joined to the rest
+            todo = {aw.cell(self.parts[r]["pins"][n]["at"]): (r, n) for r, n in open_pins}
+            first = None
+            if pieces:
+                tree = pieces.pop()
+            else:
+                c0 = min(todo, key=lambda c: (c[1], c[0]))
+                first = todo.pop(c0)
+                tree = {c0}
+            routed = 0
+            while todo or pieces:
+                def goal(c, d, todo=todo, pieces=pieces, net=net):
+                    return c in todo or (any(c in q for q in pieces) and (c in g.pins or g.tappable(c, net)))
+                toward = [(c[0], c[1], c[0], c[1]) for c in todo] + \
+                         [(min(c[0] for c in q), min(c[1] for c in q), max(c[0] for c in q), max(c[1] for c in q))
+                          for q in pieces]
+                path = g.route(net, tree, goal, lim, toward)
+                if path is None:
+                    break
+                for a, b in g.add_path(net, path):
+                    self._seg(aw.point(a), aw.point(b))
+                seen[0] = len(self.segments)
+                tree.update(c for c in path if g.tappable(c, net))
+                end = path[-1]
+                for q in [q for q in pieces if end in q]:
+                    pieces.remove(q)
+                    tree |= q
+                if end in todo:
+                    self.drawn.add(todo.pop(end))
+                routed += 1
+            if pieces:
+                self.warnings.append("autowire: wires of %s in one block are not joined" % net)
+            if first is not None and routed:
+                self.drawn.add(first)
+            for r, n in todo.values():
+                self.warnings.append("autowire: no path to %s.%s (%s) in its block: it keeps a label" % (r, n, net))
+            if first is not None and not routed:
+                continue                                 # nothing joined: every pin gets its own label
+            box = boxes[blk]
+            labelled = any(lab == net and box[0] <= x <= box[2] and box[1] <= y <= box[3]
+                           for lab, x, y, _a in self.labels)
+            if (total.get(net, 0) > len(pins) or todo) and not labelled:
+                nobody = object()
+
+                def site(c, d, net=net, lim=lim, nobody=nobody, tree=tree):
+                    if d[1] or c in tree:
+                        return False
+                    x, y = aw.point(c)
+                    need = set(aw.box_cells(self._label_box(net, x, y, 0 if d[0] > 0 else 180), 0.3)) - {c}
+                    return all(q not in g.keep and g._free(q, nobody, lim) for q in need)
+                path = g.route(net, tree, site, lim)
+                if path is None:
+                    self.warnings.append("autowire: no room for the label of %s in its block" % net)
+                    continue
+                for a, b in g.add_path(net, path):
+                    self._seg(aw.point(a), aw.point(b))
+                x, y = aw.point(path[-1])
+                self._label(net, x, y, 0 if path[-1][0] > path[-2][0] else 180)
+                take_in(net)
 
     def _clear_of_labels(self, ref, num, wired=()):
         """Stub length for a power symbol on pin `num`: 2.54 mm, or past the net labels of the
@@ -578,7 +792,7 @@ class Page:
     BODY_GAP = 0.5           # ... and between a text and another part's body
 
     def _xf(self, info, x, y):
-        vx, vy = _rot(info["mx"] * x, -y, info["rot"])
+        vx, vy = _turn(x, y, info["rot"], info["mx"])
         return info["X"] + vx, info["Y"] + vy
 
     def body_box(self, ref):
@@ -617,7 +831,7 @@ class Page:
             return None
         return (min(xs), min(ys), max(xs), max(ys))
 
-    def _field_box(self, prop, rot=0):
+    def _field_box(self, prop, rot=0, mx=1):
         eff = find1(prop, "effects")
         hide = find1(prop, "hide")
         if (eff is None or find1(eff, "hide") is not None or not str(prop[2]) or
@@ -629,7 +843,7 @@ class Page:
         w, h = len(str(prop[2])) * size * self.CHAR_W, size
         j = find1(eff, "justify")
         js = [str(v) for v in j[1:]] if j is not None else []
-        if rot % 360 == 180:
+        if _flips(rot, mx):
             js = [{"left": "right", "right": "left"}.get(v, v) for v in js]
         x0 = x if "left" in js else (x - w if "right" in js else x - w / 2)
         y0 = y - h if "bottom" in js else (y if "top" in js else y - h / 2)
@@ -663,7 +877,7 @@ class Page:
             if ref == skip_ref:
                 continue
             for name, prop in self.syminfo[ref]["fields"].items():
-                fb = self._field_box(prop, self.syminfo[ref]["rot"])
+                fb = self._field_box(prop, self.syminfo[ref]["rot"], self.syminfo[ref]["mx"])
                 if fb:
                     obs.append(("%s.%s" % (ref, name), fb))
         for net, x, y, a in self.labels:
@@ -684,7 +898,7 @@ class Page:
                 info = self.syminfo[ref]
                 stack = [info["fields"].get("Reference"), info["fields"].get("Value")] + \
                         [info["fields"][n] for n in info["show"]]
-                stack = [f for f in stack if f is not None and self._field_box(f, info["rot"])]
+                stack = [f for f in stack if f is not None and self._field_box(f, info["rot"], info["mx"])]
                 if len(stack) < 2:
                     continue
                 own = self.body_box(ref)
@@ -692,7 +906,7 @@ class Page:
 
                 def clear(stack=stack, info=info, obs=obs, own=own):
                     for f in stack:
-                        b = self._field_box(f, info["rot"])
+                        b = self._field_box(f, info["rot"], info["mx"])
                         if b and (any(self._hit(b, o) for _, o in obs) or (own and self._hit(b, own, 0.05))):
                             return False
                     return True
@@ -708,6 +922,8 @@ class Page:
                          [(cx, y1 + 0.8 + dy * i, "center") for i in range(n)],
                          [(x1 + 0.6, y0 - 0.2 + i * dy, "left") for i in range(n)],
                          [(x0 - 0.6, y1 + 0.8 + i * dy, "right") for i in range(n)]]
+                if x1 - x0 > y1 - y0:        # a part lying on its side has its wires left and right
+                    cands = cands[2:4] + cands[:2] + cands[4:]
                 saved = [(list(find1(f, "at")), list(find1(f, "effects"))) for f in stack]
                 for cand in cands:
                     for f, (x, y, j) in zip(stack, cand, strict=True):
@@ -716,7 +932,7 @@ class Page:
                         eff = find1(f, "effects")
                         eff[:] = [e for e in eff if not (isinstance(e, list) and e[0] == "justify")]
                         if j != "center":
-                            eff.append(["justify", Sym(_just(info["rot"], j))])
+                            eff.append(["justify", Sym(_just(info["rot"], j, info["mx"]))])
                     if clear():
                         break
                 else:
@@ -730,7 +946,7 @@ class Page:
         texts = []
         for ref, info in self.syminfo.items():
             for name, prop in info["fields"].items():
-                fb = self._field_box(prop, info["rot"])
+                fb = self._field_box(prop, info["rot"], info["mx"])
                 if fb:
                     texts.append(("%s.%s" % (ref, name), ref, fb))
         for net, x, y, a in self.labels:
@@ -806,7 +1022,7 @@ class Schematic(Page):
     """
 
     def __init__(self, project, title="", rev="", date="", company="", comments=(), paper="A3", lib=None,
-                 sym_dirs=(), power_symbols=None):
+                 sym_dirs=(), power_symbols=None, autowire=False):
         self.project = project
         self.root = _uid()
         self.title, self.rev, self.date, self.company = title, rev, date, company
@@ -815,6 +1031,7 @@ class Schematic(Page):
             raise ValueError("pass lib or sym_dirs, not both")
         self.lib = lib or SymbolLib(list(sym_dirs) + [SYMBOL_DIR])
         self.power_symbols = dict(POWER_SYMBOLS, **(power_symbols or {}))
+        self.wire_blocks = autowire
         self.parts = {}          # ref -> dict(lib_id, value, footprint, fields, nets, pins)
         self.warnings = []
         self.sheets = []         # pages below the root, in page order
