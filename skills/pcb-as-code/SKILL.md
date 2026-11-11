@@ -192,6 +192,22 @@ domains taught:
   brings it back. Its first start also writes `~/.config/freerouting/freerouting.json`
   with telemetry allowed: set `allow_telemetry` to false and `disable_analytics` to true
   there if the design is not public.
+- Freerouting leaves single connections open on a dense board and more passes do not close
+  them (40 of 500 on a 287-part, six-layer board; two neighbouring header pins of one net
+  among them). Call `b.route_open(BUILD)` after `autoroute()`: it connects one open
+  connection at a time on a grid, first where a free path exists, then by moving unlocked
+  tracks that find another way. On that board it closed 34 of the 40, and all 13 on a
+  91-part board. What it reports as failed has no free path: look there, do not add passes.
+- Count open connections with `b.unrouted()` after `b.fill_zones()`. Before the planes are
+  filled every plane pin counts as open (173 instead of 40), and the "unrouted" number in
+  Freerouting's log counts something else again.
+- A fine-pitch part needs via sites around it. A QFN controller placed on the back under the
+  wide switch-node copper of the front had none within 3 mm: four of its pins stayed open
+  whatever routed them. Draw the obstacle map before blaming the router (`finish.obstacles()`
+  returns a plane per layer and one for vias).
+- Do not route the wide nets first to "give them room". With `route_open(only=POWER,
+  locked=True)` before the autorouter, a 0.6 mm track ran past the controller's pins 0.2 mm
+  from the pad ends and shut them in: 32 connections open instead of 9.
 
 ## Speed
 

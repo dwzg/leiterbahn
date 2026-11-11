@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0
+
+Added
+- `Board.route_open(tmp_dir)` (module `finish`): connects what the autorouter left open, one
+  connection at a time, with a grid search over all routing layers (0.1 mm grid, 45 degree
+  steps, vias; a second try on a 0.05 mm grid in a window around the connection). Freerouting
+  2.5 and 1.9 both left single connections open on a 287-part board for no visible reason
+  (two neighbouring header pins of one net, a test point under a pad) and later passes did
+  not recover them; a finisher that only needs a free path closes them, and DRC stays the
+  judge. Where there is no free path it may cross unlocked tracks, but only if each crossed
+  track finds another free way; otherwise nothing changes, so a call never leaves more open
+  than it found. `only=[nets], locked=True` routes chosen nets before the autorouter.
+
+Changed
+- `Board.fan_to_planes(lane=1.0)`: the way straight out of every long pad of a part with five
+  or more pads is kept free of other nets' fan-out vias and tracks. A ground pin's via sat
+  0.25 mm in front of the next pin of a 0.5 mm pitch QFN; that pin was then unroutable on an
+  otherwise empty four-layer board, for Freerouting and for `route_open()` alike.
+
 ## 0.5.1
 
 Changed

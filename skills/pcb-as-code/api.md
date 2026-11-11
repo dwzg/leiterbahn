@@ -72,7 +72,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.track(net, pts, width=None, layer=pcbnew.F_Cu, locked=True)`: Polyline of locked segments; points are (x, y) or (ref, pad).
   - `.via(net, x, y, size=None, locked=True)`: 
   - `.via_near(net, ref, pad, rmin=0.9, rmax=3.0, clearance=None, size=None)`: Drop a via on `net` at the closest legal spot around a pad (after routing).
-  - `.fan_to_planes(reach=2.5, share=1.2, track=0.3, clearance=None, step=0.2)`: Before autorouting: give every SMD pad of a plane's net a via into its plane.
+  - `.fan_to_planes(reach=2.5, share=1.2, track=0.3, clearance=None, step=0.2, lane=1.0)`: Before autorouting: give every SMD pad of a plane's net a via into its plane.
   - `.autoroute(workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True, fanout=False, optimize=True)`: Route with Freerouting, trying several strategies; import the best session.
   - `.ref_text(ref, visible=True, dx=None, dy=None)`: Hide a reference label or move it relative to the footprint origin.
   - `.stitch(net='GND', pitch=4.0, via=(0.6, 0.3), margin=0.45, edge=1.5, hole_gap=0.5)`: Drop vias on a grid wherever the net's pour covers the via on every layer it is poured on.
@@ -82,6 +82,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.remove_redundant(nets=None)`: Remove unlocked track segments whose removal leaves every connection intact (autorouter duplicates that form loops with hand routes). Returns the number removed.
   - `.widen()`: Autorouter neck-downs: set unlocked tracks narrower than their net class back to the class width where clearance allows. Returns (widened, still_narrow list).
   - `.prune_dangling(rounds=10)`: Remove unlocked vias and track stubs that lead nowhere (autorouter leftovers).
+  - `.route_open(tmp_dir, **kw)`: Connect what the autorouter left open, one connection at a time, with a grid search: (routed, failed). Run it after autoroute() and before the outer pours; see finish.route_open.
   - `.fill_zones()`: 
   - `.unrouted()`: 
   - `.save(path, mask_min_web=0.1)`: 

@@ -616,7 +616,7 @@ class Board:
             r += 0.1
         return None
 
-    def fan_to_planes(self, reach=2.5, share=1.2, track=0.3, clearance=None, step=0.2):
+    def fan_to_planes(self, reach=2.5, share=1.2, track=0.3, clearance=None, step=0.2, lane=1.0):
         """Before autorouting: give every SMD pad of a plane's net a via into its plane.
 
         A plane is a pour on a layer named in Board(planes=...). Each pad of the pour's net
@@ -627,6 +627,11 @@ class Board:
         Legal: the via and the track clear all other copper, the via is inside the pour, off
         its own net's SMD pads and outside rule areas that forbid vias. Pads that already
         have a track of their net (hand routes) are left alone.
+
+        The other pins of an IC keep their way out: `lane` mm straight out of every long pad
+        of a part with five or more pads counts as a track of that pad's net (lane=0: not).
+        Without it a ground pin's via sat 0.25 mm in front of the next pin of a 0.5 mm pitch
+        QFN, and that pin could not be routed on an otherwise empty board.
 
         The pads tied to their plane, through-hole pads included, are remembered in
         `on_plane`, and autoroute() takes them off the router's list: Freerouting does not
@@ -669,6 +674,23 @@ class Board:
                     continue                                # paste-only pads of an exposed pad are no copper
                 boxes[pd.m_Uuid.AsString()] = pad_box(pd)
                 add(side_of(pd), "box", boxes[pd.m_Uuid.AsString()], pd.GetNetname())
+            pads = [boxes[pd.m_Uuid.AsString()] for pd in fp.Pads() if pd.m_Uuid.AsString() in boxes]
+            if lane and len(pads) >= 5:
+                mx = sum(b[0] + b[2] for b in pads) / 2 / len(pads)
+                my = sum(b[1] + b[3] for b in pads) / 2 / len(pads)
+                for pd in fp.Pads():
+                    b = boxes.get(pd.m_Uuid.AsString())
+                    if b is None or side_of(pd) is None:
+                        continue
+                    w, h = b[2] - b[0], b[3] - b[1]
+                    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                    hw = self.rules["track"] / 2
+                    if w >= 1.4 * h and abs(cx - mx) > 0.3:    # a pad along x: out to the side it is on
+                        x = b[2] if cx > mx else b[0]
+                        add(side_of(pd), "seg", (x, cy, x + (lane if cx > mx else -lane), cy, hw), pd.GetNetname())
+                    elif h >= 1.4 * w and abs(cy - my) > 0.3:
+                        y = b[3] if cy > my else b[1]
+                        add(side_of(pd), "seg", (cx, y, cx, y + (lane if cy > my else -lane), hw), pd.GetNetname())
         ends = {}                                           # (layer, net) -> track ends
         for tr in self.board.GetTracks():
             if tr.GetClass() == "PCB_VIA":
@@ -1333,6 +1355,12 @@ class Board:
             removed += len(gone)
             self.fill_zones()
         return removed
+
+    def route_open(self, tmp_dir, **kw):
+        """Connect what the autorouter left open, one connection at a time, with a grid search:
+        (routed, failed). Run it after autoroute() and before the outer pours; see finish.route_open."""
+        from .finish import route_open
+        return route_open(self, tmp_dir, **kw)
 
     def fill_zones(self):
         self.board.BuildConnectivity()

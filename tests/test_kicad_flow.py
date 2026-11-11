@@ -545,8 +545,8 @@ def test_autoroute_connects_the_board_and_adds_no_fanout_vias(project, tmp_path)
 
 
 # ---- ground pads into their planes ----------------------------------------------------
-def planes_board(project):
-    b = board(project, layers=4, planes=[pcbnew.In1_Cu])
+def planes_board(project, **kw):
+    b = board(project, layers=4, planes=[pcbnew.In1_Cu], **kw)
     place_all(b)
     b.zone("GND", pcbnew.In1_Cu, rect=(100.5, 100.5, 17.5, 29))
     b.zone("GNDA", pcbnew.In1_Cu, polygon=[(120, 100.5), (139.5, 100.5), (139.5, 129.5), (120, 129.5)])
@@ -633,3 +633,134 @@ def test_fan_to_planes_puts_the_via_into_a_large_pad(project):
     assert b.fan_to_planes() == []
     px, py = b.pad_xy("R2", 2)
     assert (px, py) in [(round(x, 4), round(y, 4)) for x, y in vias(b)]
+
+
+def test_route_open_connects_every_net_through_a_wall_and_to_the_back(project, tmp_path):
+    """The finisher after the autorouter: a connection needs only a free path. Here one net has
+    its last pad on the back (a via is needed) and a foreign track stands between two pads."""
+    b = planes_board(project)
+    b.place("R4", 129, 116, 180, back=True)
+    assert b.fan_to_planes() == []
+    x0, y0 = b.pad_xy("J1", 1)
+    x1, y1 = b.pad_xy("R1", 1)
+    xm = (x0 + x1) / 2
+    b.track("ISO", [(xm, min(y0, y1) - 3), (xm, max(y0, y1) + 3)])      # a wall across SIG's straight way
+    before = b.unrouted()
+    routed, failed = b.route_open(str(tmp_path))
+    assert failed == [] and routed >= 3 and before >= 3
+    assert any(t.GetClass() == "PCB_VIA" and t.GetNetname().endswith("ISO") for t in b.board.GetTracks())
+    b.fill_zones()
+    assert b.unrouted() == 0
+    pcb = str(tmp_path / "open.kicad_pcb")
+    b.save(pcb)
+    b.write_project(str(tmp_path / "open.kicad_pro"))
+    out = drc(pcb, str(tmp_path / "drc.rpt"), schematic_parity=False)
+    report = (tmp_path / "drc.rpt").read_text()
+    found = re.findall(r"^\[(\w+)\]", report, re.M)
+    assert "Found 0 unconnected items" in out and found == ["track_dangling"], report    # only the wall itself
+
+
+def test_route_open_reports_a_connection_that_has_no_path(project, tmp_path):
+    b = planes_board(project)
+    b.fan_to_planes()
+    x, y = b.pad_xy("R1", 1)
+    b.keepout(x - 2.5, y - 2.5, 5, 5, name="box")          # R1 pad 1 is fenced in on every layer
+    routed, failed = b.route_open(str(tmp_path), fine=False)
+    nets = [f[0] for f in failed]
+    assert any(n.endswith("SIG") for n in nets) and all(f[1].startswith("no ") for f in failed)
+    assert routed >= 1                                     # the nets outside the fence are connected all the same
+
+
+def fenced_board(project):
+    """R1 inside a ring of unlocked ISO track on every routing layer, as an autorouter might leave it."""
+    b = planes_board(project)
+    b.fan_to_planes()
+    (x0, y0), (x1, y1) = b.pad_xy("R1", 1), b.pad_xy("R1", 2)
+    box = (min(x0, x1) - 1.6, min(y0, y1) - 1.6, max(x0, x1) + 1.6, max(y0, y1) + 1.6)
+    ring = [(box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3]), (box[0], box[1])]
+    for layer in (pcbnew.F_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
+        b.track("ISO", ring, layer=layer, locked=False)
+    return b
+
+
+def test_route_open_removes_unlocked_tracks_where_there_is_no_other_way(project, tmp_path):
+    b = fenced_board(project)
+    routed, failed = b.route_open(str(tmp_path), rip=0, fine=False)
+    assert {f[0] for f in failed} == {b.resolve("SIG"), b.resolve("MID")}       # both of R1's nets are shut in
+    b = fenced_board(project)
+    routed, failed = b.route_open(str(tmp_path))
+    assert failed == []
+    b.fill_zones()
+    assert b.unrouted() == 0
+    pcb = str(tmp_path / "rip.kicad_pcb")
+    b.save(pcb)
+    b.write_project(str(tmp_path / "rip.kicad_pro"))
+    drc(pcb, str(tmp_path / "drc.rpt"), schematic_parity=False)
+    found = set(re.findall(r"^\[(\w+)\]", (tmp_path / "drc.rpt").read_text(), re.M))
+    assert found <= {"track_dangling"}, found              # what is left of the rings; nothing shorted or too close
+
+
+def test_route_open_never_removes_locked_tracks(project, tmp_path):
+    b = fenced_board(project)
+    for t in b.board.GetTracks():
+        t.SetLocked(True)
+    n = len(b.board.GetTracks())
+    routed, failed = b.route_open(str(tmp_path), fine=False)
+    assert {f[0] for f in failed} == {b.resolve("SIG"), b.resolve("MID")}
+    assert len(b.board.GetTracks()) >= n
+
+
+def test_route_open_gives_a_track_it_crosses_another_way(project, tmp_path):
+    """SIG's pad sits inside a loop of the unlocked track R1.2 - R2.1 (rings on the other layers
+    keep it from diving under). That track is taken out and laid again clear of the new one."""
+    b = planes_board(project)
+    b.fan_to_planes()
+    loop = [(110.91, 110), (110.91, 108), (106.5, 108), (106.5, 112), (110.91, 112)]
+    b.track("MID", loop + [(110.91, 110)], locked=False)
+    b.track("MID", [(110.91, 112), (109.09, 113.8), (109.09, 116)], locked=False)
+    ring = [(106.2, 107.7), (111.4, 107.7), (111.4, 112.3), (106.2, 112.3), (106.2, 107.7)]
+    for layer in (pcbnew.In2_Cu, pcbnew.B_Cu):
+        b.track("ISO", ring, layer=layer, locked=False)
+    b.fill_zones()
+    open_before = b.unrouted()
+    routed, failed = b.route_open(str(tmp_path))
+    assert failed == [] and routed == open_before
+    mid = b.resolve("MID")
+    left = [t for t in b.board.GetTracks() if t.GetNetname() == mid and t.GetClass() != "PCB_VIA"
+            and pcbnew.ToMM(t.GetStart().x) == 106.5 and pcbnew.ToMM(t.GetEnd().x) == 106.5]
+    assert left == []                                      # the side of the loop that was in the way is gone
+    b.fill_zones()
+    assert b.unrouted() == 0                               # and R1.2 - R2.1 is connected again
+    pcb = str(tmp_path / "again.kicad_pcb")
+    b.save(pcb)
+    b.write_project(str(tmp_path / "again.kicad_pro"))
+    drc(pcb, str(tmp_path / "drc.rpt"), schematic_parity=False)
+    found = set(re.findall(r"^\[(\w+)\]", (tmp_path / "drc.rpt").read_text(), re.M))
+    assert found <= {"track_dangling"}, (tmp_path / "drc.rpt").read_text()
+
+
+def qfn_board(project):
+    """planes_board with a 0.5 mm pitch QFN over the left plane; pin 3 (left side) is on GND."""
+    b = planes_board(project, track=0.15, clearance=0.1)
+    fp = pcbnew.FootprintLoad(os.path.join(FP_DIR, "Package_DFN_QFN.pretty"), "QFN-24-1EP_4x4mm_P0.5mm_EP2.6x2.6mm")
+    fp.SetReference("U1")
+    b.board.Add(fp)
+    b.fps["U1"] = fp
+    b.place("U1", 111, 123)
+    gnd = b.board.FindNet(b.resolve("GND"))
+    for pd in fp.Pads():
+        if pd.GetNumber() == "3":
+            pd.SetNet(gnd)
+    return b
+
+
+@pytest.mark.parametrize("lane", [0, 1.0])
+def test_fan_to_planes_leaves_the_neighbours_of_an_ic_pin_their_way_out(project, lane):
+    b = qfn_board(project)
+    before = set(vias(b))
+    assert b.fan_to_planes(track=0.2, lane=lane) == []
+    px, py = b.pad_xy("U1", 3)
+    (vx, vy), = [v for v in set(vias(b)) - before if math.hypot(v[0] - px, v[1] - py) < 3]
+    left = min(pcbnew.ToMM(pd.GetBoundingBox().GetLeft()) for pd in b.fps["U1"].Pads() if pd.GetNumber() == "3")
+    in_front = [n for n in ("2", "4") if left - 1.0 < vx < left and abs(vy - b.pad_xy("U1", n)[1]) < 0.3 + 0.125 + 0.2]
+    assert bool(in_front) == (lane == 0), (vx - px, vy - py)   # without lanes the via shuts a neighbour in

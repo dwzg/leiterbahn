@@ -47,7 +47,10 @@ b.keepout(116.2, 102.0, 15.4, 20.0, layers=(pcbnew.B_Cu,), name="buck-plane",
 
 # 3. autoroute, then clean up in this order
 b.autoroute(BUILD, passes=150)
-print("unrouted after autorouting:", b.unrouted())
+b.fill_zones()                                        # plane pins count as open until the planes are filled
+print("open after autorouting:", b.unrouted())
+routed, failed = b.route_open(BUILD)                  # the connections Freerouting left, one at a time
+print("finisher:", routed, "routed;", failed)         # failed: (net, reason, end, end), no free path
 b.remove_redundant()                                  # autorouter duplicates of hand routes
 b.widen()                                             # neck-downs back to class width
 b.straighten()                                        # micro-jogs
@@ -57,6 +60,10 @@ b.fill_zones()
 b.remove_redundant(nets=["GND"])                      # ground tracks the pours cover
 b.stitch("GND", pitch=3.0)
 b.prune_dangling()
+if b.unrouted():                                      # the clean-up passes can open a joint again
+    b.route_open(BUILD)
+    b.prune_dangling()
+    b.fill_zones()
 assert b.unrouted() == 0, "unrouted connections"
 
 b.save(PCB)
