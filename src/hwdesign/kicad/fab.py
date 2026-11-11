@@ -3,16 +3,44 @@
 Parts are included in assembly when their schematic field Assembly == "SMT" and
 they have an LCSC field. Everything else (hand-soldered THT, jumpers, holes) is
 left out of BOM/CPL.
+
+The Gerber set has one file per copper layer the board file enables, so a four-
+or six-layer board is exported with its inner layers.
 """
 import csv
 import glob
 import os
+import re
 import subprocess
 import zipfile
 
 from .netlist import read_netlist
+from .sexp import parse
 
-LAYERS = "F.Cu,B.Cu,F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts"
+OTHER_LAYERS = "F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts"
+LAYERS = "F.Cu,B.Cu," + OTHER_LAYERS          # a two-layer board
+
+
+def copper_layers(pcb):
+    """Copper layer names a .kicad_pcb enables, front to back: ["F.Cu", "In1.Cu", ..., "B.Cu"].
+
+    Read from the file's (layers ...) table, without pcbnew.
+    """
+    with open(pcb) as f:
+        text = f.read()
+    m = re.search(r"^\s*\(layers\b", text, re.M)        # the board's table, before any pad's (layers ...)
+    if m is None:
+        raise ValueError("no (layers ...) table in %s" % pcb)
+    start = text.index("(", m.start())
+    depth, end = 0, start
+    for end in range(start, len(text)):         # the table ends at its matching parenthesis
+        depth += {"(": 1, ")": -1}.get(text[end], 0)
+        if depth == 0:
+            break
+    names = [str(row[1]) for row in parse(text[start:end + 1])[1:] if isinstance(row, list) and len(row) > 1]
+    cu = [n for n in names if n.endswith(".Cu")]
+    order = {"F.Cu": -1, "B.Cu": 10 ** 6}
+    return sorted(cu, key=lambda n: order.get(n, int("0" + "".join(ch for ch in n if ch.isdigit()))))
 
 
 def _run(*args):
@@ -23,13 +51,19 @@ def _run(*args):
 
 
 def export(pcb, netlist, outdir, name, rot_offset=None):
+    """Write the Gerber and drill zip, the JLC BOM and CPL into outdir.
+
+    Returns dict(zip, bom, cpl, parts, lines, missing, copper): `copper` lists the copper
+    layers that were exported, `missing` the assembled parts absent from the position file.
+    """
     rot_offset = rot_offset or {}
+    copper = copper_layers(pcb)
     gdir = os.path.join(outdir, "gerbers")
     os.makedirs(gdir, exist_ok=True)
     for f in glob.glob(os.path.join(gdir, "*")):
         os.remove(f)
-    _run("kicad-cli", "pcb", "export", "gerbers", "--layers", LAYERS, "--no-x2", "--use-drill-file-origin",
-         "-o", gdir + "/", pcb)
+    _run("kicad-cli", "pcb", "export", "gerbers", "--layers", ",".join(copper) + "," + OTHER_LAYERS, "--no-x2",
+         "--use-drill-file-origin", "-o", gdir + "/", pcb)
     _run("kicad-cli", "pcb", "export", "drill", "--format", "excellon", "--drill-origin", "absolute",
          "--excellon-units", "mm", "-o", gdir + "/", pcb)
     zpath = os.path.join(outdir, name + "-gerbers.zip")
@@ -71,4 +105,4 @@ def export(pcb, netlist, outdir, name, rot_offset=None):
                         "Top" if row["Side"].lower().startswith("top") else "Bottom", "%g" % rot])
             placed.add(ref)
     missing = sorted(set(smt) - placed)
-    return dict(zip=zpath, bom=bom, cpl=cpl, parts=len(smt), lines=len(groups), missing=missing)
+    return dict(zip=zpath, bom=bom, cpl=cpl, parts=len(smt), lines=len(groups), missing=missing, copper=copper)

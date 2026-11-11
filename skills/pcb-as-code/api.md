@@ -49,29 +49,31 @@ ERC plus netlist proof: KiCad's connectivity must equal the nets the generator d
 
 Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 
-- class `Board`: 
-  - `.__init__(netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, route_margin=0.02, fp_dirs=())`: 
+- `copper_layers(board)`: Enabled copper layers of a pcbnew BOARD, front to back: [F_Cu, In1_Cu, ..., B_Cu].
+- class `Board`: A board built from a netlist. layers is the copper layer count (2, 4 or 6); planes lists inner layers (pcbnew.In1_Cu, ...) reserved for pours; copper_layers holds the enabled copper layers, front to back.
+  - `.__init__(netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=())`: 
   - `.resolve(name)`: Map a plain net name to the board's net name (KiCad prefixes local nets with the sheet path).
   - `.netclass(name, nets, track, clearance=None)`: 
   - `.place(ref, x, y, rot=0, back=False)`: Fixed placement (marks the part as placed for later place_near calls).
-  - `.fits(ref, edge=0.3)`: True if ref's courtyard is inside the board (with edge margin) and clear of all others.
+  - `.fits(ref, edge=0.3)`: True if ref's courtyard is inside the board (with edge margin), clear of cut-outs and clear of all other courtyards.
   - `.place_near(ref, x, y, rots=(0, 90, 180, 270), step=0.25, max_r=20.0, edge=0.3)`: Put ref at the free spot closest to (x, y), trying the given rotations at each radius.
   - `.pad_xy(ref, num)`: 
-  - `.outline(x, y, w, h)`: 
-  - `.outline_rounded(x, y, w, h, r=1.5)`: Rectangular board outline with rounded corners.
+  - `.outline(x, y, w, h)`: Rectangular board outline. Replaces an earlier outline and its cut-outs.
+  - `.outline_rounded(x, y, w, h, r=1.5)`: Rectangular board outline with rounded corners. Replaces an earlier outline and its cut-outs.
+  - `.cutout(x, y, w, h, r=0.0)`: Cut a rectangle out of the board (Edge.Cuts), e.g. for a flex cable: a slot when it lies wholly inside the outline, a notch when it reaches one board edge; r rounds the corners.
   - `.text(s, x, y, size=1.0, thickness=0.15, layer=pcbnew.F_SilkS, angle=0, justify='center')`: 
   - `.label_near(ref, pad, text, size=1.0, thickness=0.15, gap=0.2, edge=0.5, dist=(1.4, 2.2, 3.0))`: Silkscreen text next to a pad, at the first clear spot around it. Returns the text or None.
   - `.clip_silk(ref)`: Drop a footprint's silkscreen graphics that leave the board outline (e.g. an overhanging antenna).
   - `.place_refs(size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=())`: Put every reference label just outside its courtyard, clear of pads, silk and other labels.
-  - `.zone(net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4)`: 
-  - `.keepout(x, y, w, h, layers=(pcbnew.F_Cu, pcbnew.B_Cu), name='keepout', tracks=True, vias=True, fills=True)`: Rule area; by default no copper pour, tracks or vias (footprint pads still allowed).
+  - `.zone(net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4, rect=None, polygon=None)`: Copper pour of `net` on `layer`: the board box `inset` mm inside the outline, or only the region rect=(x, y, w, h) or polygon=[(x, y), ...].
+  - `.keepout(x, y, w, h, layers=None, name='keepout', tracks=True, vias=True, fills=True)`: Rule area; by default no copper pour, tracks or vias (footprint pads still allowed) on every copper layer of the board.
   - `.courtyard_overlaps()`: 
   - `.track(net, pts, width=None, layer=pcbnew.F_Cu, locked=True)`: Polyline of locked segments; points are (x, y) or (ref, pad).
   - `.via(net, x, y, size=None, locked=True)`: 
   - `.via_near(net, ref, pad, rmin=0.9, rmax=3.0, clearance=None, size=None)`: Drop a via on `net` at the closest legal spot around a pad (after routing).
   - `.autoroute(workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True)`: Route with Freerouting, trying several strategies; import the best session.
   - `.ref_text(ref, visible=True, dx=None, dy=None)`: Hide a reference label or move it relative to the footprint origin.
-  - `.stitch(net='GND', pitch=4.0, via=(0.6, 0.3), margin=0.45, edge=1.5, hole_gap=0.5)`: Drop vias on a grid wherever the net's pour covers the via on every copper layer.
+  - `.stitch(net='GND', pitch=4.0, via=(0.6, 0.3), margin=0.45, edge=1.5, hole_gap=0.5)`: Drop vias on a grid wherever the net's pour covers the via on every layer it is poured on.
   - `.write_project(pro_path, min_track=0.15, min_via=0.5, min_annular=0.1, silk_clearance=0.15)`: Store design rules and net classes in the .kicad_pro (KiCad keeps them there).
   - `.straighten(tol=0.12, rounds=20)`: Merge autorouter micro-jogs: two unlocked segments meeting at a plain bend (no pad, via or T-junction there) become one when the bend deviates less than `tol` mm from the straight line, and the straight segment keeps its clearance to every other net. Returns the number of merges. Run before the pours.
   - `.chamfer_corners(c=0.4, min_turn=60.0)`: Cut sharp corners of the locked hand routes into two 45-degree bends.
@@ -82,7 +84,8 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.unrouted()`: 
   - `.save(path, mask_min_web=0.1)`: 
 - `path_length(board, net, a, b)`: Shortest copper path between two pads along tracks and vias: (mm, vias) or None.
-- `foreign_copper(board, rect, allowed, layers=(pcbnew.F_Cu, pcbnew.B_Cu))`: Tracks and vias inside rect (x0, y0, x1, y1) on nets not in `allowed`.
+- `foreign_copper(board, rect, allowed, layers=None)`: Tracks and vias inside rect (x0, y0, x1, y1) on nets not in `allowed`, on every copper layer unless `layers` names some.
+- `min_gap(board, nets_a, nets_b)`: Smallest copper-to-copper distance between two groups of nets on one copper layer: (mm, layer name, x, y, net_a, net_b), with (x, y) in the middle of the gap. None when the groups share no copper layer.
 - `acute_angles(board, limit=89.0)`: Joints where two tracks of a net meet at less than `limit` degrees (etch traps): shared endpoints and T-junctions. Returns [(net, layer, x, y, angle)].
 - `narrow_tracks(board, classes, default)`: Tracks narrower than their net class (neck-downs). classes: Board.classes.
 - `drc(pcb_path, report_path, schematic_parity=True)`: 
@@ -115,7 +118,8 @@ Read KiCad netlists without pcbnew (usable for checks on machines without KiCad'
 
 Fabrication outputs for JLCPCB: Gerbers + drill zip, assembly BOM and CPL.
 
-- `export(pcb, netlist, outdir, name, rot_offset=None)`: 
+- `copper_layers(pcb)`: Copper layer names a .kicad_pcb enables, front to back: ["F.Cu", "In1.Cu", ..., "B.Cu"].
+- `export(pcb, netlist, outdir, name, rot_offset=None)`: Write the Gerber and drill zip, the JLC BOM and CPL into outdir.
 
 ## `hwdesign.kicad.geometry`
 

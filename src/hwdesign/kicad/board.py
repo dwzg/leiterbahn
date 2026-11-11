@@ -3,6 +3,13 @@
 Flow: read the KiCad netlist (kicad-cli sch export netlist --format kicadsexpr),
 load and place footprints, assign nets, draw the outline, autoroute with
 Freerouting (Specctra DSN/SES), pour zones, save, then DRC with kicad-cli.
+
+Boards have 2, 4 or 6 copper layers (Board(layers=...)). Inner layers listed in
+`planes` get KiCad's layer type "power": the Specctra export then writes
+`(layer In1.Cu (type power))` instead of `(type signal)`, the DSN's mark for a
+plane layer that is not for routing. Pours on any layer are exported as
+`(plane <net> (polygon <layer> ...))`. Both were read in DSN files exported by
+KiCad 10.0.8; how Freerouting routes such a board has not been run yet.
 """
 import hashlib
 import heapq
@@ -13,15 +20,32 @@ import subprocess
 
 import pcbnew
 
+from . import planar
 from .netlist import read_netlist  # noqa: F401  (re-exported)
 
 FP_DIR = os.environ.get("KICAD_FOOTPRINT_DIR", "/usr/share/kicad/footprints")
 MM = pcbnew.FromMM
 
 
+def copper_layers(board):
+    """Enabled copper layers of a pcbnew BOARD, front to back: [F_Cu, In1_Cu, ..., B_Cu]."""
+    return [int(l) for l in board.GetEnabledLayers().CuStack()]
+
+
 class Board:
+    """A board built from a netlist. layers is the copper layer count (2, 4 or 6); planes lists
+    inner layers (pcbnew.In1_Cu, ...) reserved for pours; copper_layers holds the enabled
+    copper layers, front to back.
+
+    A plane layer gets KiCad's layer type "power". The Specctra export passes that on as
+    `(layer In1.Cu (type power))`, the DSN's mark for a layer that is not for routing (the
+    type "mixed" is exported as `signal`, like any routing layer).
+    """
+
     def __init__(self, netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3,
-                 declared=None, route_margin=0.02, fp_dirs=()):
+                 declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=()):
+        if layers not in (2, 4, 6):
+            raise ValueError("layers must be 2, 4 or 6, not %r" % (layers,))
         self.fp_dirs = list(fp_dirs)
         self.comps, self.nets = read_netlist(netlist_path)
         self.declared = {}
@@ -30,7 +54,13 @@ class Board:
                 self.declared = json.load(f)
         self.board = pcbnew.BOARD()
         ds = self.board.GetDesignSettings()
-        ds.SetCopperLayerCount(2)
+        ds.SetCopperLayerCount(layers)
+        self.copper_layers = copper_layers(self.board)
+        self.planes = list(planes)
+        for l in self.planes:
+            if l not in self.copper_layers[1:-1]:
+                raise ValueError("planes must be inner copper layers of a %d-layer board: %r" % (layers, l))
+            self.board.SetLayerType(l, pcbnew.LT_POWER)
         ds.m_MinThroughDrill = MM(min_drill)
         self.rules = dict(track=track, clearance=clearance, via=via, min_drill=min_drill)
         self.classes = {}
@@ -44,6 +74,8 @@ class Board:
         self.netinfo = {}
         self._stitch_vias = []
         self.placed = set()
+        self.cutouts = []            # (x, y, w, h) of slots and notches cut out of the board
+        self._contour, self._slots, self._edge_shapes, self._corner = [], [], [], 0.0
         self._load()
 
     # ---- setup ------------------------------------------------------------
@@ -87,8 +119,8 @@ class Board:
             fp.SetReference(ref)
             fp.SetValue(c["value"])
             fp.SetFPIDAsString(c["footprint"])
-            if c["uuid"]:
-                fp.SetPath(pcbnew.KIID_PATH("/" + c["uuid"]))
+            if c["uuid"]:                              # on a sub-sheet: /<sheet uuid>/<symbol uuid>
+                fp.SetPath(pcbnew.KIID_PATH(c.get("path") or "/" + c["uuid"]))
             self.board.Add(fp)
             for pad in fp.Pads():
                 net = pin_net.get((ref, pad.GetNumber()))
@@ -135,8 +167,18 @@ class Board:
         cy = fp.GetCourtyard(pcbnew.F_CrtYd if not fp.IsFlipped() else pcbnew.B_CrtYd)
         return cy if cy.OutlineCount() else None
 
+    @staticmethod
+    def _box_mm(bb):
+        return (pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetTop()),
+                pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
+
+    def _hits_cutout(self, box, margin=0.0):
+        """True if box (x0, y0, x1, y1) comes closer than margin to a cut-out."""
+        return any(planar.rects_overlap(box, (x, y, x + w, y + h), margin) for x, y, w, h in self.cutouts)
+
     def fits(self, ref, edge=0.3):
-        """True if ref's courtyard is inside the board (with edge margin) and clear of all others."""
+        """True if ref's courtyard is inside the board (with edge margin), clear of cut-outs
+        and clear of all other courtyards."""
         me = self._crt(self.fps[ref])
         if me is None:
             return True
@@ -144,6 +186,8 @@ class Board:
         x, y, w, h = self.box
         if (pcbnew.ToMM(bb.GetLeft()) < x + edge or pcbnew.ToMM(bb.GetTop()) < y + edge or
                 pcbnew.ToMM(bb.GetRight()) > x + w - edge or pcbnew.ToMM(bb.GetBottom()) > y + h - edge):
+            return False
+        if self._hits_cutout(self._box_mm(bb), edge):
             return False
         for other, fp in self.fps.items():
             if other == ref or other not in self.placed:
@@ -176,45 +220,60 @@ class Board:
                 return pcbnew.ToMM(v.x), pcbnew.ToMM(v.y)
         raise KeyError((ref, num))
 
+    def _set_edge(self):
+        """(Re)draw the board contour and the slots on Edge.Cuts."""
+        for sh in self._edge_shapes:
+            self.board.Remove(sh)
+        self._edge_shapes = []
+        V = pcbnew.VECTOR2I_MM
+        for prim in self._contour + [p for slot in self._slots for p in slot]:
+            sh = pcbnew.PCB_SHAPE(self.board)
+            if prim[0] == "seg":
+                sh.SetShape(pcbnew.SHAPE_T_SEGMENT)
+                sh.SetStart(V(*prim[1]))
+                sh.SetEnd(V(*prim[2]))
+            else:
+                sh.SetShape(pcbnew.SHAPE_T_ARC)
+                sh.SetArcGeometry(V(*prim[1]), V(*prim[2]), V(*prim[3]))
+            sh.SetLayer(pcbnew.Edge_Cuts)
+            sh.SetWidth(MM(0.1))
+            self.board.Add(sh)
+            self._edge_shapes.append(sh)
+
     def outline(self, x, y, w, h):
-        self.box = (x, y, w, h)
-        pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
-        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1], strict=True):
-            s = pcbnew.PCB_SHAPE(self.board)
-            s.SetShape(pcbnew.SHAPE_T_SEGMENT)
-            s.SetStart(pcbnew.VECTOR2I_MM(ax, ay))
-            s.SetEnd(pcbnew.VECTOR2I_MM(bx, by))
-            s.SetLayer(pcbnew.Edge_Cuts)
-            s.SetWidth(MM(0.1))
-            self.board.Add(s)
+        """Rectangular board outline. Replaces an earlier outline and its cut-outs."""
+        self.outline_rounded(x, y, w, h, r=0.0)
 
     def outline_rounded(self, x, y, w, h, r=1.5):
-        """Rectangular board outline with rounded corners."""
+        """Rectangular board outline with rounded corners. Replaces an earlier outline and its cut-outs."""
         self.box = (x, y, w, h)
+        self._corner = r
+        self._contour, self._slots, self.cutouts = planar.rounded_rect(x, y, w, h, r), [], []
+        self._set_edge()
 
-        def add(shape):
-            shape.SetLayer(pcbnew.Edge_Cuts)
-            shape.SetWidth(MM(0.1))
-            self.board.Add(shape)
+    def cutout(self, x, y, w, h, r=0.0):
+        """Cut a rectangle out of the board (Edge.Cuts), e.g. for a flex cable: a slot when it
+        lies wholly inside the outline, a notch when it reaches one board edge; r rounds the corners.
 
-        V = pcbnew.VECTOR2I_MM
-        for (ax, ay), (bx, by) in [((x + r, y), (x + w - r, y)), ((x + w, y + r), (x + w, y + h - r)),
-                                   ((x + w - r, y + h), (x + r, y + h)), ((x, y + h - r), (x, y + r))]:
-            s = pcbnew.PCB_SHAPE(self.board)
-            s.SetShape(pcbnew.SHAPE_T_SEGMENT)
-            s.SetStart(V(ax, ay))
-            s.SetEnd(V(bx, by))
-            add(s)
-        k = r * (1 - math.sqrt(0.5))
-        for (sx, sy), (mx, my), (ex, ey) in [
-                ((x, y + r), (x + k, y + k), (x + r, y)),
-                ((x + w - r, y), (x + w - k, y + k), (x + w, y + r)),
-                ((x + w, y + h - r), (x + w - k, y + h - k), (x + w - r, y + h)),
-                ((x + r, y + h), (x + k, y + h - k), (x, y + h - r))]:
-            s = pcbnew.PCB_SHAPE(self.board)
-            s.SetShape(pcbnew.SHAPE_T_ARC)
-            s.SetArcGeometry(V(sx, sy), V(mx, my), V(ex, ey))
-            add(s)
+        A slot gets radius r on all four corners (r = half the short side gives round ends), a
+        notch on its two inner corners; a notch may be given reaching past the edge. Call
+        after outline().
+        fits(), place_near(), stitch() and via_near() keep parts and vias out of cut-outs;
+        pours stay clear through KiCad's board-edge clearance.
+        Returns the cut-out as (x, y, w, h), clipped to the board.
+        """
+        bx, by, bw, bh = self.box
+        side = planar.cutout_side(self.box, (x, y, w, h), self._corner)
+        x0, y0, x1, y1 = max(x, bx), max(y, by), min(x + w, bx + bw), min(y + h, by + bh)
+        if self._hits_cutout((x0, y0, x1, y1)):
+            raise ValueError("cut-out %s overlaps another cut-out" % ((x, y, w, h),))
+        if side == "slot":
+            self._slots.append(planar.rounded_rect(x, y, w, h, r))
+        else:
+            self._contour, _ = planar.notch(self._contour, self.box, (x, y, w, h), r)
+        self.cutouts.append((x0, y0, x1 - x0, y1 - y0))
+        self._set_edge()
+        return self.cutouts[-1]
 
     def text(self, s, x, y, size=1.0, thickness=0.15, layer=pcbnew.F_SilkS, angle=0, justify="center"):
         t = pcbnew.PCB_TEXT(self.board)
@@ -261,7 +320,8 @@ class Board:
                            (d, -d), (-d, -d), (d, d), (-d, d)):
                 t.SetPosition(pcbnew.VECTOR2I_MM(x + dx, y + dy))
                 tb = t.GetBoundingBox()
-                if board.Contains(tb) and not any(tb.Intersects(o) for o in obs):
+                if (board.Contains(tb) and not any(tb.Intersects(o) for o in obs)
+                        and not self._hits_cutout(self._box_mm(tb), edge)):
                     return t
         self.board.Remove(t)
         return None
@@ -322,7 +382,7 @@ class Board:
             for px, py in cands:
                 r.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
                 tb = r.GetBoundingBox()
-                if not board.Contains(tb):
+                if not board.Contains(tb) or self._hits_cutout(self._box_mm(tb), edge):
                     continue
                 if any(tb.Intersects(o) for _, o in obstacles):
                     continue
@@ -338,15 +398,34 @@ class Board:
                 placed.append(inflate(r.GetBoundingBox(), gap / 2))
         return failed
 
-    def zone(self, net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4):
-        x, y, w, h = self.box
+    def zone(self, net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4,
+             rect=None, polygon=None):
+        """Copper pour of `net` on `layer`: the board box `inset` mm inside the outline, or only
+        the region rect=(x, y, w, h) or polygon=[(x, y), ...].
+
+        A region is taken as given (no inset), so two nets can each have their own area on one
+        layer: two ground domains on one plane. The gap between two such pours is the gap
+        between their regions; prove it with min_gap().
+        """
+        if rect is not None and polygon is not None:
+            raise ValueError("zone() takes rect or polygon, not both")
+        if polygon is not None:
+            pts = [(float(px), float(py)) for px, py in polygon]
+            if len(pts) < 3:
+                raise ValueError("a zone polygon needs at least three points")
+        elif rect is not None:
+            x, y, w, h = rect
+            pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+        else:
+            x, y, w, h = self.box
+            pts = [(x + inset, y + inset), (x + w - inset, y + inset),
+                   (x + w - inset, y + h - inset), (x + inset, y + h - inset)]
         z = pcbnew.ZONE(self.board)
         z.SetLayer(layer)
         z.SetNet(self._net(self.resolve(net)))
         o = z.Outline()
         o.NewOutline()
-        for px, py in [(x + inset, y + inset), (x + w - inset, y + inset),
-                       (x + w - inset, y + h - inset), (x + inset, y + h - inset)]:
+        for px, py in pts:
             o.Append(MM(px), MM(py))
         z.SetLocalClearance(MM(clearance))
         z.SetMinThickness(MM(min_width))
@@ -357,17 +436,20 @@ class Board:
         self.board.Add(z)
         return z
 
-    def keepout(self, x, y, w, h, layers=(pcbnew.F_Cu, pcbnew.B_Cu), name="keepout",
+    def keepout(self, x, y, w, h, layers=None, name="keepout",
                 tracks=True, vias=True, fills=True):
-        """Rule area; by default no copper pour, tracks or vias (footprint pads still allowed).
+        """Rule area; by default no copper pour, tracks or vias (footprint pads still allowed)
+        on every copper layer of the board.
 
+        layers=None means all copper layers: front and back on a two-layer board, the inner
+        layers too on four or six.
         tracks=True, vias=False, fills=False keeps a plane solid: no routing, pour and vias allowed.
         """
         z = pcbnew.ZONE(self.board)
         z.SetIsRuleArea(True)
         z.SetZoneName(name)
         ls = pcbnew.LSET()
-        for l in layers:
+        for l in (self.copper_layers if layers is None else layers):
             ls.AddLayer(l)
         z.SetLayerSet(ls)
         z.SetDoNotAllowZoneFills(fills)
@@ -399,7 +481,8 @@ class Board:
         for ref, cy in boxes.items():
             bb = cy.BBox()
             if (pcbnew.ToMM(bb.GetLeft()) < x - 0.01 or pcbnew.ToMM(bb.GetTop()) < y - 0.01 or
-                    pcbnew.ToMM(bb.GetRight()) > x + w + 0.01 or pcbnew.ToMM(bb.GetBottom()) > y + h + 0.01):
+                    pcbnew.ToMM(bb.GetRight()) > x + w + 0.01 or pcbnew.ToMM(bb.GetBottom()) > y + h + 0.01
+                    or self._hits_cutout(self._box_mm(bb), -0.01)):
                 edge.append(ref)
         return out, edge
 
@@ -446,7 +529,7 @@ class Board:
         """Drop a via on `net` at the closest legal spot around a pad (after routing).
 
         Legal: clear of every other net's pads, tracks and vias by the clearance on
-        both layers, and of the board edge. Returns (x, y) or None.
+        every copper layer, and of the board edge and cut-outs. Returns (x, y) or None.
         """
         size = size or self.rules["via"]
         clr = clearance if clearance is not None else self.rules["clearance"] + 0.05
@@ -467,8 +550,8 @@ class Board:
                 continue
             if tr.GetClass() == "PCB_VIA":
                 c = tr.GetPosition()
-                items.append(("circ", (pcbnew.ToMM(c.x), pcbnew.ToMM(c.y), pcbnew.ToMM(tr.GetWidth(pcbnew.F_Cu)) / 2),
-                              tr.GetNetname()))
+                vw = max(tr.GetWidth(l) for l in self.copper_layers if tr.IsOnLayer(l))
+                items.append(("circ", (pcbnew.ToMM(c.x), pcbnew.ToMM(c.y), pcbnew.ToMM(vw) / 2), tr.GetNetname()))
             else:
                 s, e = tr.GetStart(), tr.GetEnd()
                 items.append(("seg", (pcbnew.ToMM(s.x), pcbnew.ToMM(s.y), pcbnew.ToMM(e.x), pcbnew.ToMM(e.y),
@@ -476,6 +559,8 @@ class Board:
 
         def free(x, y):
             if not (x0 + rv + 0.4 <= x <= x0 + w - rv - 0.4 and y0 + rv + 0.4 <= y <= y0 + h - rv - 0.4):
+                return False
+            if self._hits_cutout((x, y, x, y), rv + 0.4):
                 return False
             for kind, g, n in items:
                 if kind == "box":
@@ -591,7 +676,11 @@ class Board:
             r.SetPosition(pcbnew.VECTOR2I(pos.x + MM(dx or 0), pos.y + MM(dy or 0)))
 
     def stitch(self, net="GND", pitch=4.0, via=(0.6, 0.3), margin=0.45, edge=1.5, hole_gap=0.5):
-        """Drop vias on a grid wherever the net's pour covers the via on every copper layer."""
+        """Drop vias on a grid wherever the net's pour covers the via on every layer it is poured on.
+
+        On copper layers where the net has no pour, the via must clear the pads and tracks of
+        other nets instead (a through via crosses those layers too). Vias stay out of cut-outs.
+        """
         net = self.resolve(net)
         self.fill_zones()
         polys = []
@@ -601,6 +690,20 @@ class Board:
             for layer in z.GetLayerSet().Seq():
                 polys.append((layer, z.GetFilledPolysList(layer)))
         layers = {l for l, _ in polys}
+        # layers the vias pass through without a pour of this net: foreign copper is in the way there
+        foreign = []
+        clr = MM(self.rules["clearance"] + 0.05)
+        for l in self.copper_layers:
+            if l in layers:
+                continue
+            for fp in self.board.GetFootprints():
+                foreign += [(l, p.GetEffectiveShape(l)) for p in fp.Pads()
+                            if p.IsOnLayer(l) and p.GetNetname() != net]
+            foreign += [(l, t.GetEffectiveShape(l)) for t in self.board.GetTracks()
+                        if t.GetClass() != "PCB_VIA" and t.GetLayer() == l and t.GetNetname() != net]
+        probe = pcbnew.PCB_VIA(self.board)
+        probe.SetWidth(MM(via[0]))
+        probe.SetDrill(MM(via[1]))
         holes = []   # (x, y, radius) in mm
         for fp in self.board.GetFootprints():
             for pad in fp.Pads():
@@ -628,6 +731,12 @@ class Board:
                 if ok and any(math.hypot(gx - hx, gy - hy) < hr + via[1] / 2 + hole_gap
                               for hx, hy, hr in holes):
                     ok = False
+                if ok and self._hits_cutout((gx, gy, gx, gy), via[0] / 2 + margin):
+                    ok = False
+                if ok and foreign:
+                    probe.SetPosition(pcbnew.VECTOR2I_MM(gx, gy))
+                    if any(shape.Collide(probe.GetEffectiveShape(l), clr) for l, shape in foreign):
+                        ok = False
                 if ok:
                     holes.append((gx, gy, via[1] / 2))
                     v = pcbnew.PCB_VIA(self.board)
@@ -935,7 +1044,8 @@ class Board:
         """Remove unlocked vias and track stubs that lead nowhere (autorouter leftovers).
 
         A track end counts as connected if it lands on a pad, a via, another track or a
-        filled zone of its net on its layer; a via needs connections on two layers.
+        filled zone of its net on its layer; a via needs connections on two of the copper
+        layers it spans (inner layers count).
         Returns the number of items removed.
         """
         self.fill_zones()
@@ -971,7 +1081,7 @@ class Board:
                 net = tr.GetNetname()
                 if tr.GetClass() == "PCB_VIA":
                     pt = tr.GetPosition()
-                    layers = sum(1 for l in (pcbnew.F_Cu, pcbnew.B_Cu) if touches(pt, l, net, tr))
+                    layers = sum(1 for l in self.copper_layers if tr.IsOnLayer(l) and touches(pt, l, net, tr))
                     if layers < 2 and tr not in self._stitch_vias:
                         gone.append(tr)
                 else:
@@ -1012,9 +1122,11 @@ def path_length(board, net, a, b):
 
     Pours are ignored on purpose: this measures what was routed. DRC passes a buck whose
     switch node wanders 30 mm around the board; this check does not.
+    A via joins every copper layer it spans, inner layers included, and counts once.
     a, b: "REF.PAD" strings.
     """
     mm = pcbnew.ToMM
+    cu = copper_layers(board)
     adj, pads, segs = {}, {}, []
 
     def key(x, y, l):
@@ -1028,7 +1140,10 @@ def path_length(board, net, a, b):
             continue
         if t.GetClass() == "PCB_VIA":
             p = t.GetPosition()
-            link(key(mm(p.x), mm(p.y), pcbnew.F_Cu), key(mm(p.x), mm(p.y), pcbnew.B_Cu), 0, 1)
+            ks = [key(mm(p.x), mm(p.y), l) for l in cu if t.IsOnLayer(l)]
+            for i, u in enumerate(ks):
+                for v in ks[i + 1:]:
+                    link(u, v, 0, 1)
         else:
             s, e = t.GetStart(), t.GetEnd()
             u, v = key(mm(s.x), mm(s.y), t.GetLayer()), key(mm(e.x), mm(e.y), t.GetLayer())
@@ -1046,7 +1161,7 @@ def path_length(board, net, a, b):
                 continue
             name = "%s.%s" % (fp.GetReference(), p.GetNumber())
             q = p.GetPosition()
-            for layer in (pcbnew.F_Cu, pcbnew.B_Cu):
+            for layer in cu:
                 if not p.IsOnLayer(layer):
                     continue
                 pk = ("PAD", name, layer)
@@ -1058,8 +1173,9 @@ def path_length(board, net, a, b):
                     if u[2] == layer and tr.HitTest(q, 0):
                         link(pk, u, math.hypot(u[0] - mm(q.x), u[1] - mm(q.y)))
                         link(pk, v, math.hypot(v[0] - mm(q.x), v[1] - mm(q.y)))
-            if len(pads[name]) == 2:
-                link(pads[name][0], pads[name][1], 0, 1)
+            for i, u in enumerate(pads.get(name, [])):       # a through-hole pad joins its layers like a via
+                for v in pads[name][i + 1:]:
+                    link(u, v, 0, 1)
     if a not in pads or b not in pads:
         return None
     dst = set(pads[b])
@@ -1081,12 +1197,15 @@ def path_length(board, net, a, b):
     return None
 
 
-def foreign_copper(board, rect, allowed, layers=(pcbnew.F_Cu, pcbnew.B_Cu)):
-    """Tracks and vias inside rect (x0, y0, x1, y1) on nets not in `allowed`.
+def foreign_copper(board, rect, allowed, layers=None):
+    """Tracks and vias inside rect (x0, y0, x1, y1) on nets not in `allowed`, on every copper
+    layer unless `layers` names some.
 
     Guards an area such as a buck's hot loop against the autorouter threading an
     unrelated net through it. Returns [(net, layer name, x, y)].
     """
+    if layers is None:
+        layers = copper_layers(board)
     x0, y0, x1, y1 = rect
     box = pcbnew.BOX2I(pcbnew.VECTOR2I_MM(x0, y0), pcbnew.VECTOR2I_MM(x1 - x0, y1 - y0))
     out = []
@@ -1105,6 +1224,80 @@ def foreign_copper(board, rect, allowed, layers=(pcbnew.F_Cu, pcbnew.B_Cu)):
             c = t.GetPosition() if t.GetClass() == "PCB_VIA" else t.GetStart()
             out.append((t.GetNetname(), lname, round(pcbnew.ToMM(c.x), 2), round(pcbnew.ToMM(c.y), 2)))
     return out
+
+
+def _poly_shapes(polys, tag):
+    """A pcbnew SHAPE_POLY_SET as planar polygons (mm), one per outline with its holes."""
+    mm = pcbnew.ToMM
+
+    def ring(chain):
+        return [(mm(chain.CPoint(i).x), mm(chain.CPoint(i).y)) for i in range(chain.PointCount())]
+    return [planar.polygon([ring(polys.Outline(i))] + [ring(polys.Hole(i, j)) for j in range(polys.HoleCount(i))],
+                           tag) for i in range(polys.OutlineCount()) if polys.Outline(i).PointCount() >= 3]
+
+
+def min_gap(board, nets_a, nets_b):
+    """Smallest copper-to-copper distance between two groups of nets on one copper layer:
+    (mm, layer name, x, y, net_a, net_b), with (x, y) in the middle of the gap. None when the
+    groups share no copper layer.
+
+    Proves an isolation gap, e.g. 2 mm between two ground domains: DRC only knows the
+    clearance rule, and a pour or a track of one side reaching into the other's area passes
+    it. Counts pads, tracks, vias and filled zones on every copper layer (inner layers
+    too); the zones must be filled, as in a saved board. Copper on different layers is not
+    compared: that distance is the stackup's. 0 means the groups touch.
+    """
+    mm = pcbnew.ToMM
+    groups = [{nets_a} if isinstance(nets_a, str) else set(nets_a),
+              {nets_b} if isinstance(nets_b, str) else set(nets_b)]
+    if groups[0] & groups[1]:
+        raise ValueError("nets in both groups: %s" % sorted(groups[0] & groups[1]))
+    cu = copper_layers(board)
+    shapes = {l: ([], []) for l in cu}
+
+    def side(item):
+        net = item.GetNetname()
+        return net, (0 if net in groups[0] else 1 if net in groups[1] else None)
+
+    def outline(item, layer):
+        poly = pcbnew.SHAPE_POLY_SET()
+        item.TransformShapeToPolygon(poly, layer, 0, MM(0.002), pcbnew.ERROR_OUTSIDE)
+        return poly
+    for fp in board.GetFootprints():
+        for p in fp.Pads():
+            net, g = side(p)
+            if g is not None:
+                for l in cu:
+                    if p.IsOnLayer(l):
+                        shapes[l][g].extend(_poly_shapes(outline(p, l), net))
+    for t in board.GetTracks():
+        net, g = side(t)
+        if g is None:
+            continue
+        if t.GetClass() == "PCB_VIA":
+            c = t.GetPosition()
+            for l in cu:
+                if t.IsOnLayer(l):
+                    shapes[l][g].append(planar.circle(mm(c.x), mm(c.y), mm(t.GetWidth(l)) / 2, net))
+        elif t.GetClass() == "PCB_ARC":
+            shapes[t.GetLayer()][g].extend(_poly_shapes(outline(t, t.GetLayer()), net))
+        else:
+            a, b = t.GetStart(), t.GetEnd()
+            shapes[t.GetLayer()][g].append(
+                planar.capsule(mm(a.x), mm(a.y), mm(b.x), mm(b.y), mm(t.GetWidth()) / 2, net))
+    for z in board.Zones():
+        net, g = side(z)
+        if g is None or z.GetIsRuleArea():
+            continue
+        for l in cu:
+            if z.IsOnLayer(l):
+                shapes[l][g].extend(_poly_shapes(z.GetFilledPolysList(l), net))
+    best = None
+    for l in cu:
+        r = planar.closest(*shapes[l])
+        if r is not None and (best is None or r[0] < best[0]):
+            best = (round(r[0], 3), board.GetLayerName(l), round(r[1][0], 3), round(r[1][1], 3), r[2], r[3])
+    return best
 
 
 def acute_angles(board, limit=89.0):
