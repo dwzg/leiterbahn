@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+Added
+- `Board.place_near(..., back=True)` places on the back of the board.
+
+Fixed
+- Placement on both sides: `fits()` and `place_near()` compared a part's courtyard with every
+  other part, whichever side it was on, so nothing could go under a part on the other side.
+  Parts on opposite sides now only collide if one of them has through-hole pads (a pin header
+  takes the space on both sides). `courtyard_overlaps()` uses the same rule: it used to miss
+  an SMD part placed onto the pins of a through-hole part from the other side.
+- `Board.place(ref, ..., back=False)` now brings a part back to the front if it was on the back.
+
 ## 0.3.1
 
 Fixed

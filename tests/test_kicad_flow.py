@@ -417,3 +417,20 @@ def test_stitching_misses_foreign_tracks_on_layers_without_the_pour(project):
               schematic_parity=False)
     report = (project["dir"] / "build" / "stitch.rpt").read_text()
     assert "shorting_items" not in report and "[clearance]" not in report, out
+
+
+def test_parts_on_opposite_sides_may_overlap_unless_one_goes_through_the_board(project):
+    # 489 parts on 100 x 70 mm only fit on both sides. fits() compared every courtyard with
+    # every other, so a resistor on the back had no room under a resistor on the front, and
+    # place_near() could only place on the front.
+    b = board(project)
+    place_all(b)
+    b.place("R2", 110, 110, back=True)                    # straight under R1
+    assert b.fits("R2") and b.courtyard_overlaps() == ([], [])
+    b.place("R2", 104, 110, back=True)                    # under the header J1: its pins come through
+    assert not b.fits("R2")
+    assert b.courtyard_overlaps()[0] == [("J1", "R2")]
+    x, y, _ = b.place_near("R2", 104, 110, back=True)
+    assert b.fps["R2"].IsFlipped() and b.fits("R2") and b.courtyard_overlaps() == ([], [])
+    b.place("R2", 110, 110)                               # and back to the front, onto R1
+    assert not b.fps["R2"].IsFlipped() and not b.fits("R2")

@@ -158,7 +158,7 @@ class Board:
         """Fixed placement (marks the part as placed for later place_near calls)."""
         self.placed.add(ref)
         fp = self.fps[ref]
-        if back and not fp.IsFlipped():
+        if back != fp.IsFlipped():
             fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
         fp.SetPosition(pcbnew.VECTOR2I_MM(x, y))
         fp.SetOrientationDegrees(rot)
@@ -189,16 +189,34 @@ class Board:
             return False
         if self._hits_cutout(self._box_mm(bb), edge):
             return False
+        mine = self.fps[ref]
+        mb = self._box_mm(bb)
         for other, fp in self.fps.items():
-            if other == ref or other not in self.placed:
+            if other == ref or other not in self.placed or not self._share_space(mine, fp):
                 continue
             o = self._crt(fp)
-            if o is not None and me.Collide(o):
+            if o is None:
+                continue
+            ob = self._box_mm(o.BBox())                  # cheap test first: Collide is the slow part
+            if mb[0] > ob[2] or ob[0] > mb[2] or mb[1] > ob[3] or ob[1] > mb[3]:
+                continue
+            if me.Collide(o):
                 return False
         return True
 
-    def place_near(self, ref, x, y, rots=(0, 90, 180, 270), step=0.25, max_r=20.0, edge=0.3):
-        """Put ref at the free spot closest to (x, y), trying the given rotations at each radius."""
+    @staticmethod
+    def _through(fp):
+        return any(p.GetAttribute() in (pcbnew.PAD_ATTRIB_PTH, pcbnew.PAD_ATTRIB_NPTH) for p in fp.Pads())
+
+    def _share_space(self, a, b):
+        """Can the courtyards of footprints a and b collide? On one side always; on opposite
+        sides only if one of them goes through the board (its pins and solder joints are on
+        the other side too)."""
+        return a.IsFlipped() == b.IsFlipped() or self._through(a) or self._through(b)
+
+    def place_near(self, ref, x, y, rots=(0, 90, 180, 270), step=0.25, max_r=20.0, edge=0.3, back=False):
+        """Put ref at the free spot closest to (x, y), trying the given rotations at each radius;
+        back=True puts it on the back of the board."""
         r = 0.0
         while r <= max_r:
             n = max(1, int(2 * math.pi * r / step)) if r else 1
@@ -206,7 +224,7 @@ class Board:
                 a = 2 * math.pi * i / n
                 px, py = x + r * math.cos(a), y + r * math.sin(a)
                 for rot in rots:
-                    self.place(ref, px, py, rot)
+                    self.place(ref, px, py, rot, back)
                     if self.fits(ref, edge):
                         self.placed.add(ref)
                         return px, py, rot
@@ -474,7 +492,7 @@ class Board:
         refs = sorted(boxes)
         for i, a in enumerate(refs):
             for b in refs[i + 1:]:
-                if (self.fps[a].IsFlipped() == self.fps[b].IsFlipped()) and boxes[a].Collide(boxes[b]):
+                if self._share_space(self.fps[a], self.fps[b]) and boxes[a].Collide(boxes[b]):
                     out.append((a, b))
         x, y, w, h = self.box
         edge = []

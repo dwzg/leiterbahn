@@ -57,7 +57,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.netclass(name, nets, track, clearance=None)`: 
   - `.place(ref, x, y, rot=0, back=False)`: Fixed placement (marks the part as placed for later place_near calls).
   - `.fits(ref, edge=0.3)`: True if ref's courtyard is inside the board (with edge margin), clear of cut-outs and clear of all other courtyards.
-  - `.place_near(ref, x, y, rots=(0, 90, 180, 270), step=0.25, max_r=20.0, edge=0.3)`: Put ref at the free spot closest to (x, y), trying the given rotations at each radius.
+  - `.place_near(ref, x, y, rots=(0, 90, 180, 270), step=0.25, max_r=20.0, edge=0.3, back=False)`: Put ref at the free spot closest to (x, y), trying the given rotations at each radius; back=True puts it on the back of the board.
   - `.pad_xy(ref, num)`: 
   - `.outline(x, y, w, h)`: Rectangular board outline. Replaces an earlier outline and its cut-outs.
   - `.outline_rounded(x, y, w, h, r=1.5)`: Rectangular board outline with rounded corners. Replaces an earlier outline and its cut-outs.
