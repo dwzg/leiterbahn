@@ -7,8 +7,9 @@ import ast
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODULES = ["kicad/schematic.py", "kicad/verify.py", "kicad/board.py", "kicad/netlist.py", "kicad/fab.py",
-           "kicad/geometry.py", "mcad/probe.py", "mcad/gasket.py", "mcad/printing.py", "mcad/render.py"]
+MODULES = ["kicad/schematic.py", "kicad/verify.py", "kicad/board.py", "kicad/planar.py", "kicad/netlist.py",
+           "kicad/fab.py", "kicad/geometry.py", "mcad/probe.py", "mcad/gasket.py", "mcad/printing.py",
+           "mcad/render.py"]
 
 
 def doc(node):
@@ -26,7 +27,8 @@ def main():
             if isinstance(n, ast.FunctionDef) and not n.name.startswith("_"):
                 out.append("- `%s(%s)`: %s" % (n.name, ast.unparse(n.args), doc(n)))
             elif isinstance(n, ast.ClassDef) and not n.name.startswith("_"):
-                out.append("- class `%s`: %s" % (n.name, doc(n)))
+                bases = "(%s)" % ", ".join(ast.unparse(b) for b in n.bases) if n.bases else ""
+                out.append("- class `%s%s`: %s" % (n.name, bases, doc(n)))
                 for m in n.body:
                     if isinstance(m, ast.FunctionDef) and (not m.name.startswith("_") or m.name == "__init__"):
                         args = ast.unparse(m.args).replace("self, ", "").replace("self", "")

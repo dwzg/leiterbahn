@@ -80,6 +80,23 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 - `drc(pcb_path, report_path, schematic_parity=True)`: 
 - `render(pcb_path, png_path, layers='F.Cu,B.Cu,F.SilkS,F.Fab,Edge.Cuts,F.CrtYd', width=2400)`: 
 
+## `hwdesign.kicad.planar`
+
+Plane geometry without pcbnew: the smallest gap between two groups of copper shapes, and the contours and rectangle tests behind board cut-outs.
+
+- `seg_dist(a, b)`: Distance between two segments (x1, y1, x2, y2); a segment with equal ends is a point.
+- class `Shape`: A piece of copper: edges (x1, y1, x2, y2) grown by radius r, or a filled polygon (r = 0).
+  - `.__init__(edges, r, rings, tag)`: 
+  - `.contains(x, y)`: Point inside a polygon shape (even-odd over all rings, so holes count as outside).
+- `capsule(ax, ay, bx, by, r, tag=None)`: A track: the segment a-b with round ends, r = half its width.
+- `circle(x, y, r, tag=None)`: A via or round pad.
+- `polygon(rings, tag=None)`: A filled polygon; rings are lists of (x, y), the outline first, then any holes.
+- `closest(shapes_a, shapes_b)`: Smallest gap between any shape of group a and any shape of group b.
+- `rects_overlap(a, b, margin=0.0)`: True if rectangles (x0, y0, x1, y1) come closer than margin (0: they overlap).
+- `rounded_rect(x, y, w, h, r=0.0)`: Closed contour of a rectangle with corner radius r, as a list of ("seg", start, end) and ("arc", start, mid, end); zero-length sides are left out.
+- `cutout_side(box, rect, corner=0.0, tol=1e-06)`: Where a rectangular cut-out sits on a board: "slot" (wholly inside) or the side it opens onto ("left", "right", "top", "bottom": a notch).
+- `notch(contour, box, rect, r=0.0)`: Cut a notch into a board contour (as made by rounded_rect).
+
 ## `hwdesign.kicad.netlist`
 
 Read KiCad netlists without pcbnew (usable for checks on machines without KiCad's Python).
