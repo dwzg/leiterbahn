@@ -196,8 +196,9 @@ domains taught:
   them (40 of 500 on a 287-part, six-layer board; two neighbouring header pins of one net
   among them). Call `b.route_open(BUILD)` after `autoroute()`: it connects one open
   connection at a time on a grid, first where a free path exists, then by moving unlocked
-  tracks that find another way. On that board it closed 34 of the 40, and all 13 on a
-  91-part board. What it reports as failed has no free path: look there, do not add passes.
+  tracks that find another way. On that board it closed 44 of 48, and all 13 on a 91-part
+  board. What it reports as failed has no free path: look there, do not add passes.
+  `remove_redundant()` and `straighten()` go before it, `widen()` after it.
 - Count open connections with `b.unrouted()` after `b.fill_zones()`. Before the planes are
   filled every plane pin counts as open (173 instead of 40), and the "unrouted" number in
   Freerouting's log counts something else again.

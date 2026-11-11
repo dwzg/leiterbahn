@@ -200,10 +200,12 @@ def search(grid, blocked, no_via, starts, goals, layers, via_cost, limit, rip=0.
         return "no room for a track at the first end"
     gi = sum(i for _l, i, _j in goal) / len(goal)
     gj = sum(j for _l, _i, j in goal) / len(goal)
+    spread = max(max(abs(i - gi), abs(j - gj)) for _l, i, j in goal)
 
     def h(i, j):
+        """Distance to the goals' middle, less their spread: never more than the way to the nearest."""
         dx, dy = abs(i - gi), abs(j - gj)
-        return max(dx, dy) + 0.414 * min(dx, dy)
+        return max(0.0, max(dx, dy) + 0.414 * min(dx, dy) - 1.5 * spread)
 
     best, prev, heap = {}, {}, []
     for node in starts:
@@ -284,6 +286,42 @@ def seg_dist(p, q):
     if (side(*a0, *a1, *b0) * side(*a0, *a1, *b1) < 0 and side(*b0, *b1, *a0) * side(*b0, *b1, *a1) < 0):
         return 0.0
     return min(pt(*a0, *q), pt(*a1, *q), pt(*b0, *p), pt(*b1, *p))
+
+
+def touching(p, q):
+    """Do two items of one net share copper on a layer?"""
+    if not (p["layers"] & q["layers"]) and not (p["hole"] or q["hole"]):
+        return False
+
+    def shape(it):
+        if it["kind"] == "pad":
+            return "box", it["box"], 0.0
+        if it["kind"] == "seg":
+            return "seg", it["seg"], it["r"]
+        return "seg", it["at"] * 2, it.get("r", 0.0)
+
+    (ka, ga, ra), (kb, gb, rb) = shape(p), shape(q)
+    if ka == "box" and kb == "box":
+        return ga[0] <= gb[2] and gb[0] <= ga[2] and ga[1] <= gb[3] and gb[1] <= ga[3]
+    if ka == "box":
+        (ka, ga, ra), (kb, gb, rb) = (kb, gb, rb), (ka, ga, ra)
+    if kb == "box":                                        # a track or via against a pad: its end is in the pad
+        return any(gb[0] <= x <= gb[2] and gb[1] <= y <= gb[3] for x, y in (ga[:2], ga[2:]))
+    return seg_dist(ga, gb) <= max(ra, rb)                 # an end on the other's copper, as KiCad wants it
+
+
+def cluster_of(items, start):
+    """The keys of all items of start's net that are joined to it by tracks, vias and pads."""
+    net = items[start]["net"]
+    rest = {k for k, it in items.items() if it["net"] == net and k != start}
+    found, todo = {start}, [start]
+    while todo:
+        cur = items[todo.pop()]
+        near = [k for k in rest if touching(cur, items[k])]
+        rest.difference_update(near)
+        found.update(near)
+        todo += near
+    return found
 
 
 def nearest_on(it, x, y):
@@ -385,8 +423,8 @@ def shapes(grid, path, w, via_d, all_layers, a, b):
     return tracks, vias, placed
 
 
-def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000, skip=(), only=None, locked=False,
-               rip=2.0, rounds=4, fine=True):
+def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000, skip=(), only=None, locked=False,
+               rip=2.0, rounds=4, fine=True, depth=2):
     """Connect what is unconnected on `board` (a hwdesign Board). Returns (routed, failed):
     failed lists (net, reason, (x, y), (x, y)) for the connections that found no path.
 
@@ -399,9 +437,10 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000
 
     Where no free path exists, the search may cross unlocked tracks at the price of `rip` mm
     of detour per 0.1 mm crossed (rip=0: never). Each crossed track is taken out up to the
-    next pad or junction and has to find another free way; if one of them does not, nothing
-    is changed and the connection is reported. So a call never leaves more open than it
-    found. Locked copper is never touched.
+    next pad or junction and has to find another way, which may in turn cross tracks, `depth`
+    levels deep; the last level needs free paths. If one track finds no way, nothing is
+    changed and the connection is reported. So a call never leaves more open than it found.
+    Locked copper is never touched. `limit` bounds one search (grid cells visited).
 
     A connection that finds no way on the grid of `step` mm is tried again on a 0.05 mm grid
     in a window around its ends (fine=False: not): between two vias 1 mm apart a 0.1 mm grid
@@ -420,7 +459,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000
     skip = {board.resolve(n) for n in skip}
     only = None if only is None else {board.resolve(n) for n in only}
     areas = rule_areas(pb, board.copper_layers)
-    pcb = os.path.join(tmp_dir, "route_open.kicad_pcb")
+    poured = {z.GetNetname() for z in pb.Zones() if not z.GetIsRuleArea()}     # joined by copper this module
+    pcb = os.path.join(tmp_dir, "route_open.kicad_pcb")                        # does not see: pad to pad only
     fresh = [0]
 
     def box_of(it):
@@ -429,9 +469,16 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000
             return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
         return it["box"] if it["kind"] == "pad" else it["at"] * 2
 
-    def find(items, net, a, b, rip_mm):
-        """(tracks, vias, placed, width, margin) or the reason why not; rip_mm as in route_open."""
+    def find(items, net, a, b, rip_mm, ka=None):
+        """(tracks, vias, placed, width, margin) or the reason why not; rip_mm as in route_open.
+        ka: a's key in items. Then the track may start anywhere on the copper joined to a and end
+        on any other copper of the net: the ratsnest names one pad, the nearest track will do."""
         reason = "no path"
+        mine, others = [a], [b]
+        if ka is not None and net not in poured:
+            group = cluster_of(items, ka)
+            mine = [items[k] for k in group]
+            others = [it for k, it in items.items() if it["net"] == net and k not in group]
         grids = [grid]
         if fine and step > FINE:
             (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) = box_of(a), box_of(b)
@@ -441,10 +488,13 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000
         for g in grids:
             for w in dict.fromkeys((class_width.get(net, thin), thin)):
                 blocked, no_via = obstacles(g, items, areas, edge, net, routing, w / 2, clearance, via_d / 2)
-                path = search(g, blocked, no_via, cells_of(g, a, routing), cells_of(g, b, routing), routing,
+                first = {c: it for it in mine for c in cells_of(g, it, routing)}
+                last = {c: it for it in others for c in cells_of(g, it, routing)}
+                path = search(g, blocked, no_via, list(first), list(last), routing,
                               via_cost / g.step, limit, rip_mm / 0.1)
                 if not isinstance(path, str):
-                    return shapes(g, path, w, via_d, board.copper_layers, a, b) + (w, g.step / 2)
+                    return shapes(g, path, w, via_d, board.copper_layers, first[path[0]], last[path[-1]]) \
+                        + (w, g.step / 2)
                 reason = reason if g is not grid else path
         return reason
 
@@ -473,6 +523,30 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000
                 drawn.add((net, round(x, 3), round(y, 3)))
                 board.via(net, x, y, locked=locked)
 
+    def attempt(items, net, a, b, ka, levels, taken, added, plans):
+        """Lay the connection in `items` only: True, or the reason why not. What it took out is in
+        `taken`, what it put in under the keys `added`, what to draw in `plans`."""
+        got = find(items, net, a, b, 0.0, ka)
+        if not isinstance(got, str):
+            added += note(items, net, got[2])
+            plans.append((net,) + got)
+            return True
+        if not rip or levels < 1:
+            return got
+        through = find(items, net, a, b, rip, ka)
+        if isinstance(through, str):
+            return through
+        runs = runs_in_the_way(items, through[2], net, clearance + through[4])
+        taken.update({u: items.pop(u) for _n, chain, _e in runs for u in chain if u in items})
+        added += note(items, net, through[2])
+        plans.append((net,) + through)
+        for n, _chain, ends in runs:
+            for end in ends[1:]:
+                again = attempt(items, n, ends[0], end, None, levels - 1, taken, added, plans)
+                if again is not True:
+                    return got + ", and the tracks in the way have no other"
+        return True
+
     mine, routed, failed = set(), 0, []
     for _round in range(rounds):
         board.fill_zones()
@@ -491,38 +565,19 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=1500000
             net = a["net"]
             if net in skip or (only is not None and net not in only):
                 continue
-            got = find(items, net, a, b, 0.0)
-            if not isinstance(got, str):
-                draw(net, got[0], got[1], got[3])
-                note(items, net, got[2])
-                routed, progress = routed + 1, progress + 1
-                continue
-            through = find(items, net, a, b, rip) if rip else got
-            if isinstance(through, str):
-                failed.append((net, through, (ax, ay), (bx, by)))
-                continue
-            runs = runs_in_the_way(items, through[2], net, clearance + through[4])
-            taken = {u: items.pop(u) for _n, chain, _e in runs for u in chain}
-            added = note(items, net, through[2])
-            plans = [(net,) + through]
-            for n, _chain, ends in runs:
-                for end in ends[1:]:
-                    again = find(items, n, ends[0], end, 0.0)
-                    if isinstance(again, str):
-                        plans = None
-                        break
-                    added += note(items, n, again[2])
-                    plans.append((n,) + again)
-                if plans is None:
-                    break
-            if plans is None:                              # one of them has no other way: leave all as it was
+            if net not in poured and ub in cluster_of(items, ua):
+                continue                                   # joined by a track laid earlier in this round
+            taken, added, plans = {}, [], []
+            done = attempt(items, net, a, b, ua, depth, taken, added, plans)
+            if done is not True:                           # leave all as it was
                 for k in added:
-                    del items[k]
+                    items.pop(k, None)
                 items.update(taken)
-                failed.append((net, got + ", and the tracks in the way have no other", (ax, ay), (bx, by)))
+                failed.append((net, done, (ax, ay), (bx, by)))
                 continue
             for it in taken.values():
-                pb.Remove(it["obj"])
+                if "obj" in it:
+                    pb.Remove(it["obj"])
             for n, tracks, vias, _placed, w, _m in plans:
                 draw(n, tracks, vias, w)
             routed, progress = routed + 1, progress + 1

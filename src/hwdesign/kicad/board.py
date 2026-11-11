@@ -1297,51 +1297,19 @@ class Board:
     def prune_dangling(self, rounds=10):
         """Remove unlocked vias and track stubs that lead nowhere (autorouter leftovers).
 
-        A track end counts as connected if it lands on a pad, a via, another track or a
-        filled zone of its net on its layer; a via needs connections on two of the copper
-        layers it spans (inner layers count).
+        What leads nowhere is KiCad's own decision (the test behind DRC's "track has
+        unconnected end" and "via is connected on only one layer"), with the zones filled:
+        a via that only feeds an inner plane stays. An own geometric test stood here before;
+        it took a track end 0.36 mm from the centre of a 0.6 mm via for loose where KiCad
+        saw the copper overlap, and removed three whole connections of a routed board.
         Returns the number of items removed.
         """
-        self.fill_zones()
         removed = 0
         for _ in range(rounds):
-            tracks = list(self.board.GetTracks())
-            pads = [p for fp in self.board.GetFootprints() for p in fp.Pads()]
-            zones = [z for z in self.board.Zones() if not z.GetIsRuleArea()]
-
-            def touches(pt, layer, net, me, pads=pads, tracks=tracks, zones=zones):
-                # an end counts as connected where its end cap overlaps copper of the net,
-                # the same rule KiCad's connectivity uses
-                acc = int(me.GetWidth() * 0.45) if me.GetClass() != "PCB_VIA" else 0
-                for p in pads:
-                    if p.GetNetname() == net and p.IsOnLayer(layer) and p.HitTest(pt, acc):
-                        return True
-                for o in tracks:
-                    if o is me or o.GetNetname() != net:
-                        continue
-                    if o.GetClass() == "PCB_VIA":
-                        if o.HitTest(pt, acc):
-                            return True
-                    elif o.GetLayer() == layer and o.HitTest(pt, acc):
-                        return True
-                for z in zones:
-                    if z.GetNetname() == net and z.IsOnLayer(layer) and z.HitTestFilledArea(layer, pt):
-                        return True
-                return False
-            gone = []
-            for tr in tracks:
-                if tr.IsLocked():
-                    continue
-                net = tr.GetNetname()
-                if tr.GetClass() == "PCB_VIA":
-                    pt = tr.GetPosition()
-                    layers = sum(1 for l in self.copper_layers if tr.IsOnLayer(l) and touches(pt, l, net, tr))
-                    if layers < 2 and tr not in self._stitch_vias:
-                        gone.append(tr)
-                else:
-                    l = tr.GetLayer()
-                    if not (touches(tr.GetStart(), l, net, tr) and touches(tr.GetEnd(), l, net, tr)):
-                        gone.append(tr)
+            self.fill_zones()
+            conn = self.board.GetConnectivity()
+            gone = [tr for tr in self.board.GetTracks()
+                    if not tr.IsLocked() and tr not in self._stitch_vias and conn.TestTrackEndpointDangling(tr, True)]
             if not gone:
                 break
             if os.environ.get("PRUNE_DEBUG"):
@@ -1353,7 +1321,7 @@ class Board:
             for tr in gone:
                 self.board.Remove(tr)
             removed += len(gone)
-            self.fill_zones()
+        self.fill_zones()
         return removed
 
     def route_open(self, tmp_dir, **kw):

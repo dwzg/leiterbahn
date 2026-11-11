@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.1
+
+Changed
+- `route_open()` joins an open connection to the nearest copper of the other part of its net,
+  starting anywhere on the copper already joined to the first pad; the ratsnest names one pad
+  pair, and on a rail that pad was often shut in while a track of the net ran 1 mm away
+  (9 open connections became 5 on a 287-part board). Nets with a pour are still routed pad
+  to pad: the module does not see what a plane joins.
+- `route_open(depth=2)`: a track that is moved may move others in turn, all or nothing.
+  `limit` now bounds one search at 400000 cells (a failing search over a whole six-layer
+  board took half a minute, eight of them per connection).
+- A new track ends exactly on the track or via it joins and no longer adds a short piece that
+  could fold back; the same segment is not drawn twice.
+
+Fixed
+- `prune_dangling()` asks KiCad what dangles (`TestTrackEndpointDangling`) instead of its
+  own geometric test, which took a track end 0.36 mm from the centre of a 0.6 mm via for
+  loose where KiCad saw the copper overlap: it removed three whole connections of a fully
+  routed board, vias included.
+
 ## 0.6.0
 
 Added

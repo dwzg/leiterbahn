@@ -637,7 +637,7 @@ def test_fan_to_planes_puts_the_via_into_a_large_pad(project):
 
 def test_route_open_connects_every_net_through_a_wall_and_to_the_back(project, tmp_path):
     """The finisher after the autorouter: a connection needs only a free path. Here one net has
-    its last pad on the back (a via is needed) and a foreign track stands between two pads."""
+    its last pad on the back and a foreign track stands between two pads."""
     b = planes_board(project)
     b.place("R4", 129, 116, 180, back=True)
     assert b.fan_to_planes() == []
@@ -648,7 +648,9 @@ def test_route_open_connects_every_net_through_a_wall_and_to_the_back(project, t
     before = b.unrouted()
     routed, failed = b.route_open(str(tmp_path))
     assert failed == [] and routed >= 3 and before >= 3
-    assert any(t.GetClass() == "PCB_VIA" and t.GetNetname().endswith("ISO") for t in b.board.GetTracks())
+    iso = b.resolve("ISO")                                 # R4 on the back joins the nearest copper of its net it
+    back = [t for t in b.board.GetTracks() if t.GetNetname() == iso and t.GetLayer() == pcbnew.B_Cu]   # can reach:
+    assert back and not any(t.GetClass() == "PCB_VIA" for t in back)    # J2's pin, on the back, without a via
     b.fill_zones()
     assert b.unrouted() == 0
     pcb = str(tmp_path / "open.kicad_pcb")
@@ -764,3 +766,23 @@ def test_fan_to_planes_leaves_the_neighbours_of_an_ic_pin_their_way_out(project,
     left = min(pcbnew.ToMM(pd.GetBoundingBox().GetLeft()) for pd in b.fps["U1"].Pads() if pd.GetNumber() == "3")
     in_front = [n for n in ("2", "4") if left - 1.0 < vx < left and abs(vy - b.pad_xy("U1", n)[1]) < 0.3 + 0.125 + 0.2]
     assert bool(in_front) == (lane == 0), (vx - px, vy - py)   # without lanes the via shuts a neighbour in
+
+
+def test_prune_dangling_keeps_a_track_whose_end_only_overlaps_the_via(project):
+    """An autorouted joint as found on a routed board: the track ends 0.35 mm from the centre of a
+    0.6 mm via. KiCad counts the overlapping copper as connected, so nothing dangles."""
+    b = planes_board(project)
+    b.fan_to_planes()
+    x0, y0 = b.pad_xy("R1", 1)
+    x1, y1 = b.pad_xy("J1", 1)
+    vx, vy = x0 - 2.0, y0 + 1.5
+    b.track("SIG", [(x0, y0), (x0, vy - 0.25), (vx + 0.25, vy - 0.25)], locked=False)    # ends beside the via
+    b.via("SIG", vx, vy, locked=False)
+    b.track("SIG", [(vx, vy), (x1, vy), (x1, y1)], layer=pcbnew.B_Cu, locked=False)
+    b.track("MID", [("R1", 2), ("R2", 1)])
+    b.track("ISO", [("J2", 1), ("R3", 1)])
+    b.track("ISO", [("R3", 1), ("R4", 1)])
+    b.fill_zones()
+    assert b.unrouted() == 0                               # the premise: KiCad sees SIG connected
+    assert b.prune_dangling() == 0
+    assert b.unrouted() == 0

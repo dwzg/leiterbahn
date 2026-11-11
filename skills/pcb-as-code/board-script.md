@@ -49,11 +49,11 @@ b.keepout(116.2, 102.0, 15.4, 20.0, layers=(pcbnew.B_Cu,), name="buck-plane",
 b.autoroute(BUILD, passes=150)
 b.fill_zones()                                        # plane pins count as open until the planes are filled
 print("open after autorouting:", b.unrouted())
+b.remove_redundant()                                  # autorouter duplicates of hand routes
+b.straighten()                                        # micro-jogs
 routed, failed = b.route_open(BUILD)                  # the connections Freerouting left, one at a time
 print("finisher:", routed, "routed;", failed)         # failed: (net, reason, end, end), no free path
-b.remove_redundant()                                  # autorouter duplicates of hand routes
 b.widen()                                             # neck-downs back to class width
-b.straighten()                                        # micro-jogs
 for layer in (pcbnew.F_Cu, pcbnew.B_Cu):
     b.zone("GND", layer)
 b.fill_zones()
