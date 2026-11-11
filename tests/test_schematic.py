@@ -341,3 +341,18 @@ def test_a_power_symbol_on_a_side_pin_sits_beyond_the_neighbours_labels(symdir):
     label_end = min(sch._label_box(n, lx, ly, a)[0] for n, lx, ly, a in sch.labels if n == "A_LONG_NET_NAME")
     assert gnd[0] < label_end                            # pin 2: past the end of the label next to it
     assert abs(gnd[1] - (x - 2.54)) < 0.01               # pin 6 has no labelled neighbour: the short stub
+
+
+def test_parts_and_frames_in_the_title_block_are_reported(symdir):
+    sch = design(symdir)                                 # A3: the title block is the bottom right corner
+    sch.add("R1", "tlib:R2P", (100, 100), "1k", "", {"1": "A", "2": "B"})
+    sch.frame(20, 20, 150, 100, "Clear")
+    sch.finish()
+    assert sch.overlaps() == []
+    sch.add("R2", "tlib:R2P", (380, 270), "1k", "", {"1": "A", "2": "B"})
+    sch.frame(250, 200, 150, 80, "Too low")
+    sch.finish()
+    hits = [o for o in sch.overlaps() if "title block" in o]
+    assert "body R2 <-> title block" in hits
+    assert "frame 'Too low' <-> title block" in hits
+    assert not any("Clear" in o for o in hits)

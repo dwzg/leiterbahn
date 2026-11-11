@@ -13,6 +13,9 @@ Changed
   one spot got eight symbols on top of each other.
 - `finish()` puts a pin's power symbol beyond the net labels of the pins right next to it.
   At the fixed 2.54 mm stub it lay on the neighbour's label.
+- `overlaps()` reports parts, texts, labels and `frame()` rectangles that reach into the
+  drawing sheet's title block. Nothing checked that corner, and frames drawn across it
+  only showed up in the PDF.
 - `overlaps()` accepts global labels on neighbouring pins: their boxes are 0.32 mm apart by
   construction, which the 0.4 mm rule reported for every bus on a multi-sheet design.
 

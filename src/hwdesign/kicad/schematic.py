@@ -148,6 +148,10 @@ def symbol_pins(flat, unit=1):
     return pins
 
 
+PAPER = {"A4": (297.0, 210.0), "A3": (420.0, 297.0), "A2": (594.0, 420.0), "A1": (841.0, 594.0),
+         "A0": (1189.0, 841.0)}
+
+
 class Page:
     """One schematic sheet and its drawing API. Schematic is the root page of a design;
     Schematic.sheet() adds more pages.
@@ -173,6 +177,10 @@ class Page:
         self.labels = []         # (net, x, y, angle)
         self.texts = []          # (s, x, y, size)
         self.blocks = []         # (name, box): sheet symbols, obstacles for the layout checks
+        self.frames = []         # (title, box) of frame() rectangles
+        if paper in PAPER:       # the drawing sheet's title block, bottom right
+            w, h = PAPER[paper]
+            self.blocks.append(("title block", (w - 120.0, h - 45.0, w - 10.0, h - 10.0)))
         self.placed = []         # (ref, pin numbers) of the symbols on this page, in order
         self._pins = set()       # (ref, pin) on this page
         self.finished = False
@@ -209,6 +217,7 @@ class Page:
         self.items.append(["rectangle", ["start", _n(x), _n(y)], ["end", _n(x + w), _n(y + h)],
                            ["stroke", ["width", _n(0.2)], ["type", Sym("dash")]],
                            ["fill", ["type", Sym("none")]], ["uuid", _uid()]])
+        self.frames.append((title or "", (x, y, x + w, y + h)))
         if title:
             self.text(title, x + 1.27, y + 3.3, size=1.8, bold=True)
 
@@ -743,6 +752,14 @@ class Page:
             for name, box in self.blocks:
                 if self._hit(ba, box, self.BODY_GAP):
                     out.append("%s <-> %s" % (na, name))
+        for name, box in self.blocks:                       # sheet symbols and the title block
+            for ref in self.syminfo:
+                body = self.body_box(ref)
+                if body and self._hit(body, box, 0):
+                    out.append("body %s <-> %s" % (ref, name))
+            for title, fbox in self.frames:
+                if self._hit(fbox, box, 0):
+                    out.append("frame '%s' <-> %s" % (title, name))
         return out
 
     # ---- output -----------------------------------------------------------
