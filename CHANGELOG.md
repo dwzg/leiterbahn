@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+Added
+- `Schematic(power_symbols={net: lib_id})`: supply nets beyond the six built-in names, each
+  drawn with a power symbol of your choice. The symbol's value names the net, so a second
+  ground (`{"GNDF": "power:GNDA"}`) or another rail gets its own net.
+
+Fixed
+- `power_flag()` on a pin marked the pin as connected, so `finish()` gave it no label and
+  the pin ended up on a net with only the flag. The pin now keeps its label or power symbol.
+
 ## 0.2.0
 
 Boards with more than two layers and schematics with more than one sheet. Existing scripts

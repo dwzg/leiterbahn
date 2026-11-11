@@ -22,7 +22,7 @@ Generate KiCad schematics from Python.
   - `.link(a, b, first='h')`: Connect two pins/points with one or two orthogonal segments (h: horizontal first).
   - `.power(net, at, length=2.54, direction=None)`: Attach a power symbol for net to a pin or point.
   - `.tag(at, net=None, length=2.54, direction=None)`: Net label on a pin (stub outward) or at a point at the end of a wire.
-  - `.power_flag(net, at, length=2.54, direction='up')`: PWR_FLAG on a point, on a short wire in `direction` from it.
+  - `.power_flag(net, at, length=2.54, direction='up')`: PWR_FLAG on a pin or point, on a short wire in `direction` from it.
   - `.finish()`: Label undrawn pins, no-connect unlisted ones, add junctions (on this page).
   - `.body_box(ref)`: Bounding box of a symbol's graphics and pins, in sheet coordinates.
   - `.autoplace_fields(refs=None, passes=2)`: Move Reference/Value (+ shown extra fields) of colliding parts to the first clear side.
@@ -30,7 +30,7 @@ Generate KiCad schematics from Python.
 - class `Sheet(Page)`: A page below the root, made by Schematic.sheet(). Same drawing API, its own file.
   - `.__init__(design, name, file, symbol_uuid, paper, title)`: 
 - class `Schematic(Page)`: A design and its root page. sym_dirs lists project symbol library directories, searched before KiCad's own (like Board(fp_dirs=...)).
-  - `.__init__(project, title='', rev='', date='', company='', comments=(), paper='A3', lib=None, sym_dirs=())`: 
+  - `.__init__(project, title='', rev='', date='', company='', comments=(), paper='A3', lib=None, sym_dirs=(), power_symbols=None)`: 
   - `.sheet(name, file, at=None, size=(40.64, 15.24), paper=None, title=None)`: Add a sheet and return its Page (same drawing API); it is saved as `file` next to the root, which gets a sheet symbol at `at` (default: a row along the top of the page).
   - `.finish()`: Label undrawn pins, no-connect unlisted ones, add junctions: on the root page and on every sheet that has not been finished yet.
   - `.overlaps(design=True)`: List of human-readable text collisions (fields, labels, notes vs everything) in the whole design; collisions on a sheet are prefixed with its name.

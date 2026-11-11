@@ -245,3 +245,43 @@ def test_every_uuid_in_the_design_is_unique(symdir, tmp_path):
     ids = [n[1] for f in ("demo.kicad_sch", "io.kicad_sch", "sub/power.kicad_sch")
            for n in walk(load(tmp_path / f)) if n and n[0] == "uuid"]
     assert len(ids) == len(set(ids))
+
+
+# ---- supply nets beyond the built-in table -----------------------------------------
+def test_extra_power_symbols_give_other_supply_nets_their_own_symbol(symdir, tmp_path):
+    sch = design(symdir, power_symbols={"GNDF": "power:GND", "VIO": "power:+3V3"})
+    sch.add("R1", "tlib:R2P", (100, 100), "1k", "", {"1": "VIO", "2": "GNDF"})
+    sch.add("R2", "tlib:R2P", (120, 100), "1k", "", {"1": "+3V3", "2": "GND"})
+    sch.finish()
+    sch.save(str(tmp_path / "demo.kicad_sch"))
+    tree = load(tmp_path / "demo.kicad_sch")
+    assert "label" not in heads(tree)                       # all four pins got power symbols, no labels
+    pwr = {}
+    for sym in find(tree, "symbol"):
+        props = {p[1]: p[2] for p in find(sym, "property")}
+        if props.get("Reference", "").startswith("#PWR"):
+            pwr[props["Value"]] = find1(sym, "lib_id")[1]
+    # the value names the net, the lib_id only the shape
+    assert pwr == {"VIO": "power:+3V3", "GNDF": "power:GND", "+3V3": "power:+3V3", "GND": "power:GND"}
+    assert sch.netlist() == {"VIO": [("R1", "1")], "GNDF": [("R1", "2")], "+3V3": [("R2", "1")], "GND": [("R2", "2")]}
+
+
+def test_a_net_outside_the_power_table_is_still_a_label(symdir):
+    sch = design(symdir)
+    sch.add("R1", "tlib:R2P", (100, 100), "1k", "", {"1": "VIO", "2": "GND"})
+    sch.finish()
+    assert [lab[0] for lab in sch.labels] == ["VIO"]
+
+
+def test_a_power_flag_on_a_pin_leaves_the_pin_its_label(symdir):
+    sch = design(symdir)
+    sch.add("R1", "tlib:R2P", (100, 100), "1k", "", {"1": "VIN", "2": "GND"})
+    sch.power_flag("VIN", ("R1", 1))
+    assert ("R1", "1") not in sch.drawn                     # the flag does not count as the pin's connection
+    sch.finish()
+    assert [lab[0] for lab in sch.labels] == ["VIN"]
+    sch2 = design(symdir)
+    sch2.add("R1", "tlib:R2P", (100, 100), "1k", "", {"1": "VIN", "2": "GND"})
+    sch2.wire(("R1", 1), (90, 100))                          # already wired: stays as drawn
+    sch2.power_flag("VIN", ("R1", 1))
+    assert ("R1", "1") in sch2.drawn

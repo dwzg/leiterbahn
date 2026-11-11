@@ -363,7 +363,7 @@ class Page:
         unless direction ('up', 'down', 'left', 'right') is given. GND-type symbols
         hang downward, supply symbols point upward.
         """
-        lib_id = POWER_SYMBOLS[net]
+        lib_id = self.design.power_symbols[net]
         p = self._pt(at)
         if direction is None and isinstance(at, tuple) and isinstance(at[0], str):
             out = self.parts[at[0]]["pins"][str(at[1])]["out"]
@@ -371,7 +371,7 @@ class Page:
             out = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0), None: (0, 1)}[direction]
         end = (p[0] + out[0] * length, p[1] + out[1] * length)
         self._seg(p, end)
-        is_gnd = net.startswith("GND")
+        is_gnd = lib_id.split(":", 1)[1].startswith(("GND", "Earth"))   # drawn hanging down
         rot = 0
         # power symbols are drawn with their pin at the origin pointing toward the body
         self.design._pwr_n += 1
@@ -408,8 +408,17 @@ class Page:
         self._label(net, end[0], end[1], angle)
 
     def power_flag(self, net, at, length=2.54, direction="up"):
-        """PWR_FLAG on a point, on a short wire in `direction` from it."""
+        """PWR_FLAG on a pin or point, on a short wire in `direction` from it.
+
+        On a pin, the pin still gets its label or power symbol from finish(): the flag alone
+        would leave it on a net of its own. Put the flag where a real pin is: on a wire that
+        only reaches power symbols, KiCad reports the flag's pin as not connected.
+        """
+        on_pin = isinstance(at, tuple) and isinstance(at[0], str)
+        was_drawn = on_pin and (at[0], str(at[1])) in self.drawn
         p = self._pt(at)
+        if on_pin and not was_drawn:
+            self.drawn.discard((at[0], str(at[1])))
         d = {"up": (0, -1, 0), "down": (0, 1, 180), "left": (-1, 0, 90), "right": (1, 0, 270)}[direction]
         end = (p[0] + d[0] * length, p[1] + d[1] * length)
         self._seg(p, end)
@@ -437,7 +446,7 @@ class Page:
                 if (ref, num) in self.drawn:
                     continue
                 net = declared[num]
-                if net in POWER_SYMBOLS:
+                if net in self.design.power_symbols:
                     self.power(net, (ref, num))
                 else:
                     self.tag((ref, num))
@@ -700,10 +709,15 @@ class Schematic(Page):
     before KiCad's own (like Board(fp_dirs=...)).
 
     Pass lib=SymbolLib([...]) instead for full control of the search path.
+
+    power_symbols adds supply nets to the built-in POWER_SYMBOLS: {net: lib_id of the power
+    symbol to draw}. The symbol only gives the shape; KiCad names the net after the symbol's
+    value, which is set to the net. So {"GNDF": "power:GNDA", "VIO": "power:+3V3"} gives a
+    second ground and another rail their own nets.
     """
 
     def __init__(self, project, title="", rev="", date="", company="", comments=(), paper="A3", lib=None,
-                 sym_dirs=()):
+                 sym_dirs=(), power_symbols=None):
         self.project = project
         self.root = _uid()
         self.title, self.rev, self.date, self.company = title, rev, date, company
@@ -711,6 +725,7 @@ class Schematic(Page):
         if lib is not None and sym_dirs:
             raise ValueError("pass lib or sym_dirs, not both")
         self.lib = lib or SymbolLib(list(sym_dirs) + [SYMBOL_DIR])
+        self.power_symbols = dict(POWER_SYMBOLS, **(power_symbols or {}))
         self.parts = {}          # ref -> dict(lib_id, value, footprint, fields, nets, pins)
         self.warnings = []
         self.sheets = []         # pages below the root, in page order

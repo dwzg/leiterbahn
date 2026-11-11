@@ -33,6 +33,11 @@ What the library does with sheets:
 - **A flat hierarchy.** The root gets one sheet symbol per page, in a row along the top
   unless `at=` moves it; it counts in `overlaps()`. There are no sheet pins, no sheets
   inside sheets, and a sheet file is used once.
+- **Supply nets.** Nets in `power_symbols` (the built-in six plus
+  `Schematic(power_symbols={"GNDF": "power:GNDA", "VIO": "power:+3V3"})`) are drawn as power
+  symbols instead of labels; the symbol's value is the net name. Put each net's one
+  `power_flag()` on a pin of a real part (`sch.power_flag("VIN", ("J1", 1))`): on a wire
+  that reaches only power symbols, ERC reported the flag as "pin not connected".
 - **Project file.** kicad-cli reads the project's `sym-lib-table` only when a `.kicad_pro`
   sits next to the root sheet (see SKILL.md). `Board.write_project()` creates one, but that
   runs after ERC; until then a file with `{"meta": {"filename": "my-board.kicad_pro", "version": 3}}`
