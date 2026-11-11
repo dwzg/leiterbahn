@@ -321,6 +321,35 @@ def touching(p, q):
     return seg_dist(ga, gb) <= max(ra, rb)                 # an end on the other's copper, as KiCad wants it
 
 
+def overlapping(p, q):
+    """Does the copper of two items meet on a layer? This is how KiCad joins them: a track that
+    ends 0.28 mm from the centre of a 0.5 mm via is connected to it, though its end point is
+    outside the via. (touching() asks for the end point on the other's copper.)"""
+    if not (p["layers"] & q["layers"]) and not (p["hole"] or q["hole"]):
+        return False
+
+    def shape(it):
+        if it["kind"] == "seg":
+            return it["seg"], it["r"]
+        return it["at"] * 2, it.get("r", 0.0)
+
+    def to_box(box, seg, r):
+        x0, y0, x1, y1 = box
+        if any(x0 <= x <= x1 and y0 <= y <= y1 for x, y in (seg[:2], seg[2:])):
+            return True
+        sides = ((x0, y0, x1, y0), (x1, y0, x1, y1), (x1, y1, x0, y1), (x0, y1, x0, y0))
+        return min(seg_dist(seg, side) for side in sides) <= r
+    if p["kind"] == "pad" and q["kind"] == "pad":
+        a, b = p["box"], q["box"]
+        return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+    if p["kind"] == "pad":
+        return to_box(p["box"], *shape(q))
+    if q["kind"] == "pad":
+        return to_box(q["box"], *shape(p))
+    (ga, ra), (gb, rb) = shape(p), shape(q)
+    return seg_dist(ga, gb) <= ra + rb
+
+
 def cluster_of(items, start):
     """The keys of all items of start's net that are joined to it by tracks, vias and pads."""
     net = items[start]["net"]
@@ -349,11 +378,10 @@ def nearest_on(it, x, y):
     return None
 
 
-def runs_in_the_way(items, placed, net, keep, wider=None):
-    """Removable tracks and vias that the new copper `placed` [(layers, seg, r)] comes too close to,
-    each as its whole run up to the next pad, junction or fixed track:
-    [(net, {uuid}, [end])], an end being the item to reconnect to (a pad, or a point on some layers).
-    keep: clearance plus the grid's margin; wider: {net: clearance} of the nets that ask for more."""
+def in_the_way(items, placed, net, keep, wider=None):
+    """Keys of the removable tracks and vias that the new copper `placed` [(layers, seg, r)] comes
+    too close to. keep: clearance plus the grid's margin; wider: {net: clearance} of the nets
+    that ask for more ("": what `keep` already holds)."""
     hit = []
     wider = wider or {}
     for uuid, it in items.items():
@@ -365,6 +393,15 @@ def runs_in_the_way(items, placed, net, keep, wider=None):
             if it["layers"] & layers and seg_dist(shape, seg) < r + it["r"] + keep + more:
                 hit.append(uuid)
                 break
+    return hit
+
+
+def runs_in_the_way(items, placed, net, keep, wider=None):
+    """Removable tracks and vias that the new copper `placed` [(layers, seg, r)] comes too close to,
+    each as its whole run up to the next pad, junction or fixed track:
+    [(net, {uuid}, [end])], an end being the item to reconnect to (a pad, or a point on some layers).
+    keep: clearance plus the grid's margin; wider: {net: clearance} of the nets that ask for more."""
+    hit = in_the_way(items, placed, net, keep, wider)
 
     def key(x, y):
         return (round(x, 3), round(y, 3))
@@ -437,6 +474,103 @@ def shapes(grid, path, w, via_d, all_layers, a, b):
     return tracks, vias, placed
 
 
+class _Router:
+    """What route_open() and improve() share: the board's rules and the search for one connection."""
+
+    def __init__(self, board, width, step, via_cost, limit, fine, hug, locked):
+        self.board, self.pb = board, board.board
+        self.routing = [l for l in board.copper_layers if l not in board.planes]
+        self.thin = width or board.rules["track"]
+        self.via_d, self.via_hole = board.rules["via"]
+        self.clearance = board.rules["clearance"]
+        bb = self.pb.GetBoardEdgesBoundingBox()
+        mm = pcbnew.ToMM
+        self.edge = (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom()))
+        self.step, self.via_cost, self.limit = step, via_cost, limit
+        self.fine, self.hug, self.locked = fine, hug, locked
+        self.grid = Grid(self.edge, step)
+        self.class_width = {n: c["track"] for c in board.classes.values() for n in c["nets"]}
+        self.wider = {n: c["clearance"] for c in board.classes.values() for n in c["nets"]
+                      if c["clearance"] > self.clearance}
+        self.areas = rule_areas(self.pb, board.copper_layers)
+        self.poured = {z.GetNetname() for z in self.pb.Zones() if not z.GetIsRuleArea()}   # joined by copper this
+        self.fresh = 0                                                                 # module does not see
+        self.drawn = set()
+
+    def keep(self, net):
+        return max(self.clearance, self.wider.get(net, 0.0))
+
+    def find(self, items, net, a, b, rip_mm, ka=None, box=None):
+        """(tracks, vias, placed, width, margin) or the reason why not; rip_mm as in route_open.
+        ka: a's key in items. Then the track may start anywhere on the copper joined to a and end
+        on any other copper of the net: the ratsnest names one pad, the nearest track will do.
+        box: search only in this rectangle (both grids), with `items` being what lies in it."""
+        step, edge = self.step, self.edge
+        reason = "no path"
+        mine, others = [a], [b]
+        if ka is not None and net not in self.poured:
+            group = cluster_of(items, ka)
+            mine = [items[k] for k in group]
+            others = [it for k, it in items.items() if it["net"] == net and k not in group]
+        if box is not None:
+            x0 = edge[0] + math.floor((box[0] - edge[0]) / step) * step        # on the board grid's lines
+            y0 = edge[1] + math.floor((box[1] - edge[1]) / step) * step
+            box = (max(edge[0], x0), max(edge[1], y0), min(edge[2], box[2]), min(edge[3], box[3]))
+            grids = [Grid(box, step)] + ([Grid(box, FINE)] if self.fine and step > FINE else [])
+        else:
+            grids = [self.grid]
+            if self.fine and step > FINE:
+                (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) = _box_of(a), _box_of(b)
+                x0, y0 = min(ax0, bx0) - WINDOW, min(ay0, by0) - WINDOW
+                x0, y0 = max(edge[0], math.floor(x0 / step) * step), max(edge[1], math.floor(y0 / step) * step)
+                grids.append(Grid((x0, y0, min(edge[2], max(ax1, bx1) + WINDOW),
+                                   min(edge[3], max(ay1, by1) + WINDOW)), FINE))
+        for g in grids:
+            for w in dict.fromkeys((self.class_width.get(net, self.thin), self.thin)):
+                blocked, no_via = obstacles(g, items, self.areas, edge, net, self.routing, w / 2,
+                                            self.keep(net), self.via_d / 2, self.wider)
+                first = {c: it for it in mine for c in cells_of(g, it, self.routing)}
+                last = {c: it for it in others for c in cells_of(g, it, self.routing)}
+                path = search(g, blocked, no_via, list(first), list(last), self.routing,
+                              self.via_cost / g.step, self.limit, rip_mm / 0.1, self.hug)
+                if not isinstance(path, str):
+                    return shapes(g, path, w, self.via_d, self.board.copper_layers, first[path[0]], last[path[-1]]) \
+                        + (w, g.step / 2)
+                reason = reason if g is not grids[0] else path
+        return reason
+
+    def note(self, items, net, placed):
+        """The new copper as obstacles for what follows; returns their keys."""
+        keys = []
+        for layers, seg, r in placed:
+            self.fresh += 1
+            kind = "seg" if len(layers) == 1 else "via"
+            keys.append("new%d" % self.fresh)
+            items[keys[-1]] = dict(kind=kind, net=net, layers=layers, soft=False, r=r, seg=seg, at=seg[:2],
+                                   hole=self.via_hole / 2 if kind == "via" else 0.0)
+        return keys
+
+    def draw(self, net, tracks, vias, w):
+        drawn = self.drawn
+        for layer, xy in tracks:
+            for p, q in zip(xy, xy[1:], strict=False):     # two connections of a net may share their first steps
+                key = (net, layer) + tuple(sorted(((round(p[0], 3), round(p[1], 3)), (round(q[0], 3), round(q[1], 3)))))
+                if key not in drawn and key[2] != key[3]:
+                    drawn.add(key)
+                    self.board.track(net, [p, q], w, layer, locked=self.locked)
+        for x, y in vias:
+            if (net, round(x, 3), round(y, 3)) not in drawn:
+                drawn.add((net, round(x, 3), round(y, 3)))
+                self.board.via(net, x, y, locked=self.locked)
+
+
+def _box_of(it):
+    if it["kind"] == "seg":
+        x0, y0, x1, y1 = it["seg"]
+        return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+    return it["box"] if it["kind"] == "pad" else it["at"] * 2
+
+
 def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000, skip=(), only=None, locked=False,
                rip=2.0, rounds=4, fine=True, depth=2, hug=0.0):
     """Connect what is unconnected on `board` (a hwdesign Board). Returns (routed, failed):
@@ -466,84 +600,12 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     in a window around its ends (fine=False: not): between two vias 1 mm apart a 0.1 mm grid
     may have no line that keeps the clearance to both, though a track fits.
     """
-    pb = board.board
-    routing = [l for l in board.copper_layers if l not in board.planes]
-    thin = width or board.rules["track"]
-    via_d, via_hole = board.rules["via"]
-    clearance = board.rules["clearance"]
-    bb = pb.GetBoardEdgesBoundingBox()
-    mm = pcbnew.ToMM
-    edge = (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom()))
-    grid = Grid(edge, step)
-    class_width = {n: c["track"] for c in board.classes.values() for n in c["nets"]}
-    wider = {n: c["clearance"] for c in board.classes.values() for n in c["nets"] if c["clearance"] > clearance}
+    router = _Router(board, width, step, via_cost, limit, fine, hug, locked)
+    pb, find, note, draw = board.board, router.find, router.note, router.draw
+    clearance, wider, poured = router.clearance, router.wider, router.poured
     skip = {board.resolve(n) for n in skip}
     only = None if only is None else {board.resolve(n) for n in only}
-    areas = rule_areas(pb, board.copper_layers)
-    poured = {z.GetNetname() for z in pb.Zones() if not z.GetIsRuleArea()}     # joined by copper this module
-    pcb = os.path.join(tmp_dir, "route_open.kicad_pcb")                        # does not see: pad to pad only
-    fresh = [0]
-
-    def box_of(it):
-        if it["kind"] == "seg":
-            x0, y0, x1, y1 = it["seg"]
-            return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
-        return it["box"] if it["kind"] == "pad" else it["at"] * 2
-
-    def find(items, net, a, b, rip_mm, ka=None):
-        """(tracks, vias, placed, width, margin) or the reason why not; rip_mm as in route_open.
-        ka: a's key in items. Then the track may start anywhere on the copper joined to a and end
-        on any other copper of the net: the ratsnest names one pad, the nearest track will do."""
-        reason = "no path"
-        mine, others = [a], [b]
-        if ka is not None and net not in poured:
-            group = cluster_of(items, ka)
-            mine = [items[k] for k in group]
-            others = [it for k, it in items.items() if it["net"] == net and k not in group]
-        grids = [grid]
-        if fine and step > FINE:
-            (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) = box_of(a), box_of(b)
-            x0, y0 = min(ax0, bx0) - WINDOW, min(ay0, by0) - WINDOW
-            grids.append(Grid((max(edge[0], math.floor(x0 / step) * step), max(edge[1], math.floor(y0 / step) * step),
-                               min(edge[2], max(ax1, bx1) + WINDOW), min(edge[3], max(ay1, by1) + WINDOW)), FINE))
-        for g in grids:
-            for w in dict.fromkeys((class_width.get(net, thin), thin)):
-                blocked, no_via = obstacles(g, items, areas, edge, net, routing, w / 2,
-                                            max(clearance, wider.get(net, 0.0)), via_d / 2, wider)
-                first = {c: it for it in mine for c in cells_of(g, it, routing)}
-                last = {c: it for it in others for c in cells_of(g, it, routing)}
-                path = search(g, blocked, no_via, list(first), list(last), routing,
-                              via_cost / g.step, limit, rip_mm / 0.1, hug)
-                if not isinstance(path, str):
-                    return shapes(g, path, w, via_d, board.copper_layers, first[path[0]], last[path[-1]]) \
-                        + (w, g.step / 2)
-                reason = reason if g is not grid else path
-        return reason
-
-    def note(items, net, placed):
-        """The new copper as obstacles for what follows; returns their keys."""
-        keys = []
-        for layers, seg, r in placed:
-            fresh[0] += 1
-            kind = "seg" if len(layers) == 1 else "via"
-            keys.append("new%d" % fresh[0])
-            items[keys[-1]] = dict(kind=kind, net=net, layers=layers, soft=False, r=r, seg=seg, at=seg[:2],
-                                   hole=via_hole / 2 if kind == "via" else 0.0)
-        return keys
-
-    drawn = set()
-
-    def draw(net, tracks, vias, w):
-        for layer, xy in tracks:
-            for p, q in zip(xy, xy[1:], strict=False):     # two connections of a net may share their first steps
-                key = (net, layer) + tuple(sorted(((round(p[0], 3), round(p[1], 3)), (round(q[0], 3), round(q[1], 3)))))
-                if key not in drawn and key[2] != key[3]:
-                    drawn.add(key)
-                    board.track(net, [p, q], w, layer, locked=locked)
-        for x, y in vias:
-            if (net, round(x, 3), round(y, 3)) not in drawn:
-                drawn.add((net, round(x, 3), round(y, 3)))
-                board.via(net, x, y, locked=locked)
+    pcb = os.path.join(tmp_dir, "route_open.kicad_pcb")
 
     def attempt(items, net, a, b, ka, levels, taken, added, plans):
         """Lay the connection in `items` only: True, or the reason why not. What it took out is in
@@ -608,3 +670,250 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
         if not progress or not failed:
             break
     return routed, failed
+
+
+def runs_of(items, layers, nets=None):
+    """Every removable run of a board: unlocked tracks in a row from one end to the other, through
+    the vias that join just two of them. An end is a pad, or a point where other copper of the net
+    is joined (a junction, a locked track, a via that stays), on the run's layer there.
+    [(net, {uuid}, [end, end])].
+    Left out: runs with a loose end, and runs with copper of their net joined to their middle
+    (a track that ends on the middle of another or beside a via of the run, a pad the run
+    passes over): taking those out would open a connection."""
+    def key(x, y):
+        return (round(x, 3), round(y, 3))
+
+    by_net = {}
+    for uuid, it in items.items():
+        if it["net"] and (nets is None or it["net"] in nets):
+            by_net.setdefault(it["net"], {})[uuid] = it
+    runs = []
+    for net, mine in by_net.items():
+        pads = [it for it in mine.values() if it["kind"] == "pad"]
+        at = {}
+        for uuid, it in mine.items():
+            if it["kind"] == "seg":
+                at.setdefault(key(*it["seg"][:2]), []).append(uuid)
+                at.setdefault(key(*it["seg"][2:]), []).append(uuid)
+            elif it["kind"] == "via":
+                at.setdefault(key(*it["at"]), []).append(uuid)
+        seen = set()
+        for first, it in mine.items():
+            if it["kind"] != "seg" or not it["soft"] or first in seen:
+                continue
+            chain, ends = {first}, []
+            for start in (it["seg"][:2], it["seg"][2:]):
+                cur, pt = it, start
+                while True:
+                    here = [u for u in at[key(*pt)] if u not in chain]
+                    vias = [u for u in here if mine[u]["kind"] == "via"]
+                    segs = [u for u in here if mine[u]["kind"] == "seg"]
+                    pad = [p for p in pads if (vias or p["layers"] & cur["layers"] or p["hole"])    # a via: a pad on
+                           and p["box"][0] <= pt[0] <= p["box"][2] and p["box"][1] <= pt[1] <= p["box"][3]]   # any side
+                    if pad and (not vias or pad[0]["layers"] & cur["layers"] or pad[0]["hole"]):
+                        ends.append(pad[0])
+                        break
+                    if pad:                                # a pad on the other side, joined through this via
+                        ends.append(dict(kind="point", net=net, at=tuple(pt), hole=0.0, layers=set(cur["layers"])))
+                        break
+                    on = [u for u in segs if vias or mine[u]["layers"] == cur["layers"]]
+                    if len(on) == 1 and len(segs) == 1 and len(vias) <= 1 and all(mine[u]["soft"] for u in here):
+                        chain.update(here)                 # on through this point, and through its via
+                        cur = mine[on[0]]
+                        pt = cur["seg"][2:] if key(*cur["seg"][:2]) == key(*pt) else cur["seg"][:2]
+                    elif here:                             # on its layer also at a via: the via may be all
+                        ends.append(dict(kind="point", net=net, at=tuple(pt), hole=0.0,   # that joins a track
+                                         layers=set(cur["layers"])))                       # ending beside it
+                        break
+                    else:
+                        break                              # a loose end, or an end on the middle of a track
+            seen |= chain
+            if len(ends) != 2 or ends[0] is ends[1]:
+                continue
+            tips = [e["at"] for e in ends if e["kind"] == "point"]
+            boxes = [e["box"] for e in ends if e["kind"] == "pad"]
+
+            def at_an_end(o, tips=tips, boxes=boxes):
+                """Is this copper joined at one of the run's two ends, not along it?"""
+                shape = o["seg"] if o["kind"] == "seg" else o["at"] * 2
+                if any(seg_dist(shape, t * 2) <= o.get("r", 0.0) + 1e-3 for t in tips):
+                    return True
+                pts = (shape[:2], shape[2:])
+                return any(b[0] <= x <= b[2] and b[1] <= y <= b[3] for b in boxes for x, y in pts)
+            members = [mine[u] for u in chain]
+            joined = [o for u, o in mine.items() if u not in chain and not any(o is e for e in ends)
+                      and any(overlapping(m, o) for m in members)]
+            if all(o["kind"] != "pad" and at_an_end(o) for o in joined):
+                runs.append((net, chain, ends))
+    return runs
+
+
+def route_stats(board):
+    """What improve() changes, in numbers: dict(length=mm of track, vias=count, narrow=mm of
+    track below its net class's width), counting the unlocked copper only."""
+    mm = pcbnew.ToMM
+    width = {n: c["track"] for c in board.classes.values() for n in c["nets"]}
+    length, vias, narrow = 0.0, 0, 0.0
+    for t in board.board.GetTracks():
+        if t.IsLocked():
+            continue
+        if t.GetClass() == "PCB_VIA":
+            vias += 1
+            continue
+        length += mm(t.GetLength())
+        if mm(t.GetWidth()) < width.get(t.GetNetname(), 0.0) - 1e-6:
+            narrow += mm(t.GetLength())
+    return dict(length=round(length, 1), vias=vias, narrow=round(narrow, 1))
+
+
+def improve(board, step=0.1, via_cost=3.0, limit=100000, gain=0.3, margin=3.0, skip=(), only=None, rounds=3,
+            wider_for=1.0, evict=0.15, weights=None):
+    """Route again what is routed, one run at a time, and keep what is better.
+
+    A run is the autorouter's (or route_open's) copper between two ends: a pad, a junction,
+    locked copper. Each is taken out and searched again with everything else in place, at its
+    net class's track width first. The new path stays if it is shorter by `gain` mm, a via
+    counting as `via_cost` mm, with no more track below the class width than before; or if it
+    has the class width where the old one had not and costs at most `wider_for` mm more.
+    Otherwise the old copper goes back.
+
+    A run that stays long because other runs lie across its way may push them out: the search
+    crosses removable copper at the price of `evict` mm per 0.1 mm crossed (0: never), the
+    runs it crosses are routed again around the new track, and the exchange is kept if the sum
+    over all of them is smaller by `gain`. weights={net: factor} makes a millimetre of some
+    nets count more in that sum (a compensation node against a logic line).
+
+    The runs with the longest detour come first, and a round is repeated while it gains
+    (`rounds`). Locked copper, nets with a pour, and runs another track is joined to along the
+    way are not touched; connections are neither opened nor made. The search stays within
+    `margin` mm of the run. Returns dict(runs, better, evicted, mm, vias, widened): runs looked
+    at, runs replaced, of those by pushing others out, track length and vias saved, runs
+    brought to class width.
+    """
+    router = _Router(board, None, step, via_cost, limit, True, 0.0, False)
+    pb = board.board
+    skip = {board.resolve(n) for n in skip} | router.poured
+    only = None if only is None else {board.resolve(n) for n in only}
+    weights = {board.resolve(n): f for n, f in (weights or {}).items()}
+    board.fill_zones()
+    open_before = board.unrouted()
+    total = dict(runs=0, better=0, evicted=0, mm=0.0, vias=0, widened=0)
+
+    def length(seg):
+        return math.hypot(seg[2] - seg[0], seg[3] - seg[1])
+
+    def measure(got):
+        tracks, vias = got[0], got[1]
+        return sum(length(p + q) for _l, xy in tracks for p, q in zip(xy, xy[1:], strict=False)), len(vias)
+
+    def no_thinner(run, got):
+        """No more track below the net class's width than the run had."""
+        return got[3] >= run["full"] - 1e-6 or (got[3] >= run["w"] - 1e-6 and measure(got)[0] <= run["thin"] + 1e-6)
+
+    def again(items, run, rip_mm=0.0):
+        """Search the run's connection in `items` (the run itself taken out): find()'s result."""
+        xs = [v for it in run["items"] for v in _box_of(it)[0::2]] + [e["at"][0] for e in run["ends"]]
+        ys = [v for it in run["items"] for v in _box_of(it)[1::2]] + [e["at"][1] for e in run["ends"]]
+        box = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+        reach = margin + 1.5                               # what stands just outside still keeps tracks off
+        near = {k: it for k, it in items.items()
+                if (b := _box_of(it))[0] <= box[2] + reach and b[2] >= box[0] - reach
+                and b[1] <= box[3] + reach and b[3] >= box[1] - reach}
+        return router.find(near, run["net"], run["ends"][0], run["ends"][1], rip_mm, None, box)
+
+    def replace(items, changes):
+        """[(run, find()'s result)]: the old copper off the board, the new one on."""
+        for run, got in changes:
+            for it in run["items"]:
+                pb.Delete(it["obj"])
+            new_len, new_vias = measure(got)
+            router.drawn = set()
+            router.draw(run["net"], got[0], got[1], got[3])
+            total["better"] += 1
+            total["mm"] += run["len"] - new_len
+            total["vias"] += run["vias"] - new_vias
+            total["widened"] += got[3] > run["w"] + 1e-6
+
+    for _round in range(rounds):
+        items = copper_items(pb, board.copper_layers)
+        nets = {it["net"] for it in items.values() if it["soft"]} - skip
+        if only is not None:
+            nets &= only
+        runs, owner = [], {}
+        for net, chain, ends in runs_of(items, router.routing, nets):
+            segs = [items[u] for u in chain if items[u]["kind"] == "seg"]
+            full = router.class_width.get(net, 0.0)
+            run = dict(net=net, chain=sorted(chain), ends=ends, items=[items[u] for u in sorted(chain)],
+                       len=sum(length(it["seg"]) for it in segs), vias=len(chain) - len(segs),
+                       w=min(2 * it["r"] for it in segs), f=weights.get(net, 1.0), full=full,
+                       thin=sum(length(it["seg"]) for it in segs if 2 * it["r"] < full - 1e-6))
+            run["cost"] = run["len"] + via_cost * run["vias"]
+            (ax, ay), (bx, by) = ends[0]["at"], ends[1]["at"]
+            dx, dy = abs(ax - bx), abs(ay - by)
+            run["spare"] = run["cost"] - max(dx, dy) - 0.414 * min(dx, dy)
+            run["narrow"] = run["w"] < router.class_width.get(net, 0.0) - 1e-6
+            runs.append(run)
+            owner.update({u: run for u in chain})
+        todo = sorted((r for r in runs if r["spare"] >= gain or r["narrow"]),
+                      key=lambda r: (-r["spare"] * r["f"], r["net"], r["chain"]))
+        better = 0
+        for run in todo:
+            if any(u not in items for u in run["chain"]):
+                continue                                   # replaced in this round, as one that was in the way
+            total["runs"] += 1
+            taken = {u: items.pop(u) for u in run["chain"]}
+            got = again(items, run)
+            free = None
+            if not isinstance(got, str) and (got[0] or got[1]):
+                new_len, new_vias = measure(got)
+                saved = run["cost"] - new_len - via_cost * new_vias
+                if (saved >= gain and no_thinner(run, got)) or (got[3] > run["w"] + 1e-6 and saved >= -wider_for):
+                    free = (got, saved)
+            # is there much more to gain by pushing other runs out of the way?
+            pushed = None
+            if evict and run["spare"] - (free[1] if free else 0.0) >= 4 * gain:
+                through = again(items, run, evict)
+                if not isinstance(through, str) and no_thinner(run, through) and (through[0] or through[1]):
+                    t_len, t_vias = measure(through)
+                    t_saved = run["cost"] - t_len - via_cost * t_vias
+                    hit = in_the_way(items, through[2], run["net"], router.keep(run["net"]) + through[4],
+                                     dict(router.wider, **{"": router.keep(run["net"])}))
+                    others = {id(owner[u]): owner[u] for u in hit if u in owner}
+                    if hit and t_saved > (free[1] if free else 0.0) + gain and all(u in owner for u in hit) \
+                            and all(u in items for o in others.values() for u in o["chain"]):
+                        out = {u: items.pop(u) for o in others.values() for u in o["chain"]}
+                        added = router.note(items, run["net"], through[2])
+                        changes, balance = [(run, through)], t_saved * run["f"]
+                        for o in sorted(others.values(), key=lambda o: (-o["cost"], o["chain"])):
+                            new = again(items, o)
+                            if isinstance(new, str) or not no_thinner(o, new) or not (new[0] or new[1]):
+                                balance = None
+                                break
+                            o_len, o_vias = measure(new)
+                            balance += (o["cost"] - o_len - via_cost * o_vias) * o["f"]
+                            added += router.note(items, o["net"], new[2])
+                            changes.append((o, new))
+                        if balance is not None and balance >= (free[1] * run["f"] if free else 0.0) + gain:
+                            pushed = changes
+                        else:
+                            for k in added:
+                                items.pop(k, None)
+                            items.update(out)
+            if pushed:
+                replace(items, pushed)
+                total["evicted"] += 1
+                better += 1
+            elif free:
+                router.note(items, run["net"], free[0][2])
+                replace(items, [(run, free[0])])
+                better += 1
+            else:
+                items.update(taken)
+        pb.BuildConnectivity()
+        if not better:
+            break
+    board.fill_zones()
+    if board.unrouted() != open_before:
+        raise RuntimeError("improve() changed the open connections from %d to %d" % (open_before, board.unrouted()))
+    total["mm"] = round(total["mm"], 1)
+    return total

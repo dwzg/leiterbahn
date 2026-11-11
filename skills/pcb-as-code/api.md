@@ -85,6 +85,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.widen()`: Autorouter neck-downs: set unlocked tracks narrower than their net class back to the class width where clearance allows. Returns (widened, still_narrow list).
   - `.prune_dangling(rounds=10)`: Remove unlocked vias and track stubs that lead nowhere (autorouter leftovers).
   - `.route_open(tmp_dir, **kw)`: Connect what the autorouter left open, one connection at a time, with a grid search: (routed, failed). Run it after autoroute() and before the outer pours; see finish.route_open.
+  - `.improve(**kw)`: Route again what is routed, run by run, and keep what is shorter, has fewer vias or reaches its net class's width: dict(runs, better, mm, vias, widened). After route_open(); see finish.improve.
   - `.fill_zones()`: 
   - `.unrouted()`: 
   - `.save(path, mask_min_web=0.1)`: 

@@ -894,3 +894,94 @@ def test_acute_angles_finds_a_sharp_joint_and_ignores_a_piece_shorter_than_its_w
     # ... and a sharp joint is still found when such a piece sits in it
     assert joints(((0, 0), (5, 0)), ((0, 0), (0.05, 0.05)), ((0.05, 0.05), (4.38, 2.55))) == [30]
 
+
+def plain(kind, net="N", layer=0, soft=True, **kw):
+    """An item as finish.copper_items() gives it, without a board."""
+    it = dict(kind=kind, net=net, layers={layer}, hole=0.0, soft=soft, r=0.1, **kw)
+    if kind == "pad":
+        it.update(soft=False, at=((kw["box"][0] + kw["box"][2]) / 2, (kw["box"][1] + kw["box"][3]) / 2))
+    if kind == "via":
+        it["layers"] = {0, 1}
+    return it
+
+
+def test_runs_of_follows_a_run_through_its_via_and_leaves_one_with_a_branch_alone():
+    from hwdesign.kicad.finish import runs_of
+    items = dict(p1=plain("pad", box=(-0.5, -0.5, 0.5, 0.5)), p2=plain("pad", layer=1, box=(9.5, -0.5, 10.5, 0.5)),
+                 a=plain("seg", seg=(0, 0, 5, 0)), v=plain("via", at=(5, 0)),
+                 b=plain("seg", layer=1, seg=(5, 0, 10, 0)))
+    (net, chain, ends), = runs_of(items, [0, 1])
+    assert net == "N" and chain == {"a", "v", "b"} and {e["kind"] for e in ends} == {"pad"}
+    # a track of the net that ends on the middle of the run: taking the run out would cut it off
+    items.update(p3=plain("pad", box=(2, 2.5, 3, 3.5)), c=plain("seg", seg=(2.5, 0, 2.5, 3)))
+    assert runs_of(items, [0, 1]) == []
+    # ... joined at a shared point instead, the three tracks are three runs that end there
+    del items["a"]
+    items.update(a1=plain("seg", seg=(0, 0, 2.5, 0)), a2=plain("seg", seg=(2.5, 0, 5, 0)))
+    assert sorted(sorted(chain) for _n, chain, _e in runs_of(items, [0, 1])) == [["a1"], ["a2", "b", "v"], ["c"]]
+    # locked copper is no run, and ends the run that meets it
+    items["a1"]["soft"] = False
+    assert sorted(sorted(chain) for _n, chain, _e in runs_of(items, [0, 1])) == [["a2", "b", "v"], ["c"]]
+    # a track whose end lies beside the via, its copper on the via's: KiCad joins them, so the run stays
+    items.update(p4=plain("pad", box=(5, 2.5, 6, 3.5)), d=plain("seg", seg=(5.15, 0.1, 5.5, 3)))
+    assert sorted(sorted(chain) for _n, chain, _e in runs_of(items, [0, 1])) == [["c"]]
+
+
+def test_improve_replaces_a_detour_with_two_vias_by_a_straight_track(project, tmp_path):
+    """The autorouter's leftovers: a connection that wanders and changes sides twice. improve()
+    routes it again and keeps the shorter way; hand-drawn (locked) copper stays as drawn."""
+    from hwdesign.kicad.finish import route_stats
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    (x0, y0), (x1, y1) = b.pad_xy("J1", 1), b.pad_xy("R1", 1)
+    xm, low = (x0 + x1) / 2, max(y0, y1) + 3
+    b.track("SIG", [(x0, y0), (xm - 1, low)], locked=False)
+    b.via("SIG", xm - 1, low, locked=False)
+    b.track("SIG", [(xm - 1, low), (xm + 1, low)], layer=pcbnew.B_Cu, locked=False)
+    b.via("SIG", xm + 1, low, locked=False)
+    b.track("SIG", [(xm + 1, low), (x1, y1)], locked=False)
+    hand = [("R1", 2), (110.9125, 113), (109.0875, 113), ("R2", 1)]
+    b.track("MID", hand)                                   # a detour too, but drawn by hand
+    b.fill_zones()
+    open_before, before = b.unrouted(), route_stats(b)
+    got = b.improve()
+    after = route_stats(b)
+    assert got["better"] == 1 and got["vias"] == 2 and got["mm"] > 1.0
+    assert (before["vias"], after["vias"]) == (2, 0) and after["length"] < before["length"] - 1.0
+    assert abs(after["length"] - math.hypot(x1 - x0, y1 - y0)) < 0.5
+    mid = [t for t in b.board.GetTracks() if t.GetNetname() == b.resolve("MID")]
+    assert len(mid) == 3 and all(t.IsLocked() for t in mid)
+    assert b.unrouted() == open_before
+    assert b.improve()["better"] == 0                      # nothing left to gain
+
+
+def test_improve_lets_a_run_push_another_out_of_its_way_when_the_sum_gets_shorter(project, tmp_path):
+    """MID runs around R1.1 and shuts it in, so SIG reaches it through a via. Each is as short
+    as it can be with the other in place. Together they are shorter: SIG straight, MID round the
+    other end of the keep-out, a little longer."""
+    from hwdesign.kicad.finish import route_stats
+    b = planes_board(project)
+    b.keepout(107.6, 111.2, 7.0, 0.8, name="wall")         # below R1: MID has to go round one of its ends
+    b.track("MID", [("R1", 2), (110.91, 108.6), (107.2, 108.6), (107.2, 112.6), (107.5, 112.9), (109.09, 112.9),
+                    ("R2", 1)], locked=False)
+    b.track("SIG", [("J1", 1), (107.9, 110.0)], layer=pcbnew.B_Cu, locked=False)
+    b.via("SIG", 107.9, 110.0, locked=False)
+    b.track("SIG", [(107.9, 110.0), ("R1", 1)], locked=False)
+    b.fill_zones()
+    open_before = b.unrouted()
+    b.improve(evict=0, margin=5)                           # one at a time: MID is drawn tighter, and that is all
+    before = route_stats(b)
+    got = b.improve(margin=5)
+    after = route_stats(b)
+    assert got["evicted"] == 1 and got["better"] == 2 and (before["vias"], after["vias"]) == (1, 0)
+    sig = [t for t in b.board.GetTracks() if t.GetNetname() == b.resolve("SIG")]
+    assert {t.GetLayer() for t in sig} == {pcbnew.F_Cu}
+    assert abs(sum(pcbnew.ToMM(t.GetLength()) for t in sig) - 5.09) < 0.6
+    assert after["length"] < before["length"] + 1.5 and b.unrouted() == open_before
+    pcb = str(tmp_path / "pushed.kicad_pcb")
+    b.save(pcb)
+    b.write_project(str(tmp_path / "pushed.kicad_pro"))
+    drc(pcb, str(tmp_path / "drc.rpt"), schematic_parity=False)
+    found = set(re.findall(r"^\[(\w+)\]", (tmp_path / "drc.rpt").read_text(), re.M))
+    assert not found & {"clearance", "shorting_items", "tracks_crossing", "hole_clearance"}, found
+

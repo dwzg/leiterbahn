@@ -220,6 +220,14 @@ domains taught:
   out. Find the via sites before drawing: pads of the parts on the other side and wide
   tracks on inner layers left one row of sites 0.45 mm high above that pin row. Three vias
   there for three pins, the other two pins leave on tracks above them.
+- `b.improve()` after the board is closed: every autorouted run is searched again and
+  replaced if shorter. Expect little on a dense board (2 % of the track length, 10 of 288
+  vias there): each run is near its shortest with the others in place. Before spending time
+  on routing order or better routers, measure what is left to gain: route each run with all
+  other movable copper taken out (17 % there), and compare the half-perimeter length of the
+  nets after swapping parts of one footprint (6 %). When both are small the board is at the
+  limit of its area, and a long sensitive net is a placement matter: its part has to be
+  beside its pin before routing starts.
 
 ## Speed
 

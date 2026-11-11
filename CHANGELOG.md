@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0
+
+Added
+- `Board.improve()` (`finish.improve`): routes again what is routed, one run at a time
+  (the copper between two pads, junctions or locked tracks, through its vias), and keeps
+  the new path if it is shorter, has fewer vias or reaches the net class's width. A run may
+  push other runs out of its way; the exchange is kept if the sum gets smaller. Locked
+  copper stays, connections are neither opened nor made (checked at the end). On a
+  six-layer board with 3.4 m of autorouted track it took 2 minutes and saved 70 mm and 10
+  of 288 vias; with every run alone on the board the saving could be 17 % at most.
+- `finish.route_stats(board)`: track length, vias and length below class width of the
+  unlocked copper. `finish.runs_of()`, `finish.overlapping()`, `finish.in_the_way()`.
+
+Fixed
+- `prune_dangling()` crashed pcbnew in its second round on a reopened board (tracks removed
+  with `Remove()`); it deletes them now.
+
 ## 0.7.1
 
 Fixed

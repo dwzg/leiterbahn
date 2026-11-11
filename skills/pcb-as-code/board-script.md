@@ -53,6 +53,7 @@ b.remove_redundant()                                  # autorouter duplicates of
 b.straighten()                                        # micro-jogs
 routed, failed = b.route_open(BUILD)                  # the connections Freerouting left, one at a time
 print("finisher:", routed, "routed;", failed)         # failed: (net, reason, end, end), no free path
+print("improved:", b.improve())                       # each run again: shorter, fewer vias, class width
 b.widen()                                             # neck-downs back to class width
 for layer in (pcbnew.F_Cu, pcbnew.B_Cu):
     b.zone("GND", layer)

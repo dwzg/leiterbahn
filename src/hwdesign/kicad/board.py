@@ -1394,9 +1394,10 @@ class Board:
                     print("   prune", tr.GetNetname(), tr.GetClass()[4:], self.board.GetLayerName(tr.GetLayer()),
                           (round(pcbnew.ToMM(s.x), 2), round(pcbnew.ToMM(s.y), 2)),
                           (round(pcbnew.ToMM(e.x), 2), round(pcbnew.ToMM(e.y), 2)))
-            for tr in gone:
-                self.board.Remove(tr)
             removed += len(gone)
+            for tr in gone:                                # Delete, not Remove: see rip_up()
+                self.board.Delete(tr)
+            del gone
         self.fill_zones()
         return removed
 
@@ -1405,6 +1406,13 @@ class Board:
         (routed, failed). Run it after autoroute() and before the outer pours; see finish.route_open."""
         from .finish import route_open
         return route_open(self, tmp_dir, **kw)
+
+    def improve(self, **kw):
+        """Route again what is routed, run by run, and keep what is shorter, has fewer vias or
+        reaches its net class's width: dict(runs, better, mm, vias, widened). After route_open();
+        see finish.improve."""
+        from .finish import improve
+        return improve(self, **kw)
 
     def fill_zones(self):
         self.board.BuildConnectivity()
