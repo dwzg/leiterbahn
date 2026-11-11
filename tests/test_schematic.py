@@ -285,3 +285,46 @@ def test_a_power_flag_on_a_pin_leaves_the_pin_its_label(symdir):
     sch2.wire(("R1", 1), (sch2.pin("R1", 1)[0], 80))         # already wired: stays as drawn
     sch2.power_flag("VIN", ("R1", 1))
     assert ("R1", "1") in sch2.drawn
+
+
+# ---- neighbouring pins on one net -------------------------------------------------
+def test_neighbouring_and_stacked_pins_on_one_net_share_one_symbol(symdir):
+    sch = design(symdir)
+    sch.add("U1", "tlib:COMB", (100, 100), "COMB", "",
+            {"1": "GND", "2": "GND", "3": "GND", "4": "SIG", "5": "SIG", "6": "GND", "7": "OUT"})
+    sch.finish()
+    values = [p["value"] for r, p in sch.parts.items() if r.startswith("#PWR")]
+    assert values == ["GND", "GND"]                      # pins 1-3 share one, pin 6 (7.62 mm away) has its own
+    assert sorted(lab[0] for lab in sch.labels) == ["OUT", "SIG"]     # stacked pins 4 and 5: one label
+    x = sch.pin("U1", 1)[0]
+    ys = [sch.pin("U1", n)[1] for n in (1, 2, 3)]
+    joined = [seg for seg in sch.segments if seg[0][0] == x and seg[1][0] == x]
+    assert sorted((min(a[1], b[1]), max(a[1], b[1])) for a, b in joined) == [(ys[0], ys[1]), (ys[1], ys[2])]
+    assert sch.netlist()["GND"] == [("U1", "1"), ("U1", "2"), ("U1", "3"), ("U1", "6")]
+
+
+def test_pins_drawn_by_hand_are_not_joined(symdir):
+    sch = design(symdir)
+    sch.add("U1", "tlib:COMB", (100, 100), "COMB", "",
+            {"1": "GND", "2": "GND", "3": "GND", "4": None, "5": None, "6": None, "7": None})
+    sch.power("GND", ("U1", 2))             # pin 2 has its symbol already: 1 and 3 are no longer neighbours
+    sch.finish()
+    assert len([r for r in sch.parts if r.startswith("#PWR")]) == 3
+
+
+def test_boxed_labels_on_neighbouring_pins_do_not_count_as_overlap(symdir):
+    sch = design(symdir)
+    io = sch.sheet("IO", "io.kicad_sch")
+    io.add("U1", "tlib:COMB", (100, 100), "COMB", "",
+           {"1": "A", "2": "B", "3": "C", "4": None, "5": None, "6": None, "7": None})
+    sch.finish()
+    assert io.overlaps() == []
+
+
+def test_pins_two_grid_steps_apart_are_joined_unless_a_pin_sits_between(symdir):
+    sch = design(symdir)
+    sch.add("U1", "tlib:COMB", (100, 100), "COMB", "",
+            {"1": "+3V3", "2": "X", "3": "+3V3", "4": None, "5": None, "6": "+3V3", "7": None, "8": "+3V3"})
+    sch.finish()
+    # 6 and 8 are 5.08 mm apart with nothing between: one symbol. 1 and 3 have pin 2 between: one each.
+    assert len([r for r in sch.parts if r.startswith("#PWR")]) == 3

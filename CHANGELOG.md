@@ -7,6 +7,13 @@ Added
   drawn with a power symbol of your choice. The symbol's value names the net, so a second
   ground (`{"GNDF": "power:GNDA"}`) or another rail gets its own net.
 
+Changed
+- `finish()` joins pins of one part that share a net and are stacked or neighbours (up to
+  5.08 mm apart, no other pin between) with a wire and gives them one label or power symbol. A connector with eight ground pins on
+  one spot got eight symbols on top of each other.
+- `overlaps()` accepts global labels on neighbouring pins: their boxes are 0.32 mm apart by
+  construction, which the 0.4 mm rule reported for every bus on a multi-sheet design.
+
 Fixed
 - `power_flag()` on a pin marked the pin as connected, so `finish()` gave it no label and
   the pin ended up on a net with only the flag. The pin now keeps its label or power symbol.

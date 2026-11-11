@@ -429,11 +429,17 @@ class Page:
 
     # ---- finishing --------------------------------------------------------
     def finish(self):
-        """Label undrawn pins, no-connect unlisted ones, add junctions (on this page)."""
+        """Label undrawn pins, no-connect unlisted ones, add junctions (on this page).
+
+        Pins of one part that share a net and leave it side by side (2.54 mm apart, same
+        direction) or sit on top of each other are joined by a wire and get one label or power
+        symbol between them, not one each.
+        """
         for ref, nums in list(self.placed):
             if ref.startswith("#"):
                 continue
             part = self.parts[ref]
+            self._join_neighbours(ref, nums)
             unlisted = []
             for num in nums:
                 p = part["pins"][num]
@@ -456,6 +462,45 @@ class Page:
         self.autoplace_fields()
         self._junctions()
         self.finished = True
+
+    def _join_neighbours(self, ref, nums):
+        """Wire together undrawn pins of `ref` with the same net that are stacked or adjacent.
+
+        Adjacent: on one line, leaving the same way, at most 5.08 mm apart with no other pin of
+        the part between them. One pin of each run stays undrawn and gets the label or power
+        symbol in finish(). On a connector with eight ground pins on one spot, or an IC with
+        three address pins on ground or two supply pins 5.08 mm apart, one symbol per pin put
+        the symbols or their names on top of each other.
+        """
+        part = self.parts[ref]
+        ends = [part["pins"][n]["at"] for n in nums]
+        runs = {}
+        for num in nums:
+            net = part["declared"].get(num)
+            if net is None or (ref, num) in self.drawn:
+                continue
+            p = part["pins"][num]
+            runs.setdefault((net, p["out"]), []).append((p["at"], num))
+        for (_net, out), pins in runs.items():
+            along = 1 if out[0] else 0                      # pins leaving sideways are stacked vertically
+            pins.sort(key=lambda t: (t[0][1 - along], t[0][along]))
+            chain = [pins[0]]
+            for cur in pins[1:] + [None]:
+                prev = chain[-1]
+                if cur is not None and abs(cur[0][1 - along] - prev[0][1 - along]) < 1e-6 \
+                        and cur[0][along] - prev[0][along] <= 5.08 + 1e-6 \
+                        and not any(abs(e[1 - along] - prev[0][1 - along]) < 1e-6
+                                    and prev[0][along] + 1e-6 < e[along] < cur[0][along] - 1e-6 for e in ends):
+                    chain.append(cur)
+                    continue
+                if len(chain) > 1:
+                    keep = chain[(len(chain) - 1) // 2]     # the label goes on the middle pin
+                    for i in range(1, len(chain)):
+                        self._seg(chain[i - 1][0], chain[i][0])     # nothing drawn between stacked pins
+                    for _at, num in chain:
+                        if num != keep[1]:
+                            self.drawn.add((ref, num))
+                chain = [cur]
 
     def _junctions(self):
         ends = {}
@@ -496,6 +541,7 @@ class Page:
                              # measured: "SMCJ30A" at 1.27 mm is 8.3 mm wide
     LINE = 1.9               # pitch of stacked field lines (1.27 mm text): 1.4 reads as touching
     GAP = 0.4                # clear space the overlap check demands between texts
+    LABEL_GAP = 0.2          # ... between two global labels: on pins 2.54 mm apart their boxes are 0.32 mm apart
     BODY_GAP = 0.5           # ... and between a text and another part's body
 
     def _xf(self, info, x, y):
@@ -655,12 +701,14 @@ class Page:
                 if fb:
                     texts.append(("%s.%s" % (ref, name), ref, fb))
         for net, x, y, a in self.labels:
-            texts.append(("label " + net, None, self._label_box(net, x, y, a)))
+            texts.append(("label " + net, "", self._label_box(net, x, y, a)))
         for s, x, y, size in self.texts:
             texts.append(("text " + s[:20], None, (x, y - size, x + len(s) * size * self.CHAR_W, y)))
         for i, (na, ra, ba) in enumerate(texts):
             for nb, rb, bb in texts[i + 1:]:
-                if self._hit(ba, bb, self.GAP) and not (ra and ra == rb and ra.startswith("#")):
+                boxed = self.design.sheets and ra == "" and rb == ""     # two global labels
+                if self._hit(ba, bb, self.LABEL_GAP if boxed else self.GAP) \
+                        and not (ra and ra == rb and ra.startswith("#")):
                     out.append("%s <-> %s" % (na, nb))
             for ref in self.syminfo:
                 if ref == ra:

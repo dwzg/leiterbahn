@@ -35,6 +35,17 @@ def dual():
             % (_props("U", "DUAL"), units))
 
 
+def comb(name="COMB"):
+    """An IC with pins 1-4 on its left side 2.54 mm apart, pin 5 stacked on pin 4, pin 6 a further
+    7.62 mm down, pin 8 5.08 mm below that, and pin 7 on the right."""
+    ys = {1: 5.08, 2: 2.54, 3: 0, 4: -2.54, 5: -2.54, 6: -10.16, 8: -15.24}
+    pins = " ".join(_PIN % ("passive", -7.62, y, 0, "L%d" % n, n) for n, y in ys.items())
+    return ('(symbol "%s" (exclude_from_sim no) (in_bom yes) (on_board yes)\n%s\n(symbol "%s_1_1" (rectangle '
+            '(start -6.35 7.62) (end 6.35 -17.78) (stroke (width 0.254) (type default)) (fill (type none))) %s %s)\n'
+            '(embedded_fonts no))'
+            % (name, _props("U", name, value_y=-20.32), name, pins, _PIN % ("passive", 7.62, 0, 180, "R", 7)))
+
+
 def power(name, pin_type="power_in"):
     value_y = -3.81 if name.startswith("GND") else 3.81          # ground names below, supplies above
     return ('(symbol "%s" (power global) (pin_numbers (hide yes)) (pin_names (offset 0) (hide yes)) '
@@ -55,8 +66,8 @@ def write_lib(directory, lib, symbols):
 
 @pytest.fixture
 def symdir(tmp_path):
-    """A stand-in for KiCad's symbol directory: libraries `tlib` (R2P, DUAL) and `power`."""
+    """A stand-in for KiCad's symbol directory: libraries `tlib` (R2P, DUAL, COMB) and `power`."""
     d = tmp_path / "symbols"
-    write_lib(d, "tlib", [two_pin(), dual()])
+    write_lib(d, "tlib", [two_pin(), dual(), comb()])
     write_lib(d, "power", [power("GND"), power("+3V3"), power("PWR_FLAG", "power_out")])
     return d
