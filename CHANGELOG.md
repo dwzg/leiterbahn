@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+Added
+- `hwdesign.kicad.place.Placer`: placement by connections on both board sides. Parts fixed
+  by hand, the rest around an anchor per group (large parts first, then each part where its
+  pads are closest to the pads they connect to; a decoupling capacitor at a supply pin that
+  has none yet). `rules` keep parts out of regions (ground domains, height limits), `keep()`
+  reserves room for hand routes, `face()` and `find()` help fixing sense resistors.
+  Coordinates are millimetres from the board's corner.
+- `Board.autoroute(fanout=False, optimize=True)`. Freerouting 2.5 gives every SMD pin a via
+  before routing unless told otherwise: 1168 vias on a 491-part board with parts on both
+  sides. Off by default now; `optimize=False` skips the optimiser for a quick routability test.
+- A test that runs Freerouting (skipped where the command is missing).
+- Skill: section "Many parts, both sides".
+
 ## 0.3.2
 
 Added

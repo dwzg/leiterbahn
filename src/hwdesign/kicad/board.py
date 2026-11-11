@@ -613,8 +613,13 @@ class Board:
         return None
 
     # ---- routing ----------------------------------------------------------
-    def autoroute(self, workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True):
+    def autoroute(self, workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True,
+                  fanout=False, optimize=True):
         """Route with Freerouting, trying several strategies; import the best session.
+
+        fanout: let Freerouting (2.5 and later) first give every SMD pin a via. Off by
+        default: on a board with parts on both sides those vias block the other side.
+        optimize=False skips its optimisation stage, for a quick look at routability.
 
         All strategies run at the same time, each with its share of the CPU threads, so
         the wall time is one run, not one per strategy. Results are cached by a hash of
@@ -634,16 +639,19 @@ class Board:
         cdir = os.path.join(workdir, "route-cache")
         os.makedirs(cdir, exist_ok=True)
         threads = max(1, (os.cpu_count() or 2) // (len(strategies) if parallel else 1))
+        base = ["--router.fanout.enabled=" + ("true" if fanout else "false")]
+        if not optimize:
+            base.append("--router.optimizer.enabled=false")
         jobs = []
         for i, extra in enumerate(strategies):
-            key = hashlib.sha256(("%s|%d|%s" % (dsn_hash, passes, " ".join(extra))).encode()).hexdigest()[:16]
+            key = hashlib.sha256(("%s|%d|%s" % (dsn_hash, passes, " ".join(base + extra))).encode()).hexdigest()[:16]
             ses = os.path.join(cdir, key + ".ses")
             log = ses[:-4] + ".log"
             if cache and os.path.exists(ses):
                 jobs.append((i, extra, ses, log, None))
                 continue
             cmd = ["freerouting", "-de", dsn, "-do", ses[:-4] + ".part.ses", "-mp", str(passes), "-mt", str(threads),
-                   "--gui.enabled=false"] + extra
+                   "--gui.enabled=false"] + base + extra
             lf = open(log, "w")
             proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, text=True)
             jobs.append((i, extra, ses, log, (proc, lf)))

@@ -158,6 +158,36 @@ their power symbols.
   clearance error, and `min_gap` returned 0.299 mm at that pad. `place_near()` had put it
   there; it knows nothing about domains.
 
+## Many parts, both sides
+
+`hwdesign.kicad.place.Placer` places by connections on both sides; `Board.place_near()`
+only knows the front and one spot. What a 491-part, 100 × 90 mm board with two ground
+domains taught:
+
+- Add up the courtyards before drawing an outline: every part once, through-hole parts
+  twice, divided by twice the board area. At 100 × 70 mm that board came to 68 %, which is
+  not routable with through vias; the size was renegotiated before any placement. Around
+  50 % placed without trouble.
+- Fix by hand what the circuit decides: connectors, switching loops, the pass transistor,
+  shunts, anything that crosses an isolation gap. The placer minimises wire length: left
+  alone it put a bypass FET next to the output relay 40 mm from its shunt, because one of
+  its nets ended there.
+- Run `large()` for every group before `small()` for any. Group by group, the resistors of
+  the first groups took the front and a 11 × 7 mm transformer found no room within 45 mm.
+- Reserve the room of hand routes with `keep()` before the automatic passes, and the spots
+  of their vias on both sides ("FB"). Without that the first DRC had a ground via in a
+  capacitor on the back and a sense track through a controller's pad.
+- Keep parts in their domain with a rule on the courtyard box (`p.rules`), with the gap
+  included. Fixed parts ignore rules, so the parts that straddle the gap are fixed.
+- The default clearance has to be smaller than the smallest pad gap of the footprints
+  (0.14 mm for a 3.3 mm VSON FET, 0.15 mm for 0.5 mm pitch VSSOP). At 0.15 mm Freerouting
+  reported 38 "pin-to-pin clearance violations" before routing anything.
+- Freerouting 2.5 starts with a fanout stage that gives every SMD pin a via (1168 on that
+  board), where they block the other side. `autoroute()` switches it off; `fanout=True`
+  brings it back. Its first start also writes `~/.config/freerouting/freerouting.json`
+  with telemetry allowed: set `allow_telemetry` to false and `disable_analytics` to true
+  there if the design is not public.
+
 ## Speed
 
 `autoroute()` runs several Freerouting strategies in parallel and caches sessions by a hash

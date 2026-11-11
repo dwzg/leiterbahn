@@ -7,9 +7,9 @@ import ast
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODULES = ["kicad/schematic.py", "kicad/verify.py", "kicad/board.py", "kicad/planar.py", "kicad/netlist.py",
-           "kicad/fab.py", "kicad/geometry.py", "mcad/probe.py", "mcad/gasket.py", "mcad/printing.py",
-           "mcad/render.py"]
+MODULES = ["kicad/schematic.py", "kicad/verify.py", "kicad/board.py", "kicad/place.py", "kicad/planar.py",
+           "kicad/netlist.py", "kicad/fab.py", "kicad/geometry.py", "mcad/probe.py", "mcad/gasket.py",
+           "mcad/printing.py", "mcad/render.py"]
 
 
 def doc(node):

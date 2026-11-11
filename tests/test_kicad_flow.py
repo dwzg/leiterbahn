@@ -26,6 +26,7 @@ from hwdesign.kicad.board import (  # noqa: E402
     min_gap,
     path_length,
 )
+from hwdesign.kicad.place import Placer  # noqa: E402
 from hwdesign.kicad.schematic import FILE_VERSION, GENERATOR_VERSION, SYMBOL_DIR, Schematic  # noqa: E402
 from hwdesign.kicad.sexp import find1, parse  # noqa: E402
 
@@ -434,3 +435,110 @@ def test_parts_on_opposite_sides_may_overlap_unless_one_goes_through_the_board(p
     assert b.fps["R2"].IsFlipped() and b.fits("R2") and b.courtyard_overlaps() == ([], [])
     b.place("R2", 110, 110)                               # and back to the front, onto R1
     assert not b.fps["R2"].IsFlipped() and not b.fits("R2")
+
+
+# ---- placement by connections --------------------------------------------------
+def placer(project, **kw):
+    b = board(project)
+    return b, Placer(b, **kw)
+
+
+def overlap(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def test_a_part_is_placed_next_to_the_pad_it_connects_to(project):
+    b, p = placer(project)
+    p.fix("J1", 4, 10)                                    # millimetres from the board's corner at (100, 100)
+    p.fix("R1", 10, 10)
+    assert b.pad_xy("J1", 1) == (104.0, 110.0) and p.pad("J1", 1) == (4.0, 10.0)
+    p.near("R2", anchor=(30, 25))                         # R2.1 is MID, as R1.2; its other pad is on the plane
+    (x, y), (rx, ry) = p.pad("R2", 1), p.pad("R1", 2)
+    assert abs(x - rx) + abs(y - ry) < 3.0                # at R1, not at its anchor
+    assert not p.at["R2"][3] and not overlap(p.boxes["R2"], p.boxes["R1"])
+    with pytest.raises(ValueError):
+        p.fix("R2", 20, 20)                               # placed already
+
+
+def test_the_back_is_used_when_the_front_is_taken_but_not_under_through_hole_parts(project):
+    b, p = placer(project)
+    p.fix("J1", 4, 10)
+    p.fix("R1", 10, 10)
+    p.keep(0, 0, 40, 30, "F")                             # nothing more on the front
+    p.near("R2", anchor=(10, 10))
+    assert p.at["R2"][3] and b.fps["R2"].IsFlipped()
+    assert overlap(p.boxes["R2"], p.boxes["R1"])          # straight under R1: nothing in the way there
+    b, p = placer(project)
+    p.fix("J1", 4, 10)
+    p.near("R1", anchor=(4, 11), start=(4, 11), sides=(True,))      # asked for the spot under the header
+    assert p.at["R1"][3] and not overlap(p.boxes["R1"], p.boxes["J1"])
+
+
+def test_rules_keep_parts_out_and_fixed_parts_ignore_them(project):
+    b, p = placer(project)
+    p.rules.append(lambda ref, box, back, through: box[0] < 20)      # nothing left of x = 20
+    p.fix("R1", 10, 10)                                   # by hand: allowed
+    p.near("R2", anchor=(10, 10))
+    assert p.boxes["R2"][0] >= 20
+    assert not p.free("R4", 10, 20) and p.free("R4", 30, 20)
+    assert not p.free("R4", 39.5, 20)                     # over the board edge
+
+
+def test_face_and_find(project):
+    b, p = placer(project)
+    rot = p.face("R1", "MID", "left")
+    p.fix("R1", 10, 10, rot)
+    assert p.pad("R1", 2)[0] < 10 < p.pad("R1", 1)[0]
+    assert b.pad_xy("R1", 2)[0] < 110                     # the footprint was turned, not only the bookkeeping
+    assert p.face("R1", "MID", "down") != rot
+    assert p.find("MID", "GND") == "R2" and p.find("MID", "SIG") == "R1"
+    with pytest.raises(LookupError):
+        p.find("MID")                                     # R1 and R2
+
+
+def test_each_supply_pin_gets_its_own_capacitor(project):
+    # Capacitors on a rail were all put next to the first supply pin, or between two pins.
+    nets = {"VCC": [("J1", "1"), ("J1", "2"), ("R1", "1"), ("R2", "1"), ("R3", "1"), ("R4", "1")],
+            "GND": [("R1", "2"), ("R2", "2"), ("R3", "2"), ("R4", "2"), ("J2", "1"), ("J2", "2")]}
+    b, p = placer(project, nets=nets)
+    p.fix("J1", 15, 10)                                   # its two pins stand in for two supply pins of an IC
+    for ref in ("R1", "R2"):
+        p.near(ref, anchor=(15, 10))
+    pins = [p.pad("J1", 1), p.pad("J1", 2)]
+
+    def nearest(ref):
+        x, y = p.pad(ref, 1)
+        return min(range(2), key=lambda i: abs(x - pins[i][0]) + abs(y - pins[i][1]))
+    assert {nearest("R1"), nearest("R2")} == {0, 1}
+    assert sorted(p.served.values()) == [1, 1]
+
+
+def test_large_parts_go_first_and_everything_ends_up_placed(project):
+    b, p = placer(project)
+    assert p.big("J1") and not p.big("R1")
+    refs = sorted(b.fps)
+    p.large(refs, anchor=(20, 15))
+    assert sorted(p.at) == ["J1", "J2"]                   # the headers; front side only
+    p.small(refs, anchor=(20, 15))
+    assert sorted(p.at) == refs and b.courtyard_overlaps() == ([], [])
+    assert p.length() > 0
+
+
+# ---- autorouting ------------------------------------------------------------------
+@pytest.mark.skipif(not shutil.which("freerouting"), reason="needs the freerouting command")
+def test_autoroute_connects_the_board_and_adds_no_fanout_vias(project, tmp_path):
+    # Freerouting 2.5 starts with a "fanout" stage that gives every SMD pin a via: 1168 vias on
+    # a 491-part board with parts on both sides, where they block the other side.
+    b = board(project)
+    place_all(b)
+    log = b.autoroute(str(tmp_path), passes=5, timeout=300, strategies=[[]], optimize=False)
+    assert b.unrouted() == 0
+    assert "Fanout stage" not in log
+    again = board(project)
+    place_all(again)
+    again.autoroute(str(tmp_path), passes=5, timeout=300, strategies=[[]], optimize=False)   # from the cache
+    assert again.unrouted() == 0 and vias(again) == vias(b)
+    fan = board(project)
+    place_all(fan)
+    log = fan.autoroute(str(tmp_path), passes=5, timeout=300, strategies=[[]], optimize=False, fanout=True)
+    assert "Fanout stage" in log and len(vias(fan)) > len(vias(b))

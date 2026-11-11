@@ -20,6 +20,7 @@ something that went wrong there.
 | `hwdesign.kicad.schematic` | Schematic generator, one sheet or several: parts declare their nets; wires, labels and power symbols realise them; text collisions are detected and fixed; project symbol libraries are searched before KiCad's |
 | `hwdesign.kicad.verify` | ERC plus proof that KiCad's netlist equals the declared nets |
 | `hwdesign.kicad.board` | Board builder for 2, 4 or 6 copper layers: placement, outline with slots and notches, hand routes, keepouts, parallel cached Freerouting, cleanup passes (`remove_redundant`, `widen`, `straighten`, `chamfer_corners`, `prune_dangling`), pours per region and stitching, layout checks (`path_length`, `foreign_copper`, `min_gap`, `narrow_tracks`, `acute_angles`), DRC and renders |
+| `hwdesign.kicad.place` | Placement by connections on both board sides: fixed parts by hand, the rest around anchors, with rules for domains and room reserved for hand routes |
 | `hwdesign.kicad.fab` | JLCPCB Gerbers for every copper layer, BOM and CPL with per-footprint rotation corrections |
 | `hwdesign.kicad.planar` | Plane geometry without pcbnew: the gap between two groups of copper shapes, outline contours with notches |
 | `hwdesign.kicad.geometry` | Board data (outline, parts, pads, keepouts) as JSON for an enclosure generator |

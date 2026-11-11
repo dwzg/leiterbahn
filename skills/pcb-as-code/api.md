@@ -72,7 +72,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.track(net, pts, width=None, layer=pcbnew.F_Cu, locked=True)`: Polyline of locked segments; points are (x, y) or (ref, pad).
   - `.via(net, x, y, size=None, locked=True)`: 
   - `.via_near(net, ref, pad, rmin=0.9, rmax=3.0, clearance=None, size=None)`: Drop a via on `net` at the closest legal spot around a pad (after routing).
-  - `.autoroute(workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True)`: Route with Freerouting, trying several strategies; import the best session.
+  - `.autoroute(workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True, fanout=False, optimize=True)`: Route with Freerouting, trying several strategies; import the best session.
   - `.ref_text(ref, visible=True, dx=None, dy=None)`: Hide a reference label or move it relative to the footprint origin.
   - `.stitch(net='GND', pitch=4.0, via=(0.6, 0.3), margin=0.45, edge=1.5, hole_gap=0.5)`: Drop vias on a grid wherever the net's pour covers the via on every layer it is poured on.
   - `.write_project(pro_path, min_track=0.15, min_via=0.5, min_annular=0.1, silk_clearance=0.15)`: Store design rules and net classes in the .kicad_pro (KiCad keeps them there).
@@ -91,6 +91,30 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 - `narrow_tracks(board, classes, default)`: Tracks narrower than their net class (neck-downs). classes: Board.classes.
 - `drc(pcb_path, report_path, schematic_parity=True)`: 
 - `render(pcb_path, png_path, layers='F.Cu,B.Cu,F.SilkS,F.Fab,Edge.Cuts,F.CrtYd', width=2400)`: 
+
+## `hwdesign.kicad.place`
+
+Placement by connections, on both board sides.
+
+- `passive(ref)`: True for resistors and capacitors (R12, C3): the parts placed last, on either side.
+- class `Placer`: Places the footprints of a Board that has its outline.
+  - `.__init__(board, nets=None, planes=('GND',), gap=0.2, edge=0.5, back_cost=2.5)`: 
+  - `.shape(ref, rot, back)`: (courtyard (x0, y0, x1, y1), {pad: [(dx, dy)]}, through) relative to the part's origin.
+  - `.area(ref)`: 
+  - `.free(ref, x, y, rot=0, back=False)`: True if ref fits at (x, y): on the board, allowed by the rules, clear of placed parts.
+  - `.keep(x0, y0, x1, y1, sides='F')`: Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route.
+  - `.fix(ref, x, y, rot=0, back=False)`: Put ref's footprint origin at (x, y). Rules, gap and edge do not apply: you decided.
+  - `.centre(ref, cx, cy, rot=0, back=False)`: Put the middle of ref's courtyard at (cx, cy): handy for connectors, whose origin is pin 1.
+  - `.pad(ref, pad)`: Position of a placed part's pad.
+  - `.find(net, other=None, block=None)`: The one two-pad part between `net` and `other`, or the one on `net` whose group name (a string, or a tuple ending in one) starts with `block`.
+  - `.face(ref, net, side, back=False)`: The rotation that puts ref's pad on `net` towards "left", "right", "up" or "down".
+  - `.cost(ref, x, y, rot, back, anchor, pull)`: (cost in mm of wire, supply pins this spot would decouple). Lower is better.
+  - `.near(ref, anchor, start=None, sides=(False, True), rots=(0, 90, 180, 270), pull=0.15, step=0.5, reach=3.0, max_r=45.0)`: Place ref at the cheapest free spot around `start` (default: where its nets pull it).
+  - `.big(ref)`: Placed in the first pass: everything but small resistors, capacitors and test points.
+  - `.linked(ref)`: How many of ref's signal pads have a placed counterpart.
+  - `.large(refs, anchor, sides=(False,), pull=0.6)`: First pass: the unplaced large parts of refs around anchor, largest first.
+  - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.
+  - `.length()`: Half-perimeter wire length of all nets off the planes, mm: a figure to compare placements by.
 
 ## `hwdesign.kicad.planar`
 
