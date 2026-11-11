@@ -130,18 +130,7 @@ def obstacles(grid, items, areas, edge, net, layers, half, clearance, via_r):
     no_via = grid.plane()
     keep = clearance + grid.step / 2                       # a track between two cell centres is up to half a
     x0, y0, x1, y1 = edge                                  # cell nearer to what the centres are clear of
-    for plane, grow in [(blocked[l], half) for l in layers] + [(no_via, via_r)]:
-        inset = 0.3 + grow                                 # copper to the board edge
-        for box in ((x0 - 9, y0 - 9, x1 + 9, y0), (x0 - 9, y1, x1 + 9, y1 + 9), (x0 - 9, y0, x0, y1),
-                    (x1, y0, x1 + 9, y1)):
-            grid.stamp(plane, box, inset)
-    for box, on, no_tracks, no_vias in areas:
-        for l in on & set(layers):
-            if no_tracks:
-                grid.stamp(blocked[l], box, half)
-        if no_vias and on:
-            grid.stamp(no_via, box, via_r)
-    for soft, value in ((True, b"\x02"), (False, b"\x01")):         # what cannot be removed is stamped on top
+    def stamp_items(soft, value):
         for it in items.values():
             if (it["net"] == net and net) or it["soft"] != soft:
                 continue
@@ -154,6 +143,20 @@ def obstacles(grid, items, areas, edge, net, layers, half, clearance, via_r):
                 for l in layers:
                     grid.stamp(blocked[l], (x, y, x, y), it["hole"] + HOLE + half, value)
                 grid.stamp(no_via, (x, y, x, y), it["hole"] + HOLE + via_r, value)
+
+    stamp_items(True, b"\x02")                             # first what may be moved; all that is fixed goes on
+    for plane, grow in [(blocked[l], half) for l in layers] + [(no_via, via_r)]:     # top of it
+        inset = 0.3 + grow                                 # copper to the board edge
+        for box in ((x0 - 9, y0 - 9, x1 + 9, y0), (x0 - 9, y1, x1 + 9, y1 + 9), (x0 - 9, y0, x0, y1),
+                    (x1, y0, x1 + 9, y1)):
+            grid.stamp(plane, box, inset)
+    for box, on, no_tracks, no_vias in areas:
+        for l in on & set(layers):
+            if no_tracks:
+                grid.stamp(blocked[l], box, half)
+        if no_vias and on:
+            grid.stamp(no_via, box, via_r)
+    stamp_items(False, b"\x01")
     for it in items.values():                              # own SMD pads take no via either (no via in pad),
         if it["net"] != net:                               # and a second hole keeps its distance from the first
             continue
@@ -189,9 +192,11 @@ def cells_of(grid, it, layers):
     return out
 
 
-def search(grid, blocked, no_via, starts, goals, layers, via_cost, limit, rip=0.0):
+def search(grid, blocked, no_via, starts, goals, layers, via_cost, limit, rip=0.0, hug=0.0):
     """Cheapest path from any start cell to any goal cell: [(layer, i, j)], or a string saying why not.
-    rip: cost of a cell that is only free once a removable track is gone (0: such cells are closed)."""
+    rip: cost of a cell that is only free once a removable track is gone (0: such cells are closed).
+    hug: extra cost of a step in the open, away from all copper: tracks then run along what is
+    there and leave the middle of a channel to the next one."""
     wall = (1,) if rip else (1, 2)
     goal = {(l, i, j) for l, i, j in goals if blocked[l][j][i] not in wall}
     if not goal:
@@ -242,6 +247,9 @@ def search(grid, blocked, no_via, starts, goals, layers, via_cost, limit, rip=0.
                 continue
             nxt = (l, a, c)
             ng = g + cost + (rip if v else 0.0)
+            if hug and 0 < a < nx - 1 and 0 < c < ny - 1 and not (
+                    plane[c][a - 1] or plane[c][a + 1] or plane[c - 1][a] or plane[c + 1][a]):
+                ng += hug * cost
             if ng < best.get(nxt, 1e18):
                 best[nxt] = ng
                 prev[nxt] = node
@@ -424,7 +432,7 @@ def shapes(grid, path, w, via_d, all_layers, a, b):
 
 
 def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000, skip=(), only=None, locked=False,
-               rip=2.0, rounds=4, fine=True, depth=2):
+               rip=2.0, rounds=4, fine=True, depth=2, hug=0.0):
     """Connect what is unconnected on `board` (a hwdesign Board). Returns (routed, failed):
     failed lists (net, reason, (x, y), (x, y)) for the connections that found no path.
 
@@ -441,6 +449,10 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     levels deep; the last level needs free paths. If one track finds no way, nothing is
     changed and the connection is reported. So a call never leaves more open than it found.
     Locked copper is never touched. `limit` bounds one search (grid cells visited).
+
+    With `hug` > 0 a step away from all copper costs that much more than one along a pad or
+    track, so a new track keeps to one side of a channel. Off by default: on the one dense
+    board it was tried on (hug=0.3) it left 5 connections open instead of 4.
 
     A connection that finds no way on the grid of `step` mm is tried again on a 0.05 mm grid
     in a window around its ends (fine=False: not): between two vias 1 mm apart a 0.1 mm grid
@@ -491,7 +503,7 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
                 first = {c: it for it in mine for c in cells_of(g, it, routing)}
                 last = {c: it for it in others for c in cells_of(g, it, routing)}
                 path = search(g, blocked, no_via, list(first), list(last), routing,
-                              via_cost / g.step, limit, rip_mm / 0.1)
+                              via_cost / g.step, limit, rip_mm / 0.1, hug)
                 if not isinstance(path, str):
                     return shapes(g, path, w, via_d, board.copper_layers, first[path[0]], last[path[-1]]) \
                         + (w, g.step / 2)

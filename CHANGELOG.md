@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.2
+
+Fixed
+- `route_open()`: a movable track lying in a rule area or at the board edge marked those
+  cells as "free once the track is moved", so a new track could follow it in. A via of a
+  floating rail landed 0.05 mm inside an isolation gap this way (1.7 mm instead of 2 mm to
+  the other domain; the gap check caught it). What is fixed is now stamped last.
+
+Added
+- `route_open(hug=0.0)`: optional extra cost for steps away from all copper.
+
 ## 0.6.1
 
 Changed

@@ -786,3 +786,19 @@ def test_prune_dangling_keeps_a_track_whose_end_only_overlaps_the_via(project):
     assert b.unrouted() == 0                               # the premise: KiCad sees SIG connected
     assert b.prune_dangling() == 0
     assert b.unrouted() == 0
+
+
+def test_a_movable_track_does_not_open_a_rule_area_or_the_board_edge():
+    """In the finisher's map a cell is 2 where only a movable track is in the way. Inside a rule
+    area and at the board edge it stays 1 whatever lies there: a via once landed in an
+    isolation gap along a track that ran beside it."""
+    from hwdesign.kicad import finish
+    grid = finish.Grid((0, 0, 10, 10), 0.1)
+    track = dict(kind="seg", net="OTHER", layers={0}, hole=0.0, soft=True, seg=(1.0, 5.0, 10.0, 5.0), r=0.1)
+    area = ((4.0, 3.0, 6.0, 7.0), {0}, True, True)
+    blocked, no_via = finish.obstacles(grid, {"t": track}, [area], (0, 0, 10, 10), "NET", [0], 0.1, 0.1, 0.3)
+    at = lambda plane, x, y: plane[grid.cell(x, y)[1]][grid.cell(x, y)[0]]      # noqa: E731
+    assert at(blocked[0], 2.0, 5.0) == 2 and at(no_via, 2.0, 5.0) == 2    # on the track, in the open: movable
+    assert at(blocked[0], 5.0, 5.0) == 1 and at(no_via, 5.0, 5.0) == 1    # on the track, inside the area: closed
+    assert at(blocked[0], 9.9, 5.0) == 1 and at(no_via, 9.8, 5.0) == 1    # on the track, at the board edge: closed
+    assert at(blocked[0], 2.0, 8.0) == 0
