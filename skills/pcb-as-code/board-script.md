@@ -87,3 +87,46 @@ Notes:
   would otherwise hang on one via.
 - `place_near` searches outwards for the first free spot; check the result in the render.
   Fixed placement with a comment saying why is easier to review.
+
+## Four layers, two ground domains, cut-outs
+
+What changes against the skeleton. This ran on a 40 × 30 mm test board with hand routes
+only: DRC clean, four copper Gerbers, `min_gap` 2.0 mm on `In1.Cu`. Freerouting was not part
+of that run.
+
+```python
+from hwdesign.kicad.board import Board, drc, min_gap
+
+b = Board(NET, layers=4, planes=[pcbnew.In1_Cu], declared=DECLARED)   # In1.Cu: pours only
+b.outline_rounded(100, 100, 40, 30, r=1.5)
+b.cutout(118.5, 106, 1.0, 12, r=0.5)      # slot inside the board; r = half the width: round ends
+b.cutout(108, 99, 6, 3, r=0.5)            # reaches past the top edge: a notch, open to that edge
+# placement as usual: fits() and place_near() keep courtyards out of both cut-outs
+
+SIDE_A = ["GND", "SIG", "MID"]            # every net of each side, not only the grounds
+SIDE_B = ["GNDA", "ISO"]
+b.zone("GND", pcbnew.In1_Cu, rect=(100.5, 100.5, 17.5, 29))                       # (x, y, w, h)
+b.zone("GNDA", pcbnew.In1_Cu, polygon=[(120, 100.5), (139.5, 100.5), (139.5, 129.5), (120, 129.5)])
+b.fill_zones()
+b.via_near("GND", "R2", 2)                # an SMD ground pad down to its plane
+b.prune_dangling()
+
+b.save(PCB)
+drc(PCB, os.path.join(BUILD, "drc.rpt"))
+pb = pcbnew.LoadBoard(PCB)                # the saved board has its pours filled
+gap = min_gap(pb, [b.resolve(n) for n in SIDE_A], [b.resolve(n) for n in SIDE_B])
+assert gap and gap[0] >= 2.0, "isolation: %s" % (gap,)     # (mm, layer, x, y, net_a, net_b)
+```
+
+Notes:
+- `b.copper_layers` lists the enabled copper layers, front to back. `keepout()` and
+  `foreign_copper()` cover all of them unless `layers=` names some; on a two-layer board
+  that is front and back, as before.
+- `zone()` regions are taken as given; the pour still stays clear of the board edge and of
+  cut-outs. The 2.0 mm above is the distance between the two regions (118.0 to 120.0).
+- `min_gap` compares copper on the same layer: pads, tracks, vias and filled pours, inner
+  layers included. Its point is the middle of the narrowest place; look there in a render.
+- `stitch(net)` needs the net's pour on every layer it is poured on, as before. On the other
+  copper layers the via now has to clear foreign pads and tracks.
+- `path_length` follows vias onto inner layers; a via counts once however many layers it
+  spans.

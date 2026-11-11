@@ -1,6 +1,6 @@
 ---
 name: jlcpcb-order
-description: Produce JLCPCB PCB and assembly (PCBA) files from a KiCad board, and guide the order. Covers Gerbers, BOM and CPL with per-footprint rotation corrections, board and PCBA options, the assembly remark, checking pin 1 and polarity in JLC's placement preview, footprint-name warnings and the price. Use when exporting fab files, when JLC's placement preview shows rotated or flipped parts, when JLC warns that a part's footprint does not match the BOM, or when someone asks which JLC options to pick.
+description: Produce JLCPCB PCB and assembly (PCBA) files from a KiCad board, and guide the order. Covers Gerbers for every copper layer (two, four or six), BOM and CPL with per-footprint rotation corrections, board and PCBA options, the assembly remark, checking pin 1 and polarity in JLC's placement preview, footprint-name warnings and the price. Use when exporting fab files, when a Gerber zip is missing its inner layers, when JLC's placement preview shows rotated or flipped parts, when JLC warns that a part's footprint does not match the BOM, or when someone asks which JLC options to pick.
 ---
 
 # JLCPCB order
@@ -18,6 +18,11 @@ value's `missing` lists assembled parts the position file did not contain; it mu
 
 Put an exact LCSC number on every assembled part, and check its stock on the day of
 ordering. Stock changes weekly.
+
+The Gerber set has one file per copper layer the board file enables; the return value's
+`copper` lists them. Compare it with the layer count you order. A four-layer test board
+gave `-F_Cu.gtl`, `-In1_Cu.g1`, `-In2_Cu.g2` and `-B_Cu.gbl`. Up to 0.1.0 the layer list was
+fixed to F.Cu and B.Cu, and the same board came out with two copper files and no error.
 
 ## Rotation corrections
 

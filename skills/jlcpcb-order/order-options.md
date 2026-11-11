@@ -3,12 +3,17 @@
 Choices for a small two-layer board with top-side assembly, and why. Check prices and limits
 on the order page on the day; these were right at the time of a real order.
 
+No four-layer board has been ordered with these files yet. The export writes the inner
+layers (see SKILL.md), but the four-layer choices on the order page (stackup, inner copper,
+the layer order JLC shows in its Gerber viewer) are not covered below: check them on the
+page, and add what you learn here.
+
 ## PCB
 
 | Option | Choose | Why |
 |---|---|---|
 | Base material | FR-4 | |
-| Layers | 2 | |
+| Layers | 2 | The board's copper layer count: `copper` in the return value of `fab.export` |
 | Thickness | 1.6 mm | Enclosures are usually designed around it; change both together |
 | Colour | Green | Cheapest and fastest |
 | Surface finish | HASL lead-free | Fine for SMT and THT. ENIG costs a little more and gives flat, durable bare pads: worth it when pogo pins or test probes will contact pads often |

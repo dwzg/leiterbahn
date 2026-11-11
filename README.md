@@ -17,10 +17,11 @@ something that went wrong there.
 
 | Part | What it does |
 |---|---|
-| `hwdesign.kicad.schematic` | Schematic generator: parts declare their nets; wires, labels and power symbols realise them; text collisions are detected and fixed |
+| `hwdesign.kicad.schematic` | Schematic generator, one sheet or several: parts declare their nets; wires, labels and power symbols realise them; text collisions are detected and fixed; project symbol libraries are searched before KiCad's |
 | `hwdesign.kicad.verify` | ERC plus proof that KiCad's netlist equals the declared nets |
-| `hwdesign.kicad.board` | Board builder: placement, hand routes, keepouts, parallel cached Freerouting, cleanup passes (`remove_redundant`, `widen`, `straighten`, `chamfer_corners`, `prune_dangling`), pours and stitching, layout checks (`path_length`, `foreign_copper`, `narrow_tracks`, `acute_angles`), DRC and renders |
-| `hwdesign.kicad.fab` | JLCPCB Gerbers, BOM and CPL with per-footprint rotation corrections |
+| `hwdesign.kicad.board` | Board builder for 2, 4 or 6 copper layers: placement, outline with slots and notches, hand routes, keepouts, parallel cached Freerouting, cleanup passes (`remove_redundant`, `widen`, `straighten`, `chamfer_corners`, `prune_dangling`), pours per region and stitching, layout checks (`path_length`, `foreign_copper`, `min_gap`, `narrow_tracks`, `acute_angles`), DRC and renders |
+| `hwdesign.kicad.fab` | JLCPCB Gerbers for every copper layer, BOM and CPL with per-footprint rotation corrections |
+| `hwdesign.kicad.planar` | Plane geometry without pcbnew: the gap between two groups of copper shapes, outline contours with notches |
 | `hwdesign.kicad.geometry` | Board data (outline, parts, pads, keepouts) as JSON for an enclosure generator |
 | `hwdesign.mcad` | Measure build123d solids (ray casts, distances), gasket and print estimates, headless renders |
 | skill `pcb-as-code` | The workflow and order of passes, with an API reference and a board script skeleton |
@@ -87,15 +88,16 @@ the skills take it from there.
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[mcad,dev]"
+python3 -m venv --system-site-packages .venv      # lets the tests import KiCad's pcbnew
+.venv/bin/pip install -e ".[mcad,dev]"
 .venv/bin/pytest -q
 ruff check .
 python3 scripts/gen_api.py        # after changing a public signature
 claude plugin validate .
 ```
 
-Tests that need `pcbnew` are skipped where KiCad isn't installed (as in CI). See
-`CONTRIBUTING.md`.
+Tests that need `pcbnew`, `kicad-cli` or KiCad's libraries are skipped where KiCad isn't
+installed (as in CI). See `CONTRIBUTING.md`.
 
 ## Licence
 
