@@ -209,6 +209,17 @@ domains taught:
 - Do not route the wide nets first to "give them room". With `route_open(only=POWER,
   locked=True)` before the autorouter, a 0.6 mm track ran past the controller's pins 0.2 mm
   from the pad ends and shut them in: 32 connections open instead of 9.
+- For the last few open connections, rework the saved board instead of running the whole
+  board again: `Board.reopen(pcb, ...)`, `b.rip_up(x0, y0, x1, y1)` around the spot, then
+  `b.route_open(tmp, only=[net])` for the connection that stayed open and `b.route_open(tmp)`
+  for what was taken out. Each try takes minutes and starts from the same board; whole-board
+  runs with changed placement left a different handful open every time (2, 6, 3, 9). Try a
+  few rectangles and orders in parallel and keep the best.
+- Where a pin row is shut in, draw its exits by hand (locked) and let `route_open()` do the
+  long part. Look first: on a QFN with 0.5 mm pitch one pin's via sat on the next pin's way
+  out. Find the via sites before drawing: pads of the parts on the other side and wide
+  tracks on inner layers left one row of sites 0.45 mm high above that pin row. Three vias
+  there for three pins, the other two pins leave on tracks above them.
 
 ## Speed
 

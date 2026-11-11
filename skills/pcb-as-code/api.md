@@ -53,6 +53,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 - `copper_layers(board)`: Enabled copper layers of a pcbnew BOARD, front to back: [F_Cu, In1_Cu, ..., B_Cu].
 - class `Board`: A board built from a netlist. layers is the copper layer count (2, 4 or 6); planes lists inner layers (pcbnew.In1_Cu, ...) reserved for pours; copper_layers holds the enabled copper layers, front to back.
   - `.__init__(netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=())`: 
+  - `.reopen(cls, pcb_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, planes=())`: A saved board, for rework after routing: rip_up(), track(), via(), route_open(), prune_dangling(), fill_zones(), unrouted(), save().
   - `.resolve(name)`: Map a plain net name to the board's net name (KiCad prefixes local nets with the sheet path).
   - `.netclass(name, nets, track, clearance=None)`: 
   - `.place(ref, x, y, rot=0, back=False)`: Fixed placement (marks the part as placed for later place_near calls).
@@ -71,6 +72,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.courtyard_overlaps()`: 
   - `.track(net, pts, width=None, layer=pcbnew.F_Cu, locked=True)`: Polyline of locked segments; points are (x, y) or (ref, pad).
   - `.via(net, x, y, size=None, locked=True)`: 
+  - `.rip_up(x0, y0, x1, y1, nets=None, keep=(), layers=None, vias=True)`: Remove the unlocked tracks and vias that have an end in a rectangle; returns how many.
   - `.via_near(net, ref, pad, rmin=0.9, rmax=3.0, clearance=None, size=None)`: Drop a via on `net` at the closest legal spot around a pad (after routing).
   - `.fan_to_planes(reach=2.5, share=1.2, track=0.3, clearance=None, step=0.2, lane=1.0)`: Before autorouting: give every SMD pad of a plane's net a via into its plane.
   - `.autoroute(workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True, fanout=False, optimize=True)`: Route with Freerouting, trying several strategies; import the best session.

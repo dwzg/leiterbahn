@@ -1,6 +1,6 @@
 {
   "name": "hw-design",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "description": "Electronics and mechanical design as code: KiCad schematics and boards from Python, Freerouting with cleanup and layout checks, JLCPCB fab files, and 3D-printed enclosures in build123d with measured checks.",
   "author": {
     "name": "Dennis Witzig",

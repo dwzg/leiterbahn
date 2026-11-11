@@ -80,6 +80,48 @@ class Board:
         self._contour, self._slots, self._edge_shapes, self._corner = [], [], [], 0.0
         self._load()
 
+    @classmethod
+    def reopen(cls, pcb_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, planes=()):
+        """A saved board, for rework after routing: rip_up(), track(), via(), route_open(),
+        prune_dangling(), fill_zones(), unrouted(), save().
+
+        Give the rules the board was built with, and call netclass() again for its net
+        classes: neither is read back from the file. What belongs to building a board
+        (outline, placement, autoroute) is not for a reopened one.
+        Rework on the saved file starts from the same board every time, and takes minutes
+        where the run that built the board takes its autorouter's time again.
+        """
+        self = object.__new__(cls)
+        self.fp_dirs, self.comps = [], {}
+        self.board = pcbnew.LoadBoard(pcb_path)
+        self.declared = {}
+        if declared:
+            with open(declared) as f:
+                self.declared = json.load(f)
+        self.copper_layers = copper_layers(self.board)
+        self.planes = list(planes)
+        self.on_plane = set()
+        self.rules = dict(track=track, clearance=clearance, via=via, min_drill=min_drill)
+        self.classes = {}
+        self.ns = self.board.GetDesignSettings().m_NetSettings
+        self.fps = {fp.GetReference(): fp for fp in self.board.GetFootprints()}
+        self.nets, self.netinfo = {}, {}
+        for name, info in self.board.GetNetsByName().items():
+            if str(name):
+                self.nets[str(name)] = []
+                self.netinfo[str(name)] = info
+        for ref, fp in self.fps.items():
+            for pad in fp.Pads():
+                if pad.GetNetname():
+                    self.nets[pad.GetNetname()].append((ref, pad.GetNumber()))
+        self._stitch_vias = []
+        self.placed = set(self.fps)
+        self.cutouts = []
+        self._contour, self._slots, self._edge_shapes, self._corner = [], [], [], 0.0
+        bb = self.board.GetBoardEdgesBoundingBox()
+        self.box = tuple(pcbnew.ToMM(v) for v in (bb.GetLeft(), bb.GetTop(), bb.GetWidth(), bb.GetHeight()))
+        return self
+
     # ---- setup ------------------------------------------------------------
     def resolve(self, name):
         """Map a plain net name to the board's net name (KiCad prefixes local nets with the sheet path)."""
@@ -544,6 +586,39 @@ class Board:
         v.SetLocked(locked)
         self.board.Add(v)
         return v
+
+    def rip_up(self, x0, y0, x1, y1, nets=None, keep=(), layers=None, vias=True):
+        """Remove the unlocked tracks and vias that have an end in a rectangle; returns how many.
+
+        For a spot where a connection stays open because the tracks around it were laid
+        first: take them out, route the hard connection with route_open(only=[...]), then
+        the rest with route_open(). nets: only these; keep: not these; layers: tracks on
+        these layers only; vias=False leaves the vias. What stays outside the rectangle
+        keeps its copper, and route_open() joins it again.
+        """
+        mm = pcbnew.ToMM
+        nets = None if nets is None else {self.resolve(n) for n in nets}
+        keep = {self.resolve(n) for n in keep}
+
+        def inside(p):
+            return x0 <= mm(p.x) <= x1 and y0 <= mm(p.y) <= y1
+        n = 0
+        for t in list(self.board.GetTracks()):
+            net = t.GetNetname()
+            if t.IsLocked() or net in keep or (nets is not None and net not in nets):
+                continue
+            if t.GetClass() == "PCB_VIA":
+                hit = vias and inside(t.GetPosition())
+            else:
+                hit = (layers is None or t.GetLayer() in layers) and (inside(t.GetStart()) or inside(t.GetEnd()))
+            if hit:
+                # Delete, not Remove: with Remove, pcbnew crashed on the next count of open
+                # connections once Python had let go of the removed tracks (seen on a reopened
+                # six-layer board with 90 tracks removed; a small board does not show it).
+                self.board.Delete(t)
+                n += 1
+        self.board.BuildConnectivity()
+        return n
 
     def via_near(self, net, ref, pad, rmin=0.9, rmax=3.0, clearance=None, size=None):
         """Drop a via on `net` at the closest legal spot around a pad (after routing).

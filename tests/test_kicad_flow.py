@@ -819,3 +819,51 @@ def test_the_finisher_keeps_the_wider_clearance_of_either_net_class():
     assert free_at(6.4, None) and not free_at(6.2, None)             # 0.1 + half width 0.1 + margin 0.05
     assert not free_at(6.4, {"CONTACT": 0.5}) and free_at(6.7, {"CONTACT": 0.5})
 
+
+
+def test_rip_up_takes_the_unlocked_tracks_out_of_a_rectangle(project, tmp_path):
+    """Local rework: the tracks around a spot go, the hand routes stay, and the board can still be
+    counted and routed."""
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    b.track("SIG", [("J1", 1), ("R1", 1)], locked=False)
+    b.track("MID", [("R1", 2), (110.9125, 113), (109.0875, 113), ("R2", 1)])       # by hand: locked
+    b.track("ISO", [("J2", 1), ("R3", 1)], locked=False)                           # outside the rectangle
+    b.fill_zones()
+    before = b.unrouted()
+    x, y = b.pad_xy("R1", 1)
+    assert b.rip_up(x - 1, y - 1, x + 3, y + 3) == 1
+    left = {t.GetNetname() for t in b.board.GetTracks() if t.GetClass() != "PCB_VIA"}
+    assert b.resolve("SIG") not in left and {b.resolve("MID"), b.resolve("ISO")} <= left
+    b.fill_zones()
+    assert b.unrouted() == before + 1
+    assert b.rip_up(x - 1, y - 1, x + 3, y + 3, nets=["MID"]) == 0                  # locked stays locked
+    routed, failed = b.route_open(str(tmp_path), only=["SIG"])
+    assert (routed, failed) == (1, [])
+
+
+def test_a_saved_board_can_be_reopened_for_rework(project, tmp_path):
+    """Rework works on the saved file: the reopened board knows its nets, takes a net class,
+    and the finisher closes on it what was open when it was saved."""
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    b.track("MID", [("R1", 2), (110.9125, 113), (109.0875, 113), ("R2", 1)])
+    b.fill_zones()
+    pcb = str(tmp_path / "saved.kicad_pcb")
+    b.save(pcb)
+    b.write_project(str(tmp_path / "saved.kicad_pro"))
+    open_before = b.unrouted()
+    c = Board.reopen(pcb, track=b.rules["track"], clearance=b.rules["clearance"], via=b.rules["via"],
+                     planes=[pcbnew.In1_Cu])
+    assert set(c.fps) == set(b.fps) and c.copper_layers == b.copper_layers
+    assert c.resolve("SIG") == b.resolve("SIG") and c.pad_xy("R1", 1) == b.pad_xy("R1", 1)
+    c.netclass("Wide", ["SIG"], track=0.5)
+    c.fill_zones()
+    assert c.unrouted() == open_before > 0
+    routed, failed = c.route_open(str(tmp_path))
+    assert failed == [] and routed == open_before
+    widths = {round(pcbnew.ToMM(t.GetWidth()), 3) for t in c.board.GetTracks()
+              if t.GetNetname() == c.resolve("SIG") and t.GetClass() != "PCB_VIA"}
+    assert widths == {0.5}
+    c.fill_zones()
+    assert c.unrouted() == 0

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0
+
+Added
+- `Board.reopen(pcb_path, ...)`: a saved board as a `Board`, for rework after routing
+  (`rip_up`, `track`, `via`, `route_open`, `prune_dangling`, `fill_zones`, `unrouted`,
+  `save`). Rework on the saved file starts from the same board every time and takes
+  minutes where the building run takes the autorouter's time again.
+- `Board.rip_up(x0, y0, x1, y1, nets=, keep=, layers=, vias=)`: removes the unlocked tracks
+  and vias with an end in a rectangle. With `route_open(only=[...])` this is local rip-up
+  and reroute: on a six-layer board, two connections that no order of whole-board routing
+  closed were closed by clearing 7 x 5 mm around them and routing them first.
+
 ## 0.6.4
 
 Fixed
