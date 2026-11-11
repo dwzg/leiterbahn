@@ -282,6 +282,6 @@ def test_a_power_flag_on_a_pin_leaves_the_pin_its_label(symdir):
     assert [lab[0] for lab in sch.labels] == ["VIN"]
     sch2 = design(symdir)
     sch2.add("R1", "tlib:R2P", (100, 100), "1k", "", {"1": "VIN", "2": "GND"})
-    sch2.wire(("R1", 1), (90, 100))                          # already wired: stays as drawn
+    sch2.wire(("R1", 1), (sch2.pin("R1", 1)[0], 80))         # already wired: stays as drawn
     sch2.power_flag("VIN", ("R1", 1))
     assert ("R1", "1") in sch2.drawn
