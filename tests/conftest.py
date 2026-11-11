@@ -1,0 +1,62 @@
+"""Shared fixtures: a small symbol library written from text, so the schematic generator
+can be tested on machines without KiCad's libraries."""
+import pytest
+
+_PROP = '(property "%s" "%s" (at 0 %s 0) %s(effects (font (size 1.27 1.27))))'
+_PIN = ('(pin %s line (at %s %s %s) (length 1.27) (name "%s" (effects (font (size 1.27 1.27)))) '
+        '(number "%s" (effects (font (size 1.27 1.27)))))')
+
+
+def _props(ref, value, hide_ref=False, value_y=-5.08):
+    return "\n".join([_PROP % ("Reference", ref, 5.08, "(hide yes) " if hide_ref else ""),
+                      _PROP % ("Value", value, value_y, ""),
+                      _PROP % ("Footprint", "", 0, "(hide yes) "), _PROP % ("Datasheet", "", 0, "(hide yes) "),
+                      _PROP % ("Description", "test symbol", 0, "(hide yes) ")])
+
+
+def two_pin(name="R2P"):
+    """A two-pin passive part: pin 1 up, pin 2 down."""
+    return ('(symbol "%s" (pin_numbers (hide yes)) (pin_names (offset 0)) (exclude_from_sim no) (in_bom yes) '
+            '(on_board yes)\n%s\n(symbol "%s_0_1" (rectangle (start -1.016 -2.54) (end 1.016 2.54) '
+            '(stroke (width 0.254) (type default)) (fill (type none))))\n(symbol "%s_1_1" %s %s)\n'
+            '(embedded_fonts no))'
+            % (name, _props("R", name), name, name, _PIN % ("passive", 0, 3.81, 270, "~", 1),
+               _PIN % ("passive", 0, -3.81, 90, "~", 2)))
+
+
+def dual():
+    """A part with two units: unit 1 has pins 1 and 2, unit 2 has pins 3 and 4."""
+    units = "\n".join('(symbol "DUAL_%d_1" (rectangle (start -2.54 -2.54) (end 2.54 2.54) (stroke (width 0.254) '
+                      '(type default)) (fill (type none))) %s %s)'
+                      % (u, _PIN % ("passive", -5.08, 0, 0, "A", 2 * u - 1),
+                         _PIN % ("passive", 5.08, 0, 180, "B", 2 * u))
+                      for u in (1, 2))
+    return ('(symbol "DUAL" (exclude_from_sim no) (in_bom yes) (on_board yes)\n%s\n%s\n(embedded_fonts no))'
+            % (_props("U", "DUAL"), units))
+
+
+def power(name, pin_type="power_in"):
+    value_y = -3.81 if name.startswith("GND") else 3.81          # ground names below, supplies above
+    return ('(symbol "%s" (power global) (pin_numbers (hide yes)) (pin_names (offset 0) (hide yes)) '
+            '(exclude_from_sim no) (in_bom yes) (on_board yes)\n%s\n(symbol "%s_0_1" (polyline (pts (xy 0 0) '
+            '(xy 0 -1.27)) (stroke (width 0) (type default)) (fill (type none))))\n(symbol "%s_1_1" %s)\n'
+            '(embedded_fonts no))'
+            % (name, _props("#PWR", name, hide_ref=True, value_y=value_y), name, name,
+               _PIN % (pin_type, 0, 0, 270, "~", 1)))
+
+
+def write_lib(directory, lib, symbols):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (lib + ".kicad_sym")
+    path.write_text('(kicad_symbol_lib (version 20251024) (generator "hwdesign_tests") (generator_version "10.0")\n'
+                    + "\n".join(symbols) + "\n)\n")
+    return path
+
+
+@pytest.fixture
+def symdir(tmp_path):
+    """A stand-in for KiCad's symbol directory: libraries `tlib` (R2P, DUAL) and `power`."""
+    d = tmp_path / "symbols"
+    write_lib(d, "tlib", [two_pin(), dual()])
+    write_lib(d, "power", [power("GND"), power("+3V3"), power("PWR_FLAG", "power_out")])
+    return d

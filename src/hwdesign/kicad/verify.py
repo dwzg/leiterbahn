@@ -9,7 +9,9 @@ from .schematic import compare_netlist
 def erc_and_parity(sch, declared_json, build_dir, netlist_name=None):
     """Run ERC on sch, export KiCad's netlist into build_dir and compare it with the nets the
     schematic generator declared (Schematic.netlist() saved as JSON).
-    Returns (erc_summary_line, netlist_path, diffs); diffs is empty when they match."""
+    Returns (erc_summary_line, netlist_path, diffs); diffs is empty when they match.
+
+    For a multi-sheet design sch is the root sheet: ERC and the netlist cover every sheet."""
     os.makedirs(build_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(sch))[0]
     net = os.path.join(build_dir, netlist_name or base + ".net")

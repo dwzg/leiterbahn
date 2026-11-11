@@ -11,8 +11,14 @@ three or more wire ends meet or a wire end lands on another wire.
 The declared nets are the source of truth: compare them with KiCad's own
 netlist (kicad-cli sch export netlist) to prove the drawing realizes them.
 
-Output targets the KiCad 9 file format (version 20250114), which KiCad 9 and
-10 open directly.
+A design can have several sheets: Schematic is the root page, Schematic.sheet()
+adds pages with the same drawing API. References and nets are design-wide; in a
+multi-sheet design every net label is written as a global label, so a net name
+means the same net on every sheet.
+
+Output is the KiCad 10 file format (version 20260306), the one KiCad 10.0
+writes itself. Library symbols are copied from the installed libraries, which
+are in that format too.
 """
 import copy
 import math
@@ -22,7 +28,8 @@ import uuid
 from .sexp import Sym, dump, find, find1, parse
 
 SYMBOL_DIR = os.environ.get("KICAD_SYMBOL_DIR", "/usr/share/kicad/symbols")
-FILE_VERSION = "20250114"
+FILE_VERSION = "20260306"         # what KiCad 10.0.8 writes (kicad-cli sch upgrade)
+GENERATOR_VERSION = "10.0"
 GRID = 1.27
 POWER_SYMBOLS = {"GND": "power:GND", "+3V3": "power:+3V3", "+12V": "power:+12V",
                  "+5V": "power:+5V", "VBUS": "power:VBUS", "GNDA": "power:GNDA"}
@@ -68,15 +75,30 @@ def _rot(vx, vy, deg):
 
 
 class SymbolLib:
-    """Loads library symbols and flattens derived ('extends') symbols."""
+    """Loads library symbols and flattens derived ('extends') symbols. symbol_dir is one
+    directory or a list searched in order: project libraries first, KiCad's own (SYMBOL_DIR) last.
+
+    The first directory that has <lib>.kicad_sym provides the whole library.
+    """
 
     def __init__(self, symbol_dir=SYMBOL_DIR):
-        self.dir = symbol_dir
+        self.dirs = [symbol_dir] if isinstance(symbol_dir, (str, os.PathLike)) else list(symbol_dir)
+        if not self.dirs:
+            raise ValueError("SymbolLib needs at least one directory")
+        self.dir = self.dirs[-1]
         self._libs = {}
+
+    def path(self, lib):
+        """The file that provides library `lib`: the first match on the search path."""
+        for d in self.dirs:
+            p = os.path.join(d, lib + ".kicad_sym")
+            if os.path.exists(p):
+                return p
+        raise FileNotFoundError("symbol library %s.kicad_sym not found in %s" % (lib, ", ".join(map(str, self.dirs))))
 
     def _lib(self, lib):
         if lib not in self._libs:
-            with open(os.path.join(self.dir, lib + ".kicad_sym")) as f:
+            with open(self.path(lib)) as f:
                 self._libs[lib] = parse(f.read())
         return self._libs[lib]
 
@@ -126,25 +148,34 @@ def symbol_pins(flat, unit=1):
     return pins
 
 
-class Schematic:
-    def __init__(self, project, title="", rev="", date="", company="", comments=(), paper="A3", lib=None):
-        self.project = project
-        self.root = _uid()
-        self.title, self.rev, self.date, self.company = title, rev, date, company
-        self.comments = list(comments)
+class Page:
+    """One schematic sheet and its drawing API. Schematic is the root page of a design;
+    Schematic.sheet() adds more pages.
+
+    Parts, references, warnings and the power-symbol numbering are design-wide, the drawing
+    (wires, labels, texts, layout checks) is per page.
+    """
+
+    def __init__(self, design, name, uuid, path, paper):
+        self.design = design
+        self.name = name         # sheet name; "" for the root
+        self.uuid = uuid         # uuid of this sheet's file
+        self.path = path         # instance path of the symbols on this page
         self.paper = paper
-        self.lib = lib or SymbolLib()
+        self.lib = design.lib
+        self.parts = design.parts            # ref -> dict(lib_id, value, footprint, fields, nets, pins): all pages
+        self.warnings = design.warnings
         self.lib_symbols = {}
         self.items = []
-        self.parts = {}          # ref -> dict(lib_id, value, footprint, fields, nets, pins)
-        self.warnings = []
         self.segments = []       # wire segments ((x1,y1),(x2,y2))
         self.drawn = set()       # (ref, pin) already connected by drawing
         self.syminfo = {}        # ref -> placement data for layout checks
         self.labels = []         # (net, x, y, angle)
         self.texts = []          # (s, x, y, size)
-        self._pwr_n = 0
-        self._flag_n = 0
+        self.blocks = []         # (name, box): sheet symbols, obstacles for the layout checks
+        self.placed = []         # (ref, pin numbers) of the symbols on this page, in order
+        self._pins = set()       # (ref, pin) on this page
+        self.finished = False
 
     # ---- low-level items --------------------------------------------------
     def _seg(self, a, b):
@@ -193,6 +224,11 @@ class Schematic:
         """
         nets = dict(nets or {})
         fields = dict(fields or {})
+        units = self.design._units.setdefault(ref, {})
+        if unit in units:
+            other = units[unit]
+            raise ValueError("duplicate reference %s%s" % (ref, "" if other is self else
+                             " (already on sheet %s)" % (other.name or "root")))
         flat = self.lib.flat(lib_id)
         self.lib_symbols.setdefault(lib_id, flat)
         lpins = symbol_pins(flat, unit)
@@ -204,10 +240,10 @@ class Schematic:
         node = ["symbol", ["lib_id", lib_id], ["at", _n(X), _n(Y), _n(rot)]]
         if mirror:
             node.append(["mirror", Sym("y")])
-        node += [["unit", unit],
+        node += [["unit", unit], ["body_style", 1],
                 ["exclude_from_sim", Sym("no")], ["in_bom", Sym("yes" if in_bom else "no")],
-                ["on_board", Sym("yes" if on_board else "no")], ["dnp", Sym("yes" if dnp else "no")],
-                ["uuid", _uid()]]
+                ["on_board", Sym("yes" if on_board else "no")], ["in_pos_files", Sym("yes")],
+                ["dnp", Sym("yes" if dnp else "no")], ["uuid", _uid()]]
         mx = -1 if mirror else 1
         lib_props = {p[1]: p for p in find(flat, "property")}
         vals = {"Reference": ref}
@@ -237,9 +273,8 @@ class Schematic:
                 at.append(_n(0))
             at[3] = _n(rot % 180)   # KiCad field angles are relative: this keeps text horizontal
             if name == "Value" and hide_value:
-                eff = find1(p, "effects")
-                if find1(eff, "hide") is None:
-                    eff.append(["hide", Sym("yes")])
+                if find1(p, "hide") is None and find1(find1(p, "effects"), "hide") is None:
+                    p.insert(p.index(at) + 1, ["hide", Sym("yes")])
             node.append(p)
         vat = find1(next(p for p in node if isinstance(p, list) and p and p[0] == "property" and p[1] == "Value"), "at")
         vjust = None
@@ -247,20 +282,25 @@ class Schematic:
             vjust = val_at[2]
         elif val_at is not None and len(val_at) == 2:
             vjust = "left"
+        flags = [["show_name", Sym("no")], ["do_not_autoplace", Sym("no")]]
         for name, val in fields.items():
             if show and name in show:
                 node.append(["property", name, val,
                              ["at", vat[1], _n(float(vat[2]) + self.LINE * (1 + list(show).index(name))),
-                              _n(rot % 180)],
+                              _n(rot % 180)], *copy.deepcopy(flags),
                              _font(justify=_just(rot, vjust) if vjust else None)])
             else:
-                node.append(["property", name, val, ["at", _n(X), _n(Y), _n(0)], _font(hide=True)])
+                node.append(["property", name, val, ["at", _n(X), _n(Y), _n(0)], ["hide", Sym("yes")],
+                             *copy.deepcopy(flags), _font()])
         for num in sorted(lpins, key=lambda s: (len(s), s)):
             node.append(["pin", num, ["uuid", _uid()]])
-        node.append(["instances", ["project", self.project,
-                                   ["path", "/" + self.root, ["reference", ref], ["unit", unit]]]])
+        node.append(["instances", ["project", self.design.project,
+                                   ["path", self.path, ["reference", ref], ["unit", unit]]]])
         self.items.append(node)
-        self.syminfo[ref] = dict(node=node, X=X, Y=Y, rot=rot, mx=mx, flat=flat, unit=unit,
+        units[unit] = self
+        # a further unit of a part on the same page is listed as U1B, U1C, ...
+        key = ref if ref not in self.syminfo else ref + chr(64 + unit)
+        self.syminfo[key] = dict(node=node, X=X, Y=Y, rot=rot, mx=mx, flat=flat, unit=unit,
                                  fields={p[1]: p for p in find(node, "property")}, show=list(show or []))
 
         pins = {}
@@ -270,10 +310,18 @@ class Schematic:
             dvx, dvy = _rot(mx * math.cos(a), -math.sin(a), rot)   # toward the body
             pins[num] = dict(p, at=(_snap(X + vx), _snap(Y + vy)),
                              out=(-round(dvx), -round(dvy)))
-        self.parts[ref] = dict(lib_id=lib_id, value=value or str(lib_props["Value"][2]),
-                               footprint=footprint or str(lib_props["Footprint"][2]),
-                               fields=fields, nets={k: v for k, v in nets.items() if v},
-                               declared=nets, pins=pins)
+        self.placed.append((ref, list(pins)))
+        self._pins.update((ref, num) for num in pins)
+        if ref in self.parts:                   # another unit of a part that is already placed
+            part = self.parts[ref]
+            part["pins"].update(pins)
+            part["nets"].update({k: v for k, v in nets.items() if v})
+            part["declared"].update(nets)
+        else:
+            self.parts[ref] = dict(lib_id=lib_id, value=value or str(lib_props["Value"][2]),
+                                   footprint=footprint or str(lib_props["Footprint"][2]),
+                                   fields=fields, nets={k: v for k, v in nets.items() if v},
+                                   declared=nets, pins=pins)
         return pins
 
     def pin(self, ref, num):
@@ -281,8 +329,11 @@ class Schematic:
 
     def _pt(self, p):
         if isinstance(p, tuple) and len(p) == 2 and isinstance(p[0], str):
+            at = self.pin(*p)
+            if (p[0], str(p[1])) not in self._pins:
+                raise ValueError("%s pin %s is on another sheet: a wire cannot leave its page" % (p[0], p[1]))
             self.drawn.add((p[0], str(p[1])))
-            return self.pin(*p)
+            return at
         return (_snap(p[0]), _snap(p[1]))
 
     # ---- drawing ----------------------------------------------------------
@@ -323,8 +374,8 @@ class Schematic:
         is_gnd = net.startswith("GND")
         rot = 0
         # power symbols are drawn with their pin at the origin pointing toward the body
-        self._pwr_n += 1
-        ref = "#PWR%03d" % self._pwr_n
+        self.design._pwr_n += 1
+        ref = "#PWR%03d" % self.design._pwr_n
         flat = self.lib.flat(lib_id)
         self.lib_symbols.setdefault(lib_id, flat)
         if is_gnd and out == (0, -1):
@@ -362,19 +413,21 @@ class Schematic:
         d = {"up": (0, -1, 0), "down": (0, 1, 180), "left": (-1, 0, 90), "right": (1, 0, 270)}[direction]
         end = (p[0] + d[0] * length, p[1] + d[1] * length)
         self._seg(p, end)
-        self._flag_n += 1
-        self.add("#FLG%02d" % self._flag_n, "power:PWR_FLAG", end, None, None, {"1": net},
+        self.design._flag_n += 1
+        self.add("#FLG%02d" % self.design._flag_n, "power:PWR_FLAG", end, None, None, {"1": net},
                  rot=d[2], in_bom=False, on_board=False)
-        self.drawn.add(("#FLG%02d" % self._flag_n, "1"))
+        self.drawn.add(("#FLG%02d" % self.design._flag_n, "1"))
 
     # ---- finishing --------------------------------------------------------
     def finish(self):
-        """Label undrawn pins, no-connect unlisted ones, add junctions."""
-        for ref, part in list(self.parts.items()):
+        """Label undrawn pins, no-connect unlisted ones, add junctions (on this page)."""
+        for ref, nums in list(self.placed):
             if ref.startswith("#"):
                 continue
+            part = self.parts[ref]
             unlisted = []
-            for num, p in part["pins"].items():
+            for num in nums:
+                p = part["pins"][num]
                 declared = part["declared"]
                 if num not in declared or declared[num] is None:
                     if num not in declared and p["type"] != "no_connect":
@@ -393,6 +446,7 @@ class Schematic:
                     ref, ", ".join("%s(%s)" % (n, part["pins"][n]["name"]) for n in sorted(unlisted))))
         self.autoplace_fields()
         self._junctions()
+        self.finished = True
 
     def _junctions(self):
         ends = {}
@@ -400,13 +454,14 @@ class Schematic:
             for p in (a, b):
                 ends[p] = ends.get(p, 0) + 1
         pin_pts = {}
-        for part in self.parts.values():
-            for p in part["pins"].values():
-                pin_pts[p["at"]] = pin_pts.get(p["at"], 0) + 1
+        for ref, nums in self.placed:
+            for num in nums:
+                at = self.parts[ref]["pins"][num]["at"]
+                pin_pts[at] = pin_pts.get(at, 0) + 1
         dots = set()
-        for ref, part in self.parts.items():
-            for num, pp in part["pins"].items():
-                q = pp["at"]
+        for ref, nums in self.placed:
+            for num in nums:
+                q = self.parts[ref]["pins"][num]["at"]
                 for a, b in self.segments:
                     if q in (a, b):
                         continue
@@ -493,6 +548,11 @@ class Schematic:
         return (x0, y0, x0 + w, y0 + h)
 
     def _label_box(self, net, x, y, angle, size=1.27):
+        if self.design.sheets:                 # global label: text in a box centred on the wire
+            m = 0.375 * size
+            w, hh = len(net) * size * self.CHAR_W + 2 * m, size / 2 + m
+            return {0: (x, y - hh, x + w, y + hh), 180: (x - w, y - hh, x, y + hh),
+                    90: (x - hh, y - w, x + hh, y), 270: (x - hh, y, x + hh, y + w)}[angle]
         w, h = len(net) * size * self.CHAR_W, size
         if angle == 0:
             return (x, y - h, x + w, y)
@@ -525,6 +585,7 @@ class Schematic:
         for (a, b) in self.segments:
             obs.append(("wire", (min(a[0], b[0]) - 0.05, min(a[1], b[1]) - 0.05,
                                  max(a[0], b[0]) + 0.05, max(a[1], b[1]) + 0.05)))
+        obs += self.blocks
         return obs
 
     def autoplace_fields(self, refs=None, passes=2):
@@ -576,7 +637,7 @@ class Schematic:
                         find1(f, "effects")[:] = eff
 
     def overlaps(self):
-        """List of human-readable text collisions (fields, labels, notes vs everything)."""
+        """List of human-readable text collisions on this page (fields, labels, notes vs everything)."""
         out = []
         texts = []
         for ref, info in self.syminfo.items():
@@ -598,10 +659,123 @@ class Schematic:
                 body = self.body_box(ref)
                 if body and self._hit(ba, body, self.BODY_GAP):
                     out.append("%s <-> body %s" % (na, ref))
+            for name, box in self.blocks:
+                if self._hit(ba, box, self.BODY_GAP):
+                    out.append("%s <-> %s" % (na, name))
         return out
 
     # ---- output -----------------------------------------------------------
+    def _global(self, label):
+        """A net label as a global label: in a multi-sheet design a net name is design-wide."""
+        _, net, at, _eff, uid = label
+        just = "left" if int(float(at[3])) in (0, 90) else "right"
+        return ["global_label", net, ["shape", Sym("passive")], at, _font(justify=just), uid,
+                ["property", "Intersheetrefs", "${INTERSHEET_REFS}", ["at", at[1], at[2], _n(0)],
+                 ["hide", Sym("yes")], ["show_name", Sym("no")], ["do_not_autoplace", Sym("no")], _font()]]
+
+    def _write(self, path, title_block, root):
+        multi = bool(self.design.sheets)
+        doc = ["kicad_sch", ["version", Sym(FILE_VERSION)], ["generator", "eeschema"],
+               ["generator_version", GENERATOR_VERSION], ["uuid", self.uuid], ["paper", self.paper], title_block,
+               ["lib_symbols"] + list(self.lib_symbols.values())]
+        doc += [self._global(i) if multi and i[0] == "label" else i for i in self.items]
+        if root:
+            doc.append(["sheet_instances", ["path", "/", ["page", "1"]]])
+        with open(path, "w") as f:
+            f.write(dump(doc) + "\n")
+
+
+class Sheet(Page):
+    """A page below the root, made by Schematic.sheet(). Same drawing API, its own file."""
+
+    def __init__(self, design, name, file, symbol_uuid, paper, title):
+        Page.__init__(self, design, name, _uid(), "/%s/%s" % (design.root, symbol_uuid), paper)
+        self.file = file
+        self.symbol_uuid = symbol_uuid
+        self.title = title
+
+
+class Schematic(Page):
+    """A design and its root page. sym_dirs lists project symbol library directories, searched
+    before KiCad's own (like Board(fp_dirs=...)).
+
+    Pass lib=SymbolLib([...]) instead for full control of the search path.
+    """
+
+    def __init__(self, project, title="", rev="", date="", company="", comments=(), paper="A3", lib=None,
+                 sym_dirs=()):
+        self.project = project
+        self.root = _uid()
+        self.title, self.rev, self.date, self.company = title, rev, date, company
+        self.comments = list(comments)
+        if lib is not None and sym_dirs:
+            raise ValueError("pass lib or sym_dirs, not both")
+        self.lib = lib or SymbolLib(list(sym_dirs) + [SYMBOL_DIR])
+        self.parts = {}          # ref -> dict(lib_id, value, footprint, fields, nets, pins)
+        self.warnings = []
+        self.sheets = []         # pages below the root, in page order
+        self._units = {}         # ref -> {unit: page}: one reference namespace for the design
+        self._pwr_n = 0
+        self._flag_n = 0
+        Page.__init__(self, self, "", self.root, "/" + self.root, paper)
+
+    def sheet(self, name, file, at=None, size=(40.64, 15.24), paper=None, title=None):
+        """Add a sheet and return its Page (same drawing API); it is saved as `file` next to the
+        root, which gets a sheet symbol at `at` (default: a row along the top of the page).
+
+        The hierarchy is flat and has no sheet pins: with sheets, every net label in the design
+        is written as a global label, so a net name is one net on all pages. Call this before
+        drawing, so the layout checks measure labels in their global shape.
+        """
+        if not file.endswith(".kicad_sch") or os.path.isabs(file):
+            raise ValueError("sheet file must be a relative .kicad_sch path: %s" % file)
+        if any(s.name == name or s.file == file for s in self.sheets):
+            raise ValueError("duplicate sheet name or file: %s, %s" % (name, file))
+        w, h = size
+        if at is None:
+            at = (25.4 + len(self.sheets) * (w + 10.16), 25.4)
+        x, y = _snap(at[0]), _snap(at[1])
+        page = Sheet(self, name, file, _uid(), paper or self.paper,
+                     title or (self.title + " - " + name if self.title else name))
+        self.sheets.append(page)
+        self.items.append(
+            ["sheet", ["at", _n(x), _n(y)], ["size", _n(w), _n(h)],
+             ["exclude_from_sim", Sym("no")], ["in_bom", Sym("yes")], ["on_board", Sym("yes")], ["dnp", Sym("no")],
+             ["stroke", ["width", _n(0.1524)], ["type", Sym("solid")]], ["fill", ["color", 0, 0, 0, _n(0)]],
+             ["uuid", page.symbol_uuid],
+             ["property", "Sheetname", name, ["at", _n(x), _n(y - 0.7), _n(0)],
+              ["show_name", Sym("no")], ["do_not_autoplace", Sym("no")], _font(justify="left bottom")],
+             ["property", "Sheetfile", file, ["at", _n(x), _n(y + h + 0.6), _n(0)],
+              ["show_name", Sym("no")], ["do_not_autoplace", Sym("no")], _font(justify="left top")],
+             ["instances", ["project", self.project,
+                            ["path", "/" + self.root, ["page", str(len(self.sheets) + 1)]]]]])
+        self.blocks.append(("sheet " + name, (x, y, x + w, y + h)))
+        self.texts.append((name, x, y - 0.7, 1.27))
+        self.texts.append((file, x, y + h + 0.6 + 1.27, 1.27))
+        return page
+
+    def finish(self):
+        """Label undrawn pins, no-connect unlisted ones, add junctions: on the root page and
+        on every sheet that has not been finished yet."""
+        Page.finish(self)
+        for s in self.sheets:
+            if not s.finished:
+                s.finish()
+
+    def overlaps(self, design=True):
+        """List of human-readable text collisions (fields, labels, notes vs everything) in the
+        whole design; collisions on a sheet are prefixed with its name.
+
+        With design=False only the root page is checked; a sheet's own overlaps() checks that sheet.
+        """
+        out = Page.overlaps(self)
+        if design:
+            for s in self.sheets:
+                out += ["%s: %s" % (s.name, o) for o in s.overlaps()]
+        return out
+
     def netlist(self):
+        """The declared nets of the whole design, all sheets: {net: [(ref, pin), ...]}."""
         out = {}
         for ref, p in self.parts.items():
             if ref.startswith("#"):
@@ -610,15 +784,33 @@ class Schematic:
                 out.setdefault(net, []).append((ref, pin))
         return {k: sorted(v) for k, v in out.items()}
 
+    def _sym_uri(self, lib, directory, version_var):
+        path = os.path.abspath(self.lib.path(lib))
+        root = os.path.abspath(directory)
+        try:
+            inside = os.path.commonpath([path, root]) == root
+        except ValueError:                                  # different drives
+            inside = False
+        if inside:                                          # project library
+            return "${KIPRJMOD}/" + os.path.relpath(path, root).replace(os.sep, "/")
+        if os.path.dirname(path) == os.path.abspath(self.lib.dirs[-1]):   # KiCad's own, last on the path
+            return "${%s_SYMBOL_DIR}/%s.kicad_sym" % (version_var, lib)
+        return path.replace(os.sep, "/")
+
     def write_lib_tables(self, directory, version_var="KICAD10"):
-        sym_libs = sorted({lid.split(":")[0] for lid in self.lib_symbols})
+        """Write sym-lib-table and fp-lib-table for the libraries the design uses.
+
+        Libraries inside `directory` (the project) are addressed through ${KIPRJMOD}, KiCad's
+        own through ${<version_var>_SYMBOL_DIR} / _FOOTPRINT_DIR.
+        """
+        sym_libs = sorted({lid.split(":")[0] for page in [self] + self.sheets for lid in page.lib_symbols})
         fp_libs = sorted({p["footprint"].split(":")[0] for r, p in self.parts.items()
                           if ":" in p["footprint"] and not r.startswith("#")})
         with open(os.path.join(directory, "sym-lib-table"), "w") as f:
             f.write("(sym_lib_table\n\t(version 7)\n")
             for lib in sym_libs:
-                f.write('\t(lib (name "%s") (type "KiCad") (uri "${%s_SYMBOL_DIR}/%s.kicad_sym") '
-                        '(options "") (descr ""))\n' % (lib, version_var, lib))
+                f.write('\t(lib (name "%s") (type "KiCad") (uri "%s") (options "") (descr ""))\n'
+                        % (lib, self._sym_uri(lib, directory, version_var)))
             f.write(")\n")
         with open(os.path.join(directory, "fp-lib-table"), "w") as f:
             f.write("(fp_lib_table\n\t(version 7)\n")
@@ -630,10 +822,10 @@ class Schematic:
                 f.write('\t(lib (name "%s") (type "KiCad") (uri "%s") (options "") (descr ""))\n' % (lib, uri))
             f.write(")\n")
 
-    def save(self, path):
+    def _title_block(self, title):
         tb = ["title_block"]
-        if self.title:
-            tb.append(["title", self.title])
+        if title:
+            tb.append(["title", title])
         if self.date:
             tb.append(["date", self.date])
         if self.rev:
@@ -642,14 +834,15 @@ class Schematic:
             tb.append(["company", self.company])
         for i, c in enumerate(self.comments[:9], 1):
             tb.append(["comment", i, c])
-        doc = ["kicad_sch", ["version", Sym(FILE_VERSION)], ["generator", "eeschema"],
-               ["generator_version", "9.0"], ["uuid", self.root], ["paper", self.paper], tb,
-               ["lib_symbols"] + list(self.lib_symbols.values())]
-        doc += self.items
-        doc.append(["sheet_instances", ["path", "/", ["page", "1"]]])
-        doc.append(["embedded_fonts", Sym("no")])
-        with open(path, "w") as f:
-            f.write(dump(doc) + "\n")
+        return tb
+
+    def save(self, path):
+        """Write the root sheet to `path` and every sheet's file next to it."""
+        self._write(path, self._title_block(self.title), root=True)
+        for s in self.sheets:
+            p = os.path.join(os.path.dirname(path), s.file)
+            os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+            s._write(p, self._title_block(s.title), root=False)
 
 
 def compare_netlist(declared, kicad_net_path):
