@@ -1606,7 +1606,12 @@ def min_gap(board, nets_a, nets_b):
 
 def acute_angles(board, limit=89.0):
     """Joints where two tracks of a net meet at less than `limit` degrees (etch traps):
-    shared endpoints and T-junctions. Returns [(net, layer, x, y, angle)]."""
+    shared endpoints and T-junctions. Returns [(net, layer, x, y, angle)].
+
+    A piece shorter than the track is wide is not judged: it lies inside the round ends of its
+    neighbours, and its direction says nothing about the copper's shape. The tracks on both
+    sides of it are still compared with each other, their ends being close enough.
+    """
     mm = pcbnew.ToMM
     segs = [t for t in board.GetTracks() if t.GetClass() != "PCB_VIA"]
     vias = [t for t in board.GetTracks() if t.GetClass() == "PCB_VIA"]
@@ -1629,6 +1634,9 @@ def acute_angles(board, limit=89.0):
             return 180.0
         c = (u[0] * v[0] + u[1] * v[1]) / (lu * lv)
         return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+    def stub(t):
+        return math.hypot(t.GetEnd().x - t.GetStart().x, t.GetEnd().y - t.GetStart().y) < t.GetWidth()
+    segs = [t for t in segs if not stub(t)]
     for i, s in enumerate(segs):
         for pt in (s.GetStart(), s.GetEnd()):
             for o in segs[i + 1:]:

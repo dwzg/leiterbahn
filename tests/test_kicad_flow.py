@@ -867,3 +867,30 @@ def test_a_saved_board_can_be_reopened_for_rework(project, tmp_path):
     assert widths == {0.5}
     c.fill_zones()
     assert c.unrouted() == 0
+
+
+def joints(*tracks, width=0.6):
+    from hwdesign.kicad.board import acute_angles
+    pb = pcbnew.BOARD()
+    net = pcbnew.NETINFO_ITEM(pb, "N")
+    pb.Add(net)
+    for (x0, y0), (x1, y1) in tracks:
+        t = pcbnew.PCB_TRACK(pb)
+        t.SetStart(pcbnew.VECTOR2I_MM(x0, y0))
+        t.SetEnd(pcbnew.VECTOR2I_MM(x1, y1))
+        t.SetWidth(pcbnew.FromMM(width))
+        t.SetLayer(pcbnew.F_Cu)
+        t.SetNet(net)
+        pb.Add(t)
+    return [round(a[-1]) for a in acute_angles(pb)]
+
+
+def test_acute_angles_finds_a_sharp_joint_and_ignores_a_piece_shorter_than_its_width():
+    """Two tracks leaving a point 30 degrees apart are an etch trap. A 0.1 mm piece between two
+    0.6 mm tracks is not: it was reported as a 38 degree joint with the track after it."""
+    assert joints(((0, 0), (5, 0)), ((0, 0), (4.33, 2.5))) == [30]
+    a, b, c, d = (51.05, 41.25), (50.15, 42.15), (50.15, 42.25), (49.958, 42.5)
+    assert joints((a, b), (b, c), (c, d)) == []
+    # ... and a sharp joint is still found when such a piece sits in it
+    assert joints(((0, 0), (5, 0)), ((0, 0), (0.05, 0.05)), ((0.05, 0.05), (4.38, 2.55))) == [30]
+

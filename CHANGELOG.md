@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+Fixed
+- `acute_angles()` no longer reports a piece shorter than the track is wide as a sharp
+  joint with the track after it (a 0.1 mm piece between two 0.6 mm tracks read as 38
+  degrees). The tracks on both sides of such a piece are still compared with each other.
+
 ## 0.7.0
 
 Added
