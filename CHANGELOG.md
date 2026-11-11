@@ -11,6 +11,8 @@ Changed
 - `finish()` joins pins of one part that share a net and are stacked or neighbours (up to
   5.08 mm apart, no other pin between) with a wire and gives them one label or power symbol. A connector with eight ground pins on
   one spot got eight symbols on top of each other.
+- `finish()` puts a pin's power symbol beyond the net labels of the pins right next to it.
+  At the fixed 2.54 mm stub it lay on the neighbour's label.
 - `overlaps()` accepts global labels on neighbouring pins: their boxes are 0.32 mm apart by
   construction, which the 0.4 mm rule reported for every bus on a multi-sheet design.
 

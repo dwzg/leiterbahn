@@ -328,3 +328,16 @@ def test_pins_two_grid_steps_apart_are_joined_unless_a_pin_sits_between(symdir):
     sch.finish()
     # 6 and 8 are 5.08 mm apart with nothing between: one symbol. 1 and 3 have pin 2 between: one each.
     assert len([r for r in sch.parts if r.startswith("#PWR")]) == 3
+
+
+def test_a_power_symbol_on_a_side_pin_sits_beyond_the_neighbours_labels(symdir):
+    sch = design(symdir)
+    sch.add("U1", "tlib:COMB", (100, 100), "COMB", "",
+            {"1": "A_LONG_NET_NAME", "2": "GND", "3": "B", "4": None, "5": None, "6": "GND", "7": None, "8": None})
+    sch.finish()
+    assert sch.overlaps() == []
+    x = sch.pin("U1", 2)[0]
+    gnd = sorted(p["pins"]["1"]["at"][0] for r, p in sch.parts.items() if r.startswith("#PWR"))
+    label_end = min(sch._label_box(n, lx, ly, a)[0] for n, lx, ly, a in sch.labels if n == "A_LONG_NET_NAME")
+    assert gnd[0] < label_end                            # pin 2: past the end of the label next to it
+    assert abs(gnd[1] - (x - 2.54)) < 0.01               # pin 6 has no labelled neighbour: the short stub

@@ -440,6 +440,7 @@ class Page:
                 continue
             part = self.parts[ref]
             self._join_neighbours(ref, nums)
+            wired = {n for n in nums if (ref, n) in self.drawn}      # by the script: these get no label
             unlisted = []
             for num in nums:
                 p = part["pins"][num]
@@ -453,7 +454,7 @@ class Page:
                     continue
                 net = declared[num]
                 if net in self.design.power_symbols:
-                    self.power(net, (ref, num))
+                    self.power(net, (ref, num), length=self._clear_of_labels(ref, num, wired))
                 else:
                     self.tag((ref, num))
             if unlisted:
@@ -462,6 +463,29 @@ class Page:
         self.autoplace_fields()
         self._junctions()
         self.finished = True
+
+    def _clear_of_labels(self, ref, num, wired=()):
+        """Stub length for a power symbol on pin `num`: 2.54 mm, or past the net labels of the
+        pins right next to it on the same side of the part.
+
+        At 2.54 mm the symbol sat on the label of the neighbouring pin.
+        """
+        part = self.parts[ref]
+        pin = part["pins"][num]
+        along = 1 if pin["out"][0] else 0                   # side pins have their neighbours above and below
+        widest = 0.0
+        for other, net in part["declared"].items():
+            q = part["pins"].get(other)
+            if q is None or other == num or net is None or net in self.design.power_symbols \
+                    or other in wired or q["out"] != pin["out"]:
+                continue
+            if abs(q["at"][1 - along] - pin["at"][1 - along]) < 1e-6 \
+                    and abs(q["at"][along] - pin["at"][along]) <= 2.54 + 1e-6:
+                box = self._label_box(net, 0, 0, 0)
+                widest = max(widest, box[2] - box[0])
+        if not widest:
+            return 2.54
+        return 2.54 * (2 + math.ceil((widest + self.BODY_GAP) / 2.54))
 
     def _join_neighbours(self, ref, nums):
         """Wire together undrawn pins of `ref` with the same net that are stacked or adjacent.
