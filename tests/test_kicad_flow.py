@@ -804,3 +804,18 @@ def test_a_movable_track_does_not_open_a_rule_area_or_the_board_edge():
     assert at(blocked[0], 5.0, 5.0) == 1 and at(no_via, 5.0, 5.0) == 1    # on the track, inside the area: closed
     assert at(blocked[0], 9.9, 5.0) == 1 and at(no_via, 9.8, 5.0) == 1    # on the track, at the board edge: closed
     assert at(blocked[0], 2.0, 8.0) == 0
+
+
+def test_the_finisher_keeps_the_wider_clearance_of_either_net_class():
+    """A net class with its own clearance (relay contacts, 0.5 mm) is kept away from by tracks of
+    every other net: a 5 V track was laid 0.25 mm from a contact's via before."""
+    from hwdesign.kicad import finish
+    grid = finish.Grid((0, 0, 10, 10), 0.1)
+    pad = dict(kind="pad", net="CONTACT", layers={0}, hole=0.0, soft=False, box=(4.0, 4.0, 6.0, 6.0), at=(5.0, 5.0))
+
+    def free_at(x, wider):
+        blocked, _ = finish.obstacles(grid, {"p": pad}, [], (0, 0, 10, 10), "NET", [0], 0.1, 0.1, 0.3, wider)
+        return blocked[0][grid.cell(x, 5.0)[1]][grid.cell(x, 5.0)[0]] == 0
+    assert free_at(6.4, None) and not free_at(6.2, None)             # 0.1 + half width 0.1 + margin 0.05
+    assert not free_at(6.4, {"CONTACT": 0.5}) and free_at(6.7, {"CONTACT": 0.5})
+

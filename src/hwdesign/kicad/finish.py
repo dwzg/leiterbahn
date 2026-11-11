@@ -124,16 +124,19 @@ class Grid:
                 self.stamp(plane, (x, y, x, y), grow + it["r"], value)
 
 
-def obstacles(grid, items, areas, edge, net, layers, half, clearance, via_r):
-    """(blocked plane per layer, plane where no via may sit) for a track of half width `half` on `net`."""
+def obstacles(grid, items, areas, edge, net, layers, half, clearance, via_r, wider=None):
+    """(blocked plane per layer, plane where no via may sit) for a track of half width `half` on `net`.
+    wider: {net: clearance} of the nets that ask for more than `clearance`."""
     blocked = {l: grid.plane() for l in layers}
     no_via = grid.plane()
-    keep = clearance + grid.step / 2                       # a track between two cell centres is up to half a
+    wider = wider or {}
+    margin = grid.step / 2                                 # a track between two cell centres is up to half a
     x0, y0, x1, y1 = edge                                  # cell nearer to what the centres are clear of
     def stamp_items(soft, value):
         for it in items.values():
             if (it["net"] == net and net) or it["soft"] != soft:
                 continue
+            keep = max(clearance, wider.get(it["net"], 0.0)) + margin
             for l in it["layers"] & set(layers):
                 grid.stamp_item(blocked[l], it, half + keep, value)
             if it["layers"]:                               # a via lands on every layer: keep off all foreign copper
@@ -346,17 +349,20 @@ def nearest_on(it, x, y):
     return None
 
 
-def runs_in_the_way(items, placed, net, keep):
+def runs_in_the_way(items, placed, net, keep, wider=None):
     """Removable tracks and vias that the new copper `placed` [(layers, seg, r)] comes too close to,
     each as its whole run up to the next pad, junction or fixed track:
-    [(net, {uuid}, [end])], an end being the item to reconnect to (a pad, or a point on some layers)."""
+    [(net, {uuid}, [end])], an end being the item to reconnect to (a pad, or a point on some layers).
+    keep: clearance plus the grid's margin; wider: {net: clearance} of the nets that ask for more."""
     hit = []
+    wider = wider or {}
     for uuid, it in items.items():
         if not it["soft"] or it["net"] == net:
             continue
         shape = it["seg"] if it["kind"] == "seg" else it["at"] * 2
+        more = max(0.0, wider.get(it["net"], 0.0) - wider.get("", 0.0))
         for layers, seg, r in placed:
-            if it["layers"] & layers and seg_dist(shape, seg) < r + it["r"] + keep:
+            if it["layers"] & layers and seg_dist(shape, seg) < r + it["r"] + keep + more:
                 hit.append(uuid)
                 break
 
@@ -438,10 +444,12 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
 
     Each connection is tried at its net class's track width, then at `width` (default: the
     board's track width); narrow_tracks() reports the second kind and widen() restores what
-    fits. Ground nets on plane layers are routed like any other net: give their pads vias
+    fits. To copper of another net it keeps the larger of the two net classes' clearances.
+    Ground nets on plane layers are routed like any other net: give their pads vias
     with fan_to_planes() first. Nets in `skip` are left alone; with `only`, all others are.
-    Wide nets find room more easily before the autorouter has run: route them first with
-    only=[...], locked=True, so the autorouter keeps them.
+    only=[...], locked=True routes chosen nets before the autorouter, which then keeps them.
+    Use it for single connections; with all wide nets routed first, their tracks ran past the
+    pads of a QFN and shut its pins in.
 
     Where no free path exists, the search may cross unlocked tracks at the price of `rip` mm
     of detour per 0.1 mm crossed (rip=0: never). Each crossed track is taken out up to the
@@ -468,6 +476,7 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     edge = (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom()))
     grid = Grid(edge, step)
     class_width = {n: c["track"] for c in board.classes.values() for n in c["nets"]}
+    wider = {n: c["clearance"] for c in board.classes.values() for n in c["nets"] if c["clearance"] > clearance}
     skip = {board.resolve(n) for n in skip}
     only = None if only is None else {board.resolve(n) for n in only}
     areas = rule_areas(pb, board.copper_layers)
@@ -499,7 +508,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
                                min(edge[2], max(ax1, bx1) + WINDOW), min(edge[3], max(ay1, by1) + WINDOW)), FINE))
         for g in grids:
             for w in dict.fromkeys((class_width.get(net, thin), thin)):
-                blocked, no_via = obstacles(g, items, areas, edge, net, routing, w / 2, clearance, via_d / 2)
+                blocked, no_via = obstacles(g, items, areas, edge, net, routing, w / 2,
+                                            max(clearance, wider.get(net, 0.0)), via_d / 2, wider)
                 first = {c: it for it in mine for c in cells_of(g, it, routing)}
                 last = {c: it for it in others for c in cells_of(g, it, routing)}
                 path = search(g, blocked, no_via, list(first), list(last), routing,
@@ -548,7 +558,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
         through = find(items, net, a, b, rip, ka)
         if isinstance(through, str):
             return through
-        runs = runs_in_the_way(items, through[2], net, clearance + through[4])
+        runs = runs_in_the_way(items, through[2], net, max(clearance, wider.get(net, 0.0)) + through[4],
+                               dict(wider, **{"": max(clearance, wider.get(net, 0.0))}))
         taken.update({u: items.pop(u) for _n, chain, _e in runs for u in chain if u in items})
         added += note(items, net, through[2])
         plans.append((net,) + through)

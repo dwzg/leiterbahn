@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4
+
+Fixed
+- `route_open()` keeps the clearance of the net classes: to copper of another net it now
+  keeps the larger of the two classes' clearances instead of the board's default. A 5 V
+  track had been laid 0.25 mm from a relay contact's via whose class asks for 0.5 mm (DRC
+  reported it).
+
 ## 0.6.3
 
 Fixed
