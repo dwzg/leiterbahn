@@ -527,7 +527,7 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
         for layer, xy in tracks:
             for p, q in zip(xy, xy[1:], strict=False):     # two connections of a net may share their first steps
                 key = (net, layer) + tuple(sorted(((round(p[0], 3), round(p[1], 3)), (round(q[0], 3), round(q[1], 3)))))
-                if key not in drawn:
+                if key not in drawn and key[2] != key[3]:
                     drawn.add(key)
                     board.track(net, [p, q], w, layer, locked=locked)
         for x, y in vias:

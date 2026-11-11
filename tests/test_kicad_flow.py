@@ -633,6 +633,8 @@ def test_fan_to_planes_puts_the_via_into_a_large_pad(project):
     assert b.fan_to_planes() == []
     px, py = b.pad_xy("R2", 2)
     assert (px, py) in [(round(x, 4), round(y, 4)) for x, y in vias(b)]
+    assert not [t for t in b.board.GetTracks() if t.GetClass() != "PCB_VIA" and t.GetLength() == 0]   # no track
+    assert ("R2", "2") in b.on_plane                       # of no length from the pad's middle to the via on it
 
 
 def test_route_open_connects_every_net_through_a_wall_and_to_the_back(project, tmp_path):

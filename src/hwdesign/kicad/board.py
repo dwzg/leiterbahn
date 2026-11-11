@@ -804,15 +804,16 @@ class Board:
                     self.board.Add(v)
                     add(None, "circ", (x, y, rv), net)
                     made.setdefault(net, []).append((x, y))
-                t = pcbnew.PCB_TRACK(self.board)
-                t.SetStart(c)
-                t.SetEnd(pcbnew.VECTOR2I_MM(x, y))
-                t.SetWidth(MM(track))
-                t.SetLayer(layer)
-                t.SetNet(pd.GetNet())
-                t.SetLocked(True)
-                self.board.Add(t)
-                add(layer, "seg", (px, py, x, y, track / 2), net)
+                if (x, y) != (px, py):                      # a via in the middle of its pad needs no track: one
+                    t = pcbnew.PCB_TRACK(self.board)        # of no length made DRC report "tracks crossing"
+                    t.SetStart(c)
+                    t.SetEnd(pcbnew.VECTOR2I_MM(x, y))
+                    t.SetWidth(MM(track))
+                    t.SetLayer(layer)
+                    t.SetNet(pd.GetNet())
+                    t.SetLocked(True)
+                    self.board.Add(t)
+                    add(layer, "seg", (px, py, x, y, track / 2), net)
                 self.on_plane.add((ref, pd.GetNumber()))
         return missing
 

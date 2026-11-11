@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.3
+
+Fixed
+- `fan_to_planes()` and `route_open()` no longer add tracks of no length (a via in the
+  middle of its own pad got one). KiCad's DRC reported one of them as "tracks crossing" with
+  a track 2.5 mm away.
+
 ## 0.6.2
 
 Fixed
