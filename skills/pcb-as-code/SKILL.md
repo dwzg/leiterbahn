@@ -182,6 +182,11 @@ domains taught:
 - The default clearance has to be smaller than the smallest pad gap of the footprints
   (0.14 mm for a 3.3 mm VSON FET, 0.15 mm for 0.5 mm pitch VSSOP). At 0.15 mm Freerouting
   reported 38 "pin-to-pin clearance violations" before routing anything.
+- Freerouting does not connect pins to a plane. With pours on `In1.Cu` exported as planes,
+  273 of the 465 connections left open after a pass were on the three plane nets, and more
+  passes did not lower the count. Call `b.fan_to_planes()` after the pours and hand routes
+  and before `autoroute()`: each ground pad gets its via, and the router no longer sees
+  those pins. A pad you routed by hand is left alone, so a star point stays one.
 - Freerouting 2.5 starts with a fanout stage that gives every SMD pin a via (1168 on that
   board), where they block the other side. `autoroute()` switches it off; `fanout=True`
   brings it back. Its first start also writes `~/.config/freerouting/freerouting.json`

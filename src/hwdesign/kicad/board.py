@@ -16,6 +16,7 @@ import heapq
 import json
 import math
 import os
+import re
 import subprocess
 
 import pcbnew
@@ -57,6 +58,7 @@ class Board:
         ds.SetCopperLayerCount(layers)
         self.copper_layers = copper_layers(self.board)
         self.planes = list(planes)
+        self.on_plane = set()                               # (ref, pad) tied to a plane: see fan_to_planes()
         for l in self.planes:
             if l not in self.copper_layers[1:-1]:
                 raise ValueError("planes must be inner copper layers of a %d-layer board: %r" % (layers, l))
@@ -558,7 +560,8 @@ class Board:
         items = []                                   # (kind, geometry, net)
         for fp in self.board.GetFootprints():
             for p in fp.Pads():
-                if p.GetNetname() == net and not p.GetDrillSize().x:
+                if (p.GetNetname() == net and not p.GetDrillSize().x) \
+                        or not any(p.IsOnLayer(l) for l in self.copper_layers):
                     continue
                 bb = p.GetBoundingBox()
                 items.append(("box", (pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetTop()),
@@ -607,10 +610,211 @@ class Board:
                 x, y = px + r * math.cos(a), py + r * math.sin(a)
                 if free(x, y):
                     self.via(net, x, y, size)
-                    self.track(net, [(ref, pad), (x, y)], 0.3, locked=False)
+                    side = pcbnew.B_Cu if self.fps[ref].IsFlipped() else pcbnew.F_Cu
+                    self.track(net, [(ref, pad), (x, y)], 0.3, layer=side, locked=False)
                     return round(x, 2), round(y, 2)
             r += 0.1
         return None
+
+    def fan_to_planes(self, reach=2.5, share=1.2, track=0.3, clearance=None, step=0.2):
+        """Before autorouting: give every SMD pad of a plane's net a via into its plane.
+
+        A plane is a pour on a layer named in Board(planes=...). Each pad of the pour's net
+        that lies inside the pour's outline gets the nearest legal via within `reach` mm and
+        a straight track to it on the pad's side; a via of the same net closer than `share`
+        mm is used again. A pad at least 0.5 mm larger than the via (an exposed pad) takes
+        the via inside, in the middle if nothing on the other side is in the way.
+        Legal: the via and the track clear all other copper, the via is inside the pour, off
+        its own net's SMD pads and outside rule areas that forbid vias. Pads that already
+        have a track of their net (hand routes) are left alone.
+
+        The pads tied to their plane, through-hole pads included, are remembered in
+        `on_plane`, and autoroute() takes them off the router's list: Freerouting does not
+        connect pins to a plane. Returns [(ref, pad)] of pads that found no spot; those
+        stay with the router.
+        """
+        mm = pcbnew.ToMM
+        clr = clearance if clearance is not None else self.rules["clearance"] + 0.05
+        size = self.rules["via"]
+        rv = size[0] / 2
+        zones = [(z.GetNetname(), z.Outline()) for z in self.board.Zones()
+                 if not z.GetIsRuleArea() and any(z.IsOnLayer(l) for l in self.planes)]
+        no_vias = [z.Outline() for z in self.board.Zones() if z.GetIsRuleArea() and z.GetDoNotAllowVias()]
+        cell = 2.0
+        index = {}                                          # (cx, cy) -> [(layer or None: all, kind, geometry, net)]
+
+        def add(layers, kind, g, net):
+            if kind == "box":
+                x0, y0, x1, y1 = g
+            elif kind == "circ":
+                x0, y0, x1, y1 = g[0] - g[2], g[1] - g[2], g[0] + g[2], g[1] + g[2]
+            else:
+                x0, y0 = min(g[0], g[2]) - g[4], min(g[1], g[3]) - g[4]
+                x1, y1 = max(g[0], g[2]) + g[4], max(g[1], g[3]) + g[4]
+            for cx in range(int((x0 - 1) // cell), int((x1 + 1) // cell) + 1):
+                for cy in range(int((y0 - 1) // cell), int((y1 + 1) // cell) + 1):
+                    index.setdefault((cx, cy), []).append((layers, kind, g, net))
+
+        def pad_box(pd):
+            bb = pd.GetBoundingBox()
+            return (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom()))
+
+        def side_of(pd):
+            return None if pd.GetDrillSize().x else (pcbnew.B_Cu if pd.IsOnLayer(pcbnew.B_Cu) else pcbnew.F_Cu)
+
+        boxes = {}                                          # pad -> its box, the same object as in the index
+        for fp in self.board.GetFootprints():
+            for pd in fp.Pads():
+                if not any(pd.IsOnLayer(l) for l in self.copper_layers):
+                    continue                                # paste-only pads of an exposed pad are no copper
+                boxes[pd.m_Uuid.AsString()] = pad_box(pd)
+                add(side_of(pd), "box", boxes[pd.m_Uuid.AsString()], pd.GetNetname())
+        ends = {}                                           # (layer, net) -> track ends
+        for tr in self.board.GetTracks():
+            if tr.GetClass() == "PCB_VIA":
+                c = tr.GetPosition()
+                add(None, "circ", (mm(c.x), mm(c.y), mm(tr.GetWidth(pcbnew.F_Cu)) / 2), tr.GetNetname())
+            else:
+                a, e = tr.GetStart(), tr.GetEnd()
+                add(tr.GetLayer(), "seg", (mm(a.x), mm(a.y), mm(e.x), mm(e.y), mm(tr.GetWidth()) / 2), tr.GetNetname())
+                ends.setdefault((tr.GetLayer(), tr.GetNetname()), []).extend([(mm(a.x), mm(a.y)), (mm(e.x), mm(e.y))])
+
+        def dist(kind, g, x, y):
+            if kind == "box":
+                return math.hypot(max(g[0] - x, 0, x - g[2]), max(g[1] - y, 0, y - g[3]))
+            if kind == "circ":
+                return math.hypot(x - g[0], y - g[1]) - g[2]
+            ax, ay, bx, by, hw = g
+            vx, vy = bx - ax, by - ay
+            u = max(0.0, min(1.0, ((x - ax) * vx + (y - ay) * vy) / (vx * vx + vy * vy or 1e-12)))
+            return math.hypot(x - ax - u * vx, y - ay - u * vy) - hw
+
+        def clear(x, y, r, net, layer=None, via=False, own=None):
+            """Nothing foreign closer than r + clearance to (x, y) on `layer` (None: on any layer)."""
+            for layers, kind, g, n in index.get((int(x // cell), int(y // cell)), ()):
+                if layer is not None and layers is not None and layers != layer:
+                    continue
+                if n != net:
+                    gap = clr
+                elif g is own:
+                    continue                                # a via inside its own exposed pad
+                elif via and kind == "box" and layers is not None:
+                    gap = 0.15                              # off its own net's SMD pads: solder runs into a via
+                elif via and kind == "circ":
+                    gap = 0.3                               # drill to drill
+                else:
+                    continue
+                if dist(kind, g, x, y) < r + gap:
+                    return False
+            return True
+
+        def inside(outline, x, y, r):
+            return all(outline.Contains(pcbnew.VECTOR2I_MM(x + dx, y + dy))
+                       for dx, dy in ((0, 0), (r, 0), (-r, 0), (0, r), (0, -r)))
+
+        def via_ok(x, y, net, outline, own=None):
+            bx, by, bw, bh = self.box
+            if not (bx + rv + 0.4 <= x <= bx + bw - rv - 0.4 and by + rv + 0.4 <= y <= by + bh - rv - 0.4):
+                return False
+            if self._hits_cutout((x, y, x, y), rv + 0.4) or not clear(x, y, rv, net, via=True, own=own):
+                return False
+            if not inside(outline, x, y, rv + 0.3):
+                return False
+            return not any(o.Contains(pcbnew.VECTOR2I_MM(x + dx, y + dy)) for o in no_vias
+                           for dx, dy in ((0, 0), (rv, 0), (-rv, 0), (0, rv), (0, -rv)))
+
+        def track_ok(px, py, x, y, net, layer):
+            n = max(1, int(math.hypot(x - px, y - py) / 0.15))
+            return all(clear(px + (x - px) * i / n, py + (y - py) * i / n, track / 2, net, layer) for i in range(n + 1))
+
+        k = int(reach / step)
+        spots = sorted(((i * step, j * step) for i in range(-k, k + 1) for j in range(-k, k + 1)
+                        if math.hypot(i, j) * step <= reach), key=lambda d: d[0] * d[0] + d[1] * d[1])
+        made = {}                                           # net -> vias placed here
+        missing = []
+        for ref in sorted(self.fps):
+            for pd in self.fps[ref].Pads():
+                net = pd.GetNetname()
+                c = pd.GetPosition()
+                outline = next((o for n, o in zones if n == net and o.Contains(c)), None)
+                if outline is None or not pd.GetNumber() or pd.m_Uuid.AsString() not in boxes:
+                    continue
+                layer = side_of(pd)
+                if layer is None:                           # a through-hole pad is in the plane already
+                    self.on_plane.add((ref, pd.GetNumber()))
+                    continue
+                box = boxes[pd.m_Uuid.AsString()]
+                if any(box[0] <= x <= box[2] and box[1] <= y <= box[3] for x, y in ends.get((layer, net), ())):
+                    continue                                # routed by hand: not ours to decide
+                px, py = mm(c.x), mm(c.y)
+                found = None
+                if min(box[2] - box[0], box[3] - box[1]) >= size[0] + 0.5:
+                    m = rv + 0.25                           # an exposed pad takes its via inside, the middle first
+                    for dx, dy in spots:
+                        x, y = px + dx, py + dy
+                        if box[0] + m <= x <= box[2] - m and box[1] + m <= y <= box[3] - m \
+                                and via_ok(x, y, net, outline, own=box):
+                            found = (x, y, True)
+                            break
+                for vx, vy in sorted(made.get(net, ()), key=lambda v: math.hypot(v[0] - px, v[1] - py)):
+                    if math.hypot(vx - px, vy - py) > share:
+                        break
+                    if track_ok(px, py, vx, vy, net, layer):
+                        found = (vx, vy, False)
+                        break
+                if found is None:
+                    for dx, dy in spots:
+                        x, y = px + dx, py + dy
+                        if via_ok(x, y, net, outline) and track_ok(px, py, x, y, net, layer):
+                            found = (x, y, True)
+                            break
+                if found is None:
+                    missing.append((ref, pd.GetNumber()))
+                    continue
+                x, y, new = found
+                if new:
+                    v = pcbnew.PCB_VIA(self.board)
+                    v.SetPosition(pcbnew.VECTOR2I_MM(x, y))
+                    v.SetWidth(MM(size[0]))
+                    v.SetDrill(MM(size[1]))
+                    v.SetNet(pd.GetNet())
+                    v.SetLocked(True)
+                    self.board.Add(v)
+                    add(None, "circ", (x, y, rv), net)
+                    made.setdefault(net, []).append((x, y))
+                t = pcbnew.PCB_TRACK(self.board)
+                t.SetStart(c)
+                t.SetEnd(pcbnew.VECTOR2I_MM(x, y))
+                t.SetWidth(MM(track))
+                t.SetLayer(layer)
+                t.SetNet(pd.GetNet())
+                t.SetLocked(True)
+                self.board.Add(t)
+                add(layer, "seg", (px, py, x, y, track / 2), net)
+                self.on_plane.add((ref, pd.GetNumber()))
+        return missing
+
+    @staticmethod
+    def _strip_pins(dsn_path, pins):
+        """Take (ref, pad) pins off the nets of a Specctra DSN file. Returns how many were removed."""
+        with open(dsn_path) as f:
+            text = f.read()
+        start = text.index("(network")
+        count = [0]
+
+        def pins_clause(m):
+            keep = []
+            for tok in m.group(1).split():
+                ref, _, pad = tok.strip('"').partition("-")
+                if (ref, pad) in pins:
+                    count[0] += 1
+                else:
+                    keep.append(tok)
+            return "(pins %s)" % " ".join(keep) if keep else ""
+        body = re.sub(r"\(pins([^()]*)\)", pins_clause, text[start:])
+        with open(dsn_path, "w") as f:
+            f.write(text[:start] + body)
+        return count[0]
 
     # ---- routing ----------------------------------------------------------
     def autoroute(self, workdir, passes=30, timeout=900, strategies=None, parallel=True, cache=True,
@@ -634,6 +838,8 @@ class Board:
         pcbnew.SaveBoard(pre, self.board)
         if not pcbnew.ExportSpecctraDSN(self.board, dsn):
             raise RuntimeError("DSN export failed")
+        if self.on_plane:
+            self._strip_pins(dsn, self.on_plane)            # tied to their plane by fan_to_planes()
         with open(dsn, "rb") as f:
             dsn_hash = hashlib.sha256(f.read()).hexdigest()[:16]
         cdir = os.path.join(workdir, "route-cache")

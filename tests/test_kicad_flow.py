@@ -542,3 +542,94 @@ def test_autoroute_connects_the_board_and_adds_no_fanout_vias(project, tmp_path)
     place_all(fan)
     log = fan.autoroute(str(tmp_path), passes=5, timeout=300, strategies=[[]], optimize=False, fanout=True)
     assert "Fanout stage" in log and len(vias(fan)) > len(vias(b))
+
+
+# ---- ground pads into their planes ----------------------------------------------------
+def planes_board(project):
+    b = board(project, layers=4, planes=[pcbnew.In1_Cu])
+    place_all(b)
+    b.zone("GND", pcbnew.In1_Cu, rect=(100.5, 100.5, 17.5, 29))
+    b.zone("GNDA", pcbnew.In1_Cu, polygon=[(120, 100.5), (139.5, 100.5), (139.5, 129.5), (120, 129.5)])
+    return b
+
+
+def test_fan_to_planes_gives_each_ground_pad_a_via_inside_its_plane(project, tmp_path):
+    b = planes_board(project)
+    b.place("R4", 129, 116, 180, back=True)                # one ground pad on the back
+    b.track("GNDA", [("R3", 2), (126.5, 108.5)])           # R3's ground pad is routed by hand
+    assert b.fan_to_planes() == []
+    assert b.on_plane == {("J1", "2"), ("R2", "2"), ("J2", "2"), ("R4", "2")}   # not R3.2: it has a track
+    at = sorted(vias(b))
+    assert len(at) == 2
+    for (vx, vy), (ref, lo, hi) in zip(at, (("R2", 100.5, 118.0), ("R4", 120.0, 139.5)), strict=True):
+        px, py = b.pad_xy(ref, 2)
+        assert math.hypot(vx - px, vy - py) < 2.0 and lo + 0.5 < vx < hi - 0.5
+    r4 = pcbnew.VECTOR2I_MM(*b.pad_xy("R4", 2))            # the track to the via is on the pad's side
+    wires = [t for t in b.board.GetTracks() if t.GetClass() != "PCB_VIA"]
+    assert [t.GetLayer() for t in wires if t.GetStart() == r4] == [pcbnew.B_Cu]
+    b.track("SIG", [("J1", 1), ("R1", 1)])
+    b.track("MID", [("R1", 2), (110.9125, 113), (109.0875, 113), ("R2", 1)])
+    b.track("ISO", [("J2", 1), ("R3", 1)])
+    b.track("ISO", [(132, 110), (132, 116)])
+    b.via("ISO", 132, 116)
+    b.track("ISO", [(132, 116), ("R4", 1)], layer=pcbnew.B_Cu)
+    b.via("GNDA", 126.5, 108.5)
+    b.fill_zones()
+    assert b.unrouted() == 0
+    pcb = str(tmp_path / "iso.kicad_pcb")
+    b.save(pcb)
+    b.write_project(str(tmp_path / "iso.kicad_pro"))
+    out = drc(pcb, str(tmp_path / "drc.rpt"), schematic_parity=False)
+    assert "Found 0 violations" in out and "Found 0 unconnected items" in out, (tmp_path / "drc.rpt").read_text()
+
+
+def test_fan_to_planes_keeps_vias_out_of_foreign_copper_and_rule_areas(project):
+    b = planes_board(project)
+    b.fan_to_planes()
+    free = sorted(vias(b))[0]                               # where R2's via goes when nothing is in the way
+    b = planes_board(project)
+    b.track("SIG", [(free[0] - 3, free[1]), (free[0] + 3, free[1])], layer=pcbnew.B_Cu)   # a foreign track on the back
+    assert b.fan_to_planes() == []
+    moved = sorted(vias(b))[0]
+    assert math.hypot(moved[0] - free[0], moved[1] - free[1]) > 0.2
+    assert abs(moved[1] - free[1]) >= 0.25 + 0.125 + b.rules["clearance"]      # via radius + half track + clearance
+    b = planes_board(project)
+    px, py = b.pad_xy("R2", 2)
+    b.keepout(px - 4, py - 4, 8, 8, tracks=False, vias=True, fills=False)
+    assert b.fan_to_planes() == [("R2", "2")] and ("R2", "2") not in b.on_plane
+
+
+def test_pins_on_a_plane_are_taken_off_the_routers_list(project, tmp_path):
+    b = planes_board(project)
+    b.fan_to_planes()
+    dsn = str(tmp_path / "t.dsn")
+    assert pcbnew.ExportSpecctraDSN(b.board, dsn)
+    before = open(dsn).read()
+    assert "R2-2" in before and "J1-2" in before
+    assert Board._strip_pins(dsn, b.on_plane) == 5
+    after = open(dsn).read()
+    network = after[after.index("(network"):]
+    assert "R2-2" not in network and "J1-2" not in network and "R1-1" in network
+    assert after[:after.index("(network")] == before[:before.index("(network")]
+
+
+@pytest.mark.skipif(not shutil.which("freerouting"), reason="needs the freerouting command")
+def test_autoroute_after_fan_to_planes_leaves_nothing_open(project, tmp_path):
+    # Without fan_to_planes() a 491-part board had 273 of its 465 open connections on the three
+    # plane nets after a pass: Freerouting does not tie pins to a plane.
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    b.autoroute(str(tmp_path), passes=5, timeout=300, strategies=[[]], optimize=False)
+    b.fill_zones()
+    assert b.unrouted() == 0
+    assert not [t for t in b.board.GetTracks() if not t.IsLocked() and t.GetNetname() in ("GND", "GNDA")]
+
+
+def test_fan_to_planes_puts_the_via_into_a_large_pad(project):
+    # Exposed pads of QFN packages are ringed by their pins: no spot beside them within reach.
+    b = planes_board(project)
+    pad = next(p for p in b.fps["R2"].Pads() if p.GetNumber() == "2")
+    pad.SetSize(pcbnew.F_Cu, pcbnew.VECTOR2I_MM(1.2, 1.4))
+    assert b.fan_to_planes() == []
+    px, py = b.pad_xy("R2", 2)
+    assert (px, py) in [(round(x, 4), round(y, 4)) for x, y in vias(b)]

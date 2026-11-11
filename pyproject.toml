@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hwdesign"
-version = "0.4.0"
+version = "0.5.0"
 description = "Electronics and mechanical design as code: KiCad schematics and boards from Python, Freerouting with cleanup and layout checks, JLCPCB fab files, and build123d enclosure checks."
 readme = "README.md"
 license = "MIT"

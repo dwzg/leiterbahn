@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+Added
+- `Board.fan_to_planes()`: before autorouting, every SMD pad of a plane's net gets a via into
+  its plane (nearest legal spot, straight track on the pad's side, a nearby via of the same
+  net used again). `autoroute()` then takes the pads that are on a plane off the router's
+  list. Freerouting does not connect pins to a plane: on a 491-part board 273 of 465 open
+  connections after a pass were on the three plane nets, and the count did not fall.
+
+Fixed
+- `via_near()` drew the track from a back-side pad to its via on the front.
+
 ## 0.4.0
 
 Added
