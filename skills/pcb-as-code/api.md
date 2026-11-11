@@ -36,7 +36,7 @@ Generate KiCad schematics from Python.
   - `.finish()`: Label undrawn pins, no-connect unlisted ones, add junctions: on the root page and on every sheet that has not been finished yet.
   - `.overlaps(design=True)`: List of human-readable text collisions (fields, labels, notes vs everything) in the whole design; collisions on a sheet are prefixed with its name.
   - `.netlist()`: The declared nets of the whole design, all sheets: {net: [(ref, pin), ...]}.
-  - `.write_lib_tables(directory, version_var='KICAD10')`: Write sym-lib-table and fp-lib-table for the libraries the design uses.
+  - `.write_lib_tables(directory, version_var='KICAD10', fp_dirs=())`: Write sym-lib-table and fp-lib-table for the libraries the design uses.
   - `.save(path)`: Write the root sheet to `path` and every sheet's file next to it.
 - `compare_netlist(declared, kicad_net_path)`: Compare declared nets with KiCad's netlist by pin grouping (names only where labeled).
 

@@ -1113,24 +1113,29 @@ class Schematic(Page):
                 out.setdefault(net, []).append((ref, pin))
         return {k: sorted(v) for k, v in out.items()}
 
+    @staticmethod
+    def _project_uri(path, directory):
+        """A library path as KiCad should store it: relative to the project (${KIPRJMOD}), also
+        for a library beside the project directory, so the tables work on another machine."""
+        try:
+            rel = os.path.relpath(os.path.abspath(path), os.path.abspath(directory))
+        except ValueError:                                  # different drives
+            return os.path.abspath(path).replace(os.sep, "/")
+        return "${KIPRJMOD}/" + rel.replace(os.sep, "/")
+
     def _sym_uri(self, lib, directory, version_var):
         path = os.path.abspath(self.lib.path(lib))
-        root = os.path.abspath(directory)
-        try:
-            inside = os.path.commonpath([path, root]) == root
-        except ValueError:                                  # different drives
-            inside = False
-        if inside:                                          # project library
-            return "${KIPRJMOD}/" + os.path.relpath(path, root).replace(os.sep, "/")
         if os.path.dirname(path) == os.path.abspath(self.lib.dirs[-1]):   # KiCad's own, last on the path
             return "${%s_SYMBOL_DIR}/%s.kicad_sym" % (version_var, lib)
-        return path.replace(os.sep, "/")
+        return self._project_uri(path, directory)
 
-    def write_lib_tables(self, directory, version_var="KICAD10"):
+    def write_lib_tables(self, directory, version_var="KICAD10", fp_dirs=()):
         """Write sym-lib-table and fp-lib-table for the libraries the design uses.
 
-        Libraries inside `directory` (the project) are addressed through ${KIPRJMOD}, KiCad's
-        own through ${<version_var>_SYMBOL_DIR} / _FOOTPRINT_DIR.
+        Project libraries are addressed relative to ${KIPRJMOD}: symbol libraries found in
+        sym_dirs, footprint libraries (<name>.pretty) found in `directory`/lib or in one of
+        fp_dirs. A library directory shared by several projects is reached with "..". KiCad's
+        own libraries go through ${<version_var>_SYMBOL_DIR} / _FOOTPRINT_DIR.
         """
         sym_libs = sorted({lid.split(":")[0] for page in [self] + self.sheets for lid in page.lib_symbols})
         fp_libs = sorted({p["footprint"].split(":")[0] for r, p in self.parts.items()
@@ -1144,8 +1149,10 @@ class Schematic(Page):
         with open(os.path.join(directory, "fp-lib-table"), "w") as f:
             f.write("(fp_lib_table\n\t(version 7)\n")
             for lib in fp_libs:
-                if os.path.isdir(os.path.join(directory, "lib", lib + ".pretty")):   # project library
-                    uri = "${KIPRJMOD}/lib/%s.pretty" % lib
+                own = [d for d in [os.path.join(directory, "lib"), *fp_dirs]
+                       if os.path.isdir(os.path.join(d, lib + ".pretty"))]
+                if own:                                     # project library
+                    uri = self._project_uri(os.path.join(own[0], lib + ".pretty"), directory)
                 else:
                     uri = "${%s_FOOTPRINT_DIR}/%s.pretty" % (version_var, lib)
                 f.write('\t(lib (name "%s") (type "KiCad") (uri "%s") (options "") (descr ""))\n' % (lib, uri))

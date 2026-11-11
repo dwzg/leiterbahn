@@ -59,15 +59,23 @@ def test_lib_and_sym_dirs_exclude_each_other(symdir):
         SymbolLib([])
 
 
-def test_library_outside_project_and_system_gets_its_real_path(symdir, tmp_path):
-    vendor = tmp_path / "vendor"
-    write_lib(vendor, "vlib", [two_pin("V")])
-    sch = Schematic("demo", lib=SymbolLib([str(vendor), str(symdir)]))
-    sch.add("R1", "vlib:V", (100, 100), nets={"1": "A", "2": "B"})
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    sch.write_lib_tables(str(proj))
-    assert '(uri "%s")' % (vendor / "vlib.kicad_sym") in (proj / "sym-lib-table").read_text()
+def test_library_beside_the_project_is_addressed_relative_to_it(symdir, tmp_path):
+    """Two projects share one library directory: an absolute path in the table would break on
+    every other machine, and "${KIPRJMOD}/lib" pointed at a directory that does not exist."""
+    shared = tmp_path / "lib"
+    write_lib(shared, "vlib", [two_pin("V")])
+    (shared / "vfp.pretty").mkdir()
+    sch = Schematic("demo", lib=SymbolLib([str(shared), str(symdir)]))
+    sch.add("R1", "vlib:V", (100, 100), footprint="vfp:PART", nets={"1": "A", "2": "B"})
+    sch.add("R2", "vlib:V", (120, 100), footprint="Resistor_SMD:R_0603_1608Metric", nets={"1": "A", "2": "B"})
+    proj = tmp_path / "boards" / "one"
+    proj.mkdir(parents=True)
+    sch.write_lib_tables(str(proj), fp_dirs=[str(shared)])
+    assert '(uri "${KIPRJMOD}/../../lib/vlib.kicad_sym")' in (proj / "sym-lib-table").read_text()
+    fp = (proj / "fp-lib-table").read_text()
+    assert '(name "vfp") (type "KiCad") (uri "${KIPRJMOD}/../../lib/vfp.pretty")' in fp
+    assert '(name "Resistor_SMD") (type "KiCad") (uri "${KICAD10_FOOTPRINT_DIR}/Resistor_SMD.pretty")' in fp
+    assert str(tmp_path) not in fp + (proj / "sym-lib-table").read_text()
 
 
 # ---- single sheet ----------------------------------------------------------------

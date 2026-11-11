@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+Changed
+- `Schematic.write_lib_tables(directory, fp_dirs=())`: project libraries outside the project
+  directory are written relative to `${KIPRJMOD}` (with `..`), and footprint libraries are
+  also looked up in `fp_dirs`. Two boards sharing one `lib/` directory got an absolute path in
+  `sym-lib-table` and a `${KIPRJMOD}/lib` entry that pointed nowhere: ERC then warned that the
+  footprint library was not configured.
+
 ## 0.5.0
 
 Added
