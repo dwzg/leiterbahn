@@ -14,7 +14,9 @@ import heapq
 import itertools
 
 CELL = 1.27
-STEP, BEND, CROSS, OFF_GRID = 1.0, 3.0, 8.0, 0.4      # costs: prefer short, straight, uncrossed, on 2.54 mm
+# costs: prefer short, straight, uncrossed. Off the 2.54 mm lines costs little: a pin between the lines
+# is left by a straight wire; at 0.4 a 30 mm run jogged 1.27 mm right at the pin to get onto a line.
+STEP, BEND, CROSS, OFF_GRID = 1.0, 3.0, 8.0, 0.1
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 

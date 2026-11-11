@@ -629,6 +629,8 @@ class Page:
             lim = bounds(blk)
             pieces = [set(q) for q in wires.get((blk, net), ())]      # each has to be joined to the rest
             todo = {aw.cell(self.parts[r]["pins"][n]["at"]): (r, n) for r, n in open_pins}
+            for c in [c for c in todo if any(c in q for q in pieces)]:
+                self.drawn.add(todo.pop(c))              # a wire of the script ends on it already
             first = None
             if pieces:
                 tree = pieces.pop()
@@ -718,8 +720,13 @@ class Page:
         symbol in finish(). On a connector with eight ground pins on one spot, or an IC with
         three address pins on ground or two supply pins 5.08 mm apart, one symbol per pin put
         the symbols or their names on top of each other.
+
+        On a design with autowire, adjacent pins of a signal net are left to the router: it joins
+        them in front of the pins. The wire drawn here runs across the pin ends, which on a gate
+        with both inputs tied together read as a bar through the symbol's inputs.
         """
         part = self.parts[ref]
+        routed = self.design.wire_blocks
         ends = [part["pins"][n]["at"] for n in nums]
         runs = {}
         for num in nums:
@@ -728,14 +735,15 @@ class Page:
                 continue
             p = part["pins"][num]
             runs.setdefault((net, p["out"]), []).append((p["at"], num))
-        for (_net, out), pins in runs.items():
+        for (net, out), pins in runs.items():
+            reach = 5.08 if not routed or net in self.design.power_symbols else 0.0
             along = 1 if out[0] else 0                      # pins leaving sideways are stacked vertically
             pins.sort(key=lambda t: (t[0][1 - along], t[0][along]))
             chain = [pins[0]]
             for cur in pins[1:] + [None]:
                 prev = chain[-1]
                 if cur is not None and abs(cur[0][1 - along] - prev[0][1 - along]) < 1e-6 \
-                        and cur[0][along] - prev[0][along] <= 5.08 + 1e-6 \
+                        and cur[0][along] - prev[0][along] <= reach + 1e-6 \
                         and not any(abs(e[1 - along] - prev[0][1 - along]) < 1e-6
                                     and prev[0][along] + 1e-6 < e[along] < cur[0][along] - 1e-6 for e in ends):
                     chain.append(cur)

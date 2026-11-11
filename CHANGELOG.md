@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+Fixed
+- Auto-wiring, two pins of one part tied together (a NAND gate used as an inverter): the
+  drawing had a bar across the two pin ends, a 1.27 mm hook next to it and a jog at the
+  driving output. Three causes: `finish()` joined adjacent signal pins along the pin ends
+  before the router ran (it now leaves them to the router, which joins them in front of the
+  pins; supply pins and pins on one spot are still joined); the router wired a pin again
+  that a wire already ended on; and running between the 2.54 mm lines cost so much that a
+  30 mm wire jogged right at a pin placed between the lines.
+
 ## 0.3.0
 
 Added

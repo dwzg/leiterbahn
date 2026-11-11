@@ -226,3 +226,23 @@ def test_name_of_a_power_symbol_on_its_side_is_beyond_its_tip(direction, side):
     tip = 100 + side * 5.08
     assert (box[0] - tip) * side > 2.5 and (box[2] - tip) * side > 2.5      # whole name beyond the symbol
     assert box[1] < 100 < box[3]                                            # on the stub's line
+
+
+def test_tied_inputs_are_joined_in_front_of_the_pins_without_a_loop(symdir):
+    # A NAND gate used as an inverter, both inputs on one net: finish() drew a wire across the
+    # two pin ends, the router then reached one of those pins again with a 1.27 mm hook next to
+    # it, and the wire from the driving output jogged at its pin to get onto a 2.54 mm line.
+    sch = design(symdir)
+    sch.add("U1", "tlib:COMB", (101.6, 101.6), "x", "", {"1": "A", "2": "A", "7": "Y"})
+    sch.add("U2", "tlib:COMB", (60.96, 96.52), "x", "", {"7": "A", "1": "B"})
+    sch.frame(40, 70, 90, 60, "block")
+    sch.finish()
+    assert connected(sch) == declared(sch)
+    p1, p2 = sch.pin("U1", 1), sch.pin("U1", 2)
+    assert [seg for seg in sch.segments if {seg[0], seg[1]} == {p1, p2}] == []     # nothing along the pin ends
+    lines = [line for net, line in sch._wire_nets() if net == "A"]
+    cells = set().union(*lines)
+    assert sum(len(line) - 1 for line in lines) == len(cells) - 1      # a tree: no loop, no wire drawn twice
+    out = sch.pin("U2", 7)
+    first = next(seg for seg in sch.segments if out in seg)
+    assert abs(first[0][0] - first[1][0]) > 10                         # leaves the output straight, no jog at the pin
