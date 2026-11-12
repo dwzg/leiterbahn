@@ -373,6 +373,21 @@ def test_reference_labels_stay_out_of_cut_outs(project, slot):
     assert ref_y > 110 if slot else ref_y < 110              # below the part instead of above
 
 
+def test_reference_labels_are_placed_per_board_side(project):
+    b = board(project)
+    place_all(b)
+    b.place("R2", 110, 110, back=True)                       # under R1, on the other side
+    assert b.place_refs() == []
+    for ref, layer in (("R1", pcbnew.F_SilkS), ("R2", pcbnew.B_SilkS)):
+        r = b.fps[ref].Reference()
+        assert r.GetLayer() == layer and pcbnew.ToMM(r.GetPosition().y) < 110      # both above: they do not meet
+        box = r.GetBoundingBox()
+        box.Inflate(pcbnew.FromMM(0.15))                     # KiCad's silk-to-silk clearance
+        lines = [g for fp in b.board.GetFootprints() for g in fp.GraphicalItems()
+                 if g.GetLayer() == layer and g.GetClass() != "PCB_FIELD"]
+        assert lines and not any(box.Intersects(g.GetBoundingBox()) for g in lines)
+
+
 def test_pad_labels_stay_out_of_cut_outs(project):
     def label(cut=None):
         b = board(project)

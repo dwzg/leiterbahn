@@ -416,66 +416,80 @@ class Board:
                     and not board.Contains(g.GetBoundingBox())):
                 fp.Remove(g)
 
-    def place_refs(self, size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=()):
+    def place_refs(self, size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=(), silk=0.16):
         """Put every reference label just outside its courtyard, clear of pads, silk and other labels.
 
-        Tries above, below, right, left; falls back to the courtyard centre. Refs in
-        `keep` are left where they are. Returns refs that found no clear spot.
+        Each board side by itself: a label on the back is kept clear of the pads, silk and
+        labels of the back (silk: the distance between two silkscreen items the board's rules
+        ask for, 0.15 mm in KiCad's defaults). Tries above, below, right, left; falls back to
+        the courtyard centre on the fab layer. Refs in `keep` are left where they are. Returns
+        refs that found no clear spot.
         """
         def inflate(bb, d):
             bb = pcbnew.BOX2I(bb.GetOrigin(), bb.GetSize())
             bb.Inflate(MM(d))
             return bb
 
-        obstacles = []
-        for fp in self.board.GetFootprints():
-            for pad in fp.Pads():
-                obstacles.append((fp.GetReference(), inflate(pad.GetBoundingBox(), gap)))
-            for g in fp.GraphicalItems():
-                if g.GetLayer() == pcbnew.F_SilkS and g.GetClass() != "PCB_FIELD":
-                    obstacles.append((fp.GetReference(), inflate(g.GetBoundingBox(), gap / 2)))
-        for item in self.board.GetDrawings():
-            if item.GetLayer() == pcbnew.F_SilkS:
-                obstacles.append(("", inflate(item.GetBoundingBox(), gap)))
+        sides = {False: (pcbnew.F_Cu, pcbnew.F_SilkS, pcbnew.F_CrtYd, pcbnew.F_Fab),
+                 True: (pcbnew.B_Cu, pcbnew.B_SilkS, pcbnew.B_CrtYd, pcbnew.B_Fab)}
+        obstacles = {False: [], True: []}
+        for back, (cu, silk_layer, _, _) in sides.items():
+            for fp in self.board.GetFootprints():
+                for pad in fp.Pads():
+                    if pad.IsOnLayer(cu) or pad.HasHole():
+                        obstacles[back].append(inflate(pad.GetBoundingBox(), gap))
+                for g in fp.GraphicalItems():
+                    if g.GetLayer() == silk_layer and g.GetClass() != "PCB_FIELD":
+                        obstacles[back].append(inflate(g.GetBoundingBox(), max(gap / 2, silk)))
+            for item in self.board.GetDrawings():
+                if item.GetLayer() == silk_layer:
+                    obstacles[back].append(inflate(item.GetBoundingBox(), gap))
         x, y, w, h = self.box
         board = pcbnew.BOX2I(pcbnew.VECTOR2I_MM(x + edge, y + edge), pcbnew.VECTOR2I_MM(w - 2 * edge, h - 2 * edge))
-        placed, failed = [], []
+        placed, failed = {False: [], True: []}, []
         fps = sorted(self.board.GetFootprints(), key=lambda f: -f.GetBoundingBox(False).GetArea())
         for fp in fps:
             ref = fp.GetReference()
             r = fp.Reference()
             if not r.IsVisible() or ref in keep:
                 continue
+            back = fp.IsFlipped()
             r.SetTextSize(pcbnew.VECTOR2I(MM(size), MM(size)))
             r.SetTextThickness(MM(thickness))
             r.SetTextAngleDegrees(0)
             r.SetKeepUpright(True)
-            cy = fp.GetCourtyard(pcbnew.F_CrtYd)
+            cy = fp.GetCourtyard(sides[back][2])
             bb = cy.BBox() if cy.OutlineCount() else fp.GetBoundingBox(False)
+            bb = pcbnew.BOX2I(bb.GetOrigin(), bb.GetSize())
+            for g in fp.GraphicalItems():                  # silk that reaches beyond the courtyard
+                if g.GetLayer() == sides[back][1] and g.GetClass() != "PCB_FIELD":
+                    bb.Merge(g.GetBoundingBox())
             cx, cyy = bb.Centre().x, bb.Centre().y
-            th = MM(size)
-            tw = MM(size * 0.75 * len(ref)) + MM(thickness)
-            d = MM(gap)
-            cands = [(cx, bb.GetTop() - d - th // 2), (cx, bb.GetBottom() + d + th // 2),
-                     (bb.GetRight() + d + tw // 2, cyy), (bb.GetLeft() - d - tw // 2, cyy)]
+            r.SetPosition(pcbnew.VECTOR2I(int(cx), int(cyy)))
+            tb = r.GetBoundingBox()                        # the text as drawn: taller than `size`, and not centred
+            ox, oy = tb.Centre().x - cx, tb.Centre().y - cyy
+            tw, th = tb.GetWidth(), tb.GetHeight()
+            d = MM(max(gap, silk + 0.02))
+            cands = [(cx - ox, bb.GetTop() - d - th // 2 - oy), (cx - ox, bb.GetBottom() + d + th // 2 - oy),
+                     (bb.GetRight() + d + tw // 2 - ox, cyy - oy), (bb.GetLeft() - d - tw // 2 - ox, cyy - oy)]
             ok_pos = None
             for px, py in cands:
                 r.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
                 tb = r.GetBoundingBox()
                 if not board.Contains(tb) or self._hits_cutout(self._box_mm(tb), edge):
                     continue
-                if any(tb.Intersects(o) for _, o in obstacles):
+                if any(tb.Intersects(o) for o in obstacles[back]):
                     continue
-                if any(tb.Intersects(p) for p in placed):
+                if any(tb.Intersects(p) for p in placed[back]):
                     continue
                 ok_pos = (px, py)
                 break
             if ok_pos is None:
                 r.SetPosition(pcbnew.VECTOR2I(int(cx), int(cyy)))
-                r.SetLayer(pcbnew.F_Fab)       # no clear silk spot: keep it on the fab layer only
+                r.SetLayer(sides[back][3])     # no clear silk spot: keep it on the fab layer only
                 failed.append(ref)
             else:
-                placed.append(inflate(r.GetBoundingBox(), gap / 2))
+                placed[back].append(inflate(r.GetBoundingBox(), max(gap / 2, silk)))
         return failed
 
     def zone(self, net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4,

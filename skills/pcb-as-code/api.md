@@ -67,7 +67,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.text(s, x, y, size=1.0, thickness=0.15, layer=pcbnew.F_SilkS, angle=0, justify='center')`: 
   - `.label_near(ref, pad, text, size=1.0, thickness=0.15, gap=0.2, edge=0.5, dist=(1.4, 2.2, 3.0))`: Silkscreen text next to a pad, at the first clear spot around it. Returns the text or None.
   - `.clip_silk(ref)`: Drop a footprint's silkscreen graphics that leave the board outline (e.g. an overhanging antenna).
-  - `.place_refs(size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=())`: Put every reference label just outside its courtyard, clear of pads, silk and other labels.
+  - `.place_refs(size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=(), silk=0.16)`: Put every reference label just outside its courtyard, clear of pads, silk and other labels.
   - `.zone(net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4, rect=None, polygon=None)`: Copper pour of `net` on `layer`: the board box `inset` mm inside the outline, or only the region rect=(x, y, w, h) or polygon=[(x, y), ...].
   - `.keepout(x, y, w, h, layers=None, name='keepout', tracks=True, vias=True, fills=True)`: Rule area; by default no copper pour, tracks or vias (footprint pads still allowed) on every copper layer of the board.
   - `.courtyard_overlaps()`: 

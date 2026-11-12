@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.2
+
+Fixed
+- `place_refs()` looked at the front silkscreen only. A label of a part on the back was laid
+  over the back's silk (two DRC warnings on a board with 142 parts there), and was kept away
+  from pads and labels of the front, which are not in its way. Each side is now placed by
+  itself, a label keeps the rules' distance to silk (new argument `silk`, 0.16 mm) instead
+  of 0.1 mm, and it is positioned by the box of the text as drawn. On that board 115 of 287
+  labels find room instead of 29; on a four-layer board with 91 parts, 81 instead of 54.
+
 ## 0.12.1
 
 Changed
