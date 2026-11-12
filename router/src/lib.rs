@@ -14,7 +14,7 @@ pub mod place;
 pub mod problem;
 pub mod sexp;
 
-use problem::{Path, Problem, Routed, Shape, Solution};
+use problem::{Path, Problem, Role, Routed, Shape, Solution};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -70,6 +70,10 @@ struct Grids {
     /// Per kind of track, a cell for every place on every layer; per kind of via, one for every place.
     track: Vec<Vec<Cell>>,
     via: Vec<Vec<Cell>>,
+    /// Nets that are to keep apart: how far, in mm (0: none are), and per cell how much copper
+    /// of noisy nets (0) and of quiet nets (1) a track's centre there would be too near to.
+    apart: f64,
+    near: [Vec<Cell>; 2],
 }
 
 /// What a track's centre (or a via's) finds at one place: how much copper that stays is too
@@ -193,6 +197,21 @@ impl Grids {
     }
 }
 
+impl Grids {
+    /// Count the item in (or out of) the cells that tracks of the other kind are to keep out of:
+    /// `which` is 0 for copper of a noisy net, 1 for copper of a quiet one.
+    fn beside(&mut self, item: &Item, which: usize, delta: i32) {
+        if self.apart <= 0.0 {
+            return;
+        }
+        let thin = self.kinds.iter().map(|k| k.0).fold(f64::MAX, f64::min);
+        let grow = item.r + (self.apart + thin) / self.step;
+        for &l in &item.layers {
+            raster(&mut self.near[which], false, self.nx, self.ny, l, item, grow, delta);
+        }
+    }
+}
+
 /// Is the copper of two nets nearer than they may be? (A little generous: it only chooses which
 /// nets to lay again; the grids decide whether the result is clean.)
 fn clash(a: &Item, b: &Item, step: f64) -> bool {
@@ -219,6 +238,8 @@ struct Job {
     items: Vec<Vec<Item>>,
     cells: Vec<Vec<(u32, usize)>>,
     boxes: Vec<[i32; 4]>,
+    /// The copper its tracks are to keep away from: `Grids::near` 0 (it is quiet) or 1 (noisy).
+    shy: Option<usize>,
 }
 
 /// The cells a search has reached and not yet gone on from, cheapest first to a quarter of a
@@ -319,6 +340,10 @@ struct Search {
     /// Cells the search may use: [i0, j0, i1, j1].
     window: [i32; 4],
     expanded: u64,
+    /// The copper the net being laid keeps away from (see `Grids::near`), and what a cell too
+    /// near it costs more, in cells.
+    shy: Option<usize>,
+    shy_cost: f32,
 }
 
 fn item_of(shape: &Shape, x0: f64, y0: f64, step: f64, clearance: f64) -> Item {
@@ -446,6 +471,7 @@ impl Search {
         let window = self.window;
         let (nx, ny, nl) = (grids.nx as i32, grids.ny as i32, grids.nl);
         let (track, via) = (&grids.track[kind], &grids.via[via_kind]);
+        let (shy, shy_cost) = (self.shy.map(|a| &grids.near[a]), self.shy_cost);
         let union = goals.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |u, b| {
             [u[0].min(b[0]), u[1].min(b[1]), u[2].max(b[2]), u[3].max(b[3])]
         });
@@ -513,7 +539,10 @@ impl Search {
                     (None, _) => continue,
                     (Some(p), s) => 1.0 + p * s as f32,
                 };
-                let ng = g + len * (1.0 + cell.hist * memory) * crowd;
+                let mut ng = g + len * (1.0 + cell.hist * memory) * crowd;
+                if shy.is_some_and(|near| near[m].hard > 0) {
+                    ng += len * shy_cost;
+                }
                 let mark = &mut self.marks[m];
                 if mark.seen != round || ng < mark.g {
                     *mark = Mark {
@@ -608,7 +637,29 @@ impl Router<'_> {
         for k in 0..self.laid[n].items.len() {
             let item = self.laid[n].items[k].clone();
             self.grids.stamp(&item, true, 0.0, delta);
+            if let Some(a) = self.jobs[n].shy {
+                self.grids.beside(&item, 1 - a, delta);
+            }
         }
+    }
+
+    /// The cells (a diagonal step as its length) of the net's tracks that are nearer than they
+    /// should be to copper the net is to keep away from.
+    fn beside_of(&self, n: usize, laid: &Laid) -> f32 {
+        let Some(near) = self.jobs[n].shy.filter(|_| self.grids.apart > 0.0).map(|a| &self.grids.near[a]) else {
+            return 0.0;
+        };
+        let plane = (self.grids.nx * self.grids.ny) as u32;
+        let mut total = 0.0;
+        for path in &laid.nodes {
+            for w in path.windows(2) {
+                let apart = w[0].abs_diff(w[1]);
+                if w[0] / plane == w[1] / plane && near[w[1] as usize].hard > 0 {
+                    total += if apart == 1 || apart == self.grids.nx as u32 { 1.0 } else { DIAG };
+                }
+            }
+        }
+        total
     }
 
     /// Cells of the net's tracks and vias that another net's copper is too near to. The net's own
@@ -698,11 +749,12 @@ impl Router<'_> {
                 };
             }
         }
-        total
+        total + self.search.shy_cost * self.beside_of(n, laid)
     }
 
     /// Lay the net anew: from its first piece, always to the nearest piece not yet joined.
     fn lay(&mut self, n: usize, press: Option<f32>, memory: f32) {
+        self.search.shy = self.jobs[n].shy.filter(|_| self.grids.apart > 0.0);
         self.own(n, 1);
         self.search.laying += 1;
         let mut laid = Laid::default();
@@ -926,6 +978,12 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         via: vec![vec![Cell::default(); nx * ny]; via_kinds.len()],
         kinds,
         via_kinds,
+        apart: problem.apart,
+        near: if problem.apart > 0.0 {
+            [vec![Cell::default(); nx * ny * nl], vec![Cell::default(); nx * ny * nl]]
+        } else {
+            [Vec::new(), Vec::new()]
+        },
     };
     let margin = step / 2.0;
     // the board's edge and the keep-out areas: no track centre within half a track of them
@@ -971,8 +1029,17 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             }
         }
     }
+    let which = |role: Role| match role {
+        Role::Noisy => Some(0),
+        Role::Quiet => Some(1),
+        Role::None => None,
+    };
     for shape in &problem.fixed {
-        grids.stamp(&item_of(shape, x0, y0, step, shape.clearance), false, margin, 1);
+        let item = item_of(shape, x0, y0, step, shape.clearance);
+        grids.stamp(&item, false, margin, 1);
+        if let Some(w) = which(shape.role) {
+            grids.beside(&item, w, 1);
+        }
     }
     let mut jobs = Vec::new();
     for net in &problem.nets {
@@ -990,6 +1057,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             items: Vec::new(),
             cells: Vec::new(),
             boxes: Vec::new(),
+            shy: which(net.role).map(|w| 1 - w),
         };
         for piece in &net.pieces {
             let items: Vec<Item> = piece.iter().map(|s| item_of(s, x0, y0, step, net.clearance)).collect();
@@ -997,6 +1065,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
             for (s, item) in items.iter().enumerate() {
                 grids.stamp(item, false, margin, 1);
+                if let Some(w) = which(net.role) {
+                    grids.beside(item, w, 1);
+                }
                 for node in cells_of(&grids, item) {
                     let (_l, i, j) = grids.split(node);
                     bounds = [
@@ -1037,6 +1108,8 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             laying: 0,
             window: [0, 0, nx as i32 - 1, ny as i32 - 1],
             expanded: 0,
+            shy: None,
+            shy_cost: problem.shy as f32,
         },
         via_cost: (problem.via.cost / step) as f32,
         whole: [0, 0, nx as i32 - 1, ny as i32 - 1],
@@ -1058,6 +1131,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 open: router.laid[n].open.clone(),
                 cost,
                 alone: cost,
+                beside: 0.0,
             });
         }
         solution.expanded = router.search.expanded;
@@ -1190,6 +1264,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     let mut stale = vec![true; router.jobs.len()]; // a net is tried again only if something near it has changed
     say(format!("all nets laid after {:.0} s", started.elapsed().as_secs_f64()));
     let mut ideal = vec![0.0f32; router.jobs.len()];
+    let mut alone = vec![0.0f32; router.jobs.len()]; // the same without what nearness costs: lengths, to say
     for &n in &order {
         // what the net would cost alone on the board: no result is better than that
         let old = router.laid[n].clone();
@@ -1197,6 +1272,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         router.search.window = router.around(n, margin);
         router.lay(n, Some(0.0), 0.0);
         ideal[n] = if router.laid[n].open.is_empty() { router.cost(n) } else { 0.0 };
+        alone[n] = (ideal[n] - router.search.shy_cost * router.beside_of(n, &router.laid[n])).max(0.0);
         router.laid[n] = old;
         router.soft(n, 1);
     }
@@ -1325,8 +1401,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             name: net.name.clone(),
             paths: laid.paths.clone(),
             open,
-            cost: router.cost(n) as f64 * step,
-            alone: ideal[n] as f64 * step,
+            cost: (router.cost(n) - router.search.shy_cost * router.beside_of(n, laid)) as f64 * step,
+            alone: alone[n] as f64 * step,
+            beside: router.beside_of(n, laid) as f64 * step,
         });
     }
     solution

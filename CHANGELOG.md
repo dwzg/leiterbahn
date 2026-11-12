@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.20.0
+
+Added
+- Nets that are to keep apart. `negotiate(quiet=, noisy=, apart=0.5, shy=3)`: a track of a
+  quiet net (a feedback node, a sense line, a reference) keeps `apart` mm from all copper
+  of the noisy nets (a switch node, a gate drive, a clock), pads and hand routes too, and
+  the other way round, where a way exists that is not more than `shy` times longer for it.
+  No clearance rule says this, and a review had measured a current-limit amplifier's input
+  0.14 mm beside a rectifier node for 2.2 mm. On that board, 158 nets of which 36 quiet and
+  17 noisy: 5.6 mm of quiet track beside noisy copper became 0.1 mm, for 12 mm more track
+  in 2.7 m and 4 rounds more; on a second placement 2.0 mm became 0.4 mm.
+- `board.coupling(board, quiet, noisy, apart)`: where quiet tracks run beside noisy copper,
+  how long and how near. Print it after routing.
+
+Measured and not added: ways out for the pins of a fine-pitch part, laid and fixed before
+the rounds (each pin joined to the pad of its net beside it, the rest planned by min-cost
+flow to via places). It halves the rounds on a well-placed board and leaves connections
+open on four of four worse ones: what is laid one after the other and then fixed takes
+the room negotiation needs. And sides chosen by the placement forces: no better than the
+sides the board script gives (cost 3565 against 3467 over six seeds).
+
 ## 0.19.0
 
 Changed

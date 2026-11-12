@@ -86,7 +86,12 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
 - `path_length` limits taken from datasheets;
 - `foreign_copper` in the switcher hot loop;
 - `narrow_tracks` on autorouted copper (neck-downs);
-- `acute_angles` (etch traps, duplicate loops).
+- `acute_angles` (etch traps, duplicate loops);
+- `coupling` (quiet tracks beside noisy copper). Name the nets that swing (switch nodes,
+  boot and gate nets, transformer and rectifier nodes, clocks) and those that take up what
+  is near them (feedback, compensation, sense, reference, amplifier inputs) once, give both
+  lists to `negotiate(quiet=, noisy=)` and to `coupling()`: DRC passes with a sense line
+  0.11 mm beside a switch node, and the router only keeps apart what it was told to.
 
 Then render front and back, with and without the pour, and look before showing anyone. The
 `layout-reviewer` agent does an independent pass.

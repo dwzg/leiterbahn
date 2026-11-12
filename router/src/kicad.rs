@@ -3,7 +3,7 @@
 //!
 //! What is joined already is found here, not asked of KiCad: copper of one net that overlaps on
 //! a layer, and copper that lies on a filled pour of its net.
-use crate::problem::{Keepout, Net, Problem, Shape, Solution, Via};
+use crate::problem::{Keepout, Net, Problem, Role, Shape, Solution, Via};
 use crate::sexp::{parse, Sexp};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -377,6 +377,7 @@ impl Copper {
                 layers,
                 hole: self.hole,
                 clearance: 0.0,
+                role: Role::None,
             },
             None => Shape {
                 rect: None,
@@ -385,6 +386,7 @@ impl Copper {
                 layers,
                 hole: self.hole,
                 clearance: 0.0,
+                role: Role::None,
             },
         }
     }
@@ -591,6 +593,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             narrow: Some(rules.track),
             clearance: rules.keep(name),
             weight: options.weights.get(*name).copied().unwrap_or(1.0),
+            role: Role::None,
             pieces: pieces.iter().map(|piece| piece.iter().map(|&m| copper[m].shape(&routing)).collect()).collect(),
         });
     }
@@ -633,6 +636,8 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         max_iter: options.max_iter,
         relax: 12,
         alone: false,
+        apart: 0.0,
+        shy: 3.0,
         stall: 20,
         limit: 50_000_000,
     })

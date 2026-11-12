@@ -63,6 +63,27 @@ pub struct Problem {
     /// the board (`open`), and what its tracks would cost (`alone`). Seconds for a board.
     #[serde(default)]
     pub alone: bool,
+    /// Tracks of quiet nets keep this far from the copper of noisy nets, and the other way round,
+    /// where they find a way that is not more than `shy` times longer for it. 0: no such wish.
+    #[serde(default)]
+    pub apart: f64,
+    #[serde(default = "d_shy")]
+    pub shy: f64,
+}
+
+fn d_shy() -> f64 {
+    3.0
+}
+
+/// What a net is to others: `quiet` nets (a feedback node, a sense line) and `noisy` ones (a
+/// switch node, a gate, a clock) are kept apart, see `Problem::apart`.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    #[default]
+    None,
+    Quiet,
+    Noisy,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -101,6 +122,9 @@ pub struct Shape {
     /// The clearance its net asks for (fixed copper only; a routed net's is the net's).
     #[serde(default)]
     pub clearance: f64,
+    /// What its net is to others (fixed copper only; a routed net's is the net's).
+    #[serde(default)]
+    pub role: Role,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -114,6 +138,8 @@ pub struct Net {
     /// shorter way at the cost of others if the sum of lengths times weights gets smaller.
     #[serde(default = "d_one")]
     pub weight: f64,
+    #[serde(default)]
+    pub role: Role,
     /// What is to be joined: each piece is copper that is one already (a pad, or pads with
     /// the tracks between them).
     pub pieces: Vec<Vec<Shape>>,
@@ -140,6 +166,8 @@ pub struct Routed {
     /// half as much again), and what they would cost with the net alone on the board.
     pub cost: f64,
     pub alone: f64,
+    /// Millimetres of its tracks nearer than `Problem::apart` to copper it is to keep away from.
+    pub beside: f64,
 }
 
 /// One track: the cells of its bends and layer changes, [layer, i, j]. `from` and `to` name the

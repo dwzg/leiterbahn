@@ -1738,6 +1738,66 @@ def acute_angles(board, limit=89.0):
     return out
 
 
+def coupling(board, quiet, noisy, apart=0.5):
+    """Where tracks of quiet nets run nearer than `apart` mm to copper of noisy nets on their layer:
+    [(quiet net, noisy net, mm of track, nearest gap in mm)], the longest first.
+
+    quiet: nets that take up what is near them (a feedback node, a sense line, a reference);
+    noisy: nets that swing (a switch node, a gate drive, a clock). Tracks, vias and pads of the
+    noisy nets count, tracks of the quiet ones. A board passes DRC with a current-sense input
+    0.11 mm beside a switch node for 2 mm; a reviewer found it by measuring.
+    """
+    mm = pcbnew.ToMM
+    quiet, noisy = set(quiet), set(noisy)
+    loud, soft = {}, []
+    layers = [layer for layer in board.GetEnabledLayers().CuStack()]
+    for t in board.GetTracks():
+        via = t.GetClass() == "PCB_VIA"
+        a, e = t.GetStart(), t.GetEnd()
+        half = mm(t.GetWidth(pcbnew.F_Cu) if via else t.GetWidth()) / 2
+        seg = (mm(a.x), mm(a.y), mm(e.x), mm(e.y), half)
+        if t.GetNetname() in noisy:
+            for layer in (layers if via else [t.GetLayer()]):
+                loud.setdefault(layer, []).append((seg, t.GetNetname()))
+        elif t.GetNetname() in quiet and not via:
+            soft.append((seg, t.GetNetname(), t.GetLayer()))
+    for fp in board.GetFootprints():
+        for p in fp.Pads():
+            if p.GetNetname() in noisy:
+                box = p.GetBoundingBox()
+                w, h, c = mm(box.GetWidth()), mm(box.GetHeight()), box.GetCenter()
+                r = min(w, h) / 2                         # the pad as a line with round ends
+                seg = (mm(c.x) - (w / 2 - r), mm(c.y) - (h / 2 - r), mm(c.x) + (w / 2 - r), mm(c.y) + (h / 2 - r), r)
+                for layer in layers:
+                    if p.IsOnLayer(layer):
+                        loud.setdefault(layer, []).append((seg, p.GetNetname()))
+
+    def gap(x, y, seg):
+        x0, y0, x1, y1, r = seg
+        vx, vy = x1 - x0, y1 - y0
+        n = vx * vx + vy * vy
+        t = 0.0 if n == 0 else max(0.0, min(1.0, ((x - x0) * vx + (y - y0) * vy) / n))
+        return math.hypot(x - x0 - t * vx, y - y0 - t * vy) - r
+
+    found = {}
+    for (x0, y0, x1, y1, half), net, layer in soft:
+        length = math.hypot(x1 - x0, y1 - y0)
+        n = max(1, int(length / 0.05))
+        for k in range(n):
+            x, y = x0 + (x1 - x0) * (k + 0.5) / n, y0 + (y1 - y0) * (k + 0.5) / n
+            best = (apart, None)
+            for seg, other in loud.get(layer, ()):
+                if min(abs(x - seg[0]), abs(x - seg[2])) < apart + seg[4] + half + abs(seg[2] - seg[0]):
+                    d = gap(x, y, seg) - half
+                    if d < best[0]:
+                        best = (d, other)
+            if best[1] is not None:
+                was = found.get((net, best[1]), (0.0, apart))
+                found[(net, best[1])] = (was[0] + length / n, min(was[1], best[0]))
+    return sorted(((q, o, round(v[0], 2), round(max(v[1], 0.0), 2)) for (q, o), v in found.items()),
+                  key=lambda t: (-t[2], t[0], t[1]))
+
+
 def narrow_tracks(board, classes, default):
     """Tracks narrower than their net class (neck-downs). classes: Board.classes."""
     mm = pcbnew.ToMM

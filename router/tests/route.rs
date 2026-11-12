@@ -256,3 +256,66 @@ fn a_narrow_track_is_only_as_long_as_it_must_be() {
         assert!(length(false) > 6.0, "wide for {} mm", length(false));
     }
 }
+
+/// How much of net n's track (mm) is nearer than `apart` mm to the line from (x0, y) to (x1, y).
+fn beside_line(s: &Solution, n: usize, y: f64, x0: f64, x1: f64, apart: f64, step: f64) -> f64 {
+    let mut sum = 0.0;
+    for path in &s.nets[n].paths {
+        for w in path.cells.windows(2) {
+            for k in 0..20 {
+                let t = (k as f64 + 0.5) / 20.0;
+                let px = (w[0][1] as f64 + (w[1][1] as f64 - w[0][1] as f64) * t) * step;
+                let py = (w[0][2] as f64 + (w[1][2] as f64 - w[0][2] as f64) * t) * step;
+                let d = (py - y).hypot((x0 - px).max(px - x1).max(0.0));
+                if d < apart {
+                    sum += (((w[1][1] as f64 - w[0][1] as f64).powi(2) + (w[1][2] as f64 - w[0][2] as f64).powi(2)).sqrt()) * step / 20.0;
+                }
+            }
+        }
+    }
+    sum
+}
+
+/// A quiet net from left to right, and 0.35 mm beside its straight way a track of a noisy net
+/// that stays, 6 mm long. Without the wish to keep apart it runs straight, beside that track all
+/// the way; with it, it goes round at the distance asked for, and says how much is left beside.
+#[test]
+fn a_quiet_net_keeps_away_from_noisy_copper_that_stays() {
+    for apart in [0.0, 0.6] {
+        let s = solve(json!({
+            "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "apart": apart,
+            "fixed": [{"seg": [2.0, 3.35, 8.0, 3.35], "r": 0.075, "layers": [0], "clearance": 0.15, "role": "noisy"}],
+            "nets": [{"name": "Q", "width": 0.15, "clearance": 0.15, "role": "quiet", "pieces": [[pad(1.0, 3.0, 0)], [pad(9.0, 3.0, 0)]]}]
+        }));
+        assert!(s.nets[0].open.is_empty());
+        let near = beside_line(&s, 0, 3.35, 2.0, 8.0, 0.55, 0.05);
+        if apart == 0.0 {
+            assert!(near > 5.5 && s.nets[0].beside == 0.0, "{} mm beside it, said {}", near, s.nets[0].beside);
+        } else {
+            assert!(near < 0.5 && s.nets[0].beside < 0.5, "{} mm beside it, said {}", near, s.nets[0].beside);
+            assert!(s.nets[0].cost < 9.5, "{} mm for a way of 8 mm", s.nets[0].cost);
+        }
+    }
+}
+
+/// A noisy net and a quiet one, both routed, their pads 0.4 mm apart at both ends: side by side
+/// all the way unless they are to keep apart. Then one of them bows out, and only what must be
+/// near (at the pads) is.
+#[test]
+fn a_quiet_and_a_noisy_net_that_are_both_routed_part() {
+    let pads = |y: f64| json!([[{"box": [0.9, y - 0.1, 1.1, y + 0.1], "layers": [0]}], [{"box": [8.9, y - 0.1, 9.1, y + 0.1], "layers": [0]}]]);
+    let mut near = Vec::new();
+    for apart in [0.0, 0.6] {
+        let s = solve(json!({
+            "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "apart": apart,
+            "nets": [{"name": "N", "width": 0.15, "clearance": 0.15, "role": "noisy", "pieces": pads(2.8)},
+                     {"name": "Q", "width": 0.15, "clearance": 0.15, "role": "quiet", "pieces": pads(3.2)}]
+        }));
+        assert!(s.nets[0].open.is_empty() && s.nets[1].open.is_empty());
+        near.push(s.nets[0].beside + s.nets[1].beside);
+        if apart > 0.0 {
+            assert!(s.nets[1].beside < 2.5, "{} mm of the quiet net beside the noisy one", s.nets[1].beside);
+        }
+    }
+    assert_eq!(near[0], 0.0); // nothing is counted where nothing was asked
+}

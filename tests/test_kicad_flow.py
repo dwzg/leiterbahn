@@ -1083,6 +1083,53 @@ def test_acute_angles_finds_a_sharp_joint_and_ignores_a_piece_shorter_than_its_w
     assert joints(((0, 0), (5, 0)), ((0, 0), (0.05, 0.05)), ((0.05, 0.05), (4.38, 2.55))) == [30]
 
 
+def test_coupling_says_where_a_quiet_track_runs_beside_a_noisy_one():
+    """Two tracks 0.2 mm wide, 0.5 mm apart for 5 mm on one layer: 0.3 mm between their copper. On different
+    layers they are not beside each other; nor is a net that was not named."""
+    from leiterbahn.kicad.board import coupling
+    pb = pcbnew.BOARD()
+    for k, (name, y, layer, x1) in enumerate((("FB", 10.0, pcbnew.F_Cu, 15.0), ("SW", 10.5, pcbnew.F_Cu, 20.0),
+                                              ("CLK", 9.5, pcbnew.B_Cu, 20.0), ("OTHER", 9.6, pcbnew.F_Cu, 20.0))):
+        net = pcbnew.NETINFO_ITEM(pb, name, k + 1)
+        pb.Add(net)
+        t = pcbnew.PCB_TRACK(pb)
+        t.SetStart(pcbnew.VECTOR2I_MM(10, y))
+        t.SetEnd(pcbnew.VECTOR2I_MM(x1, y))
+        t.SetWidth(pcbnew.FromMM(0.2))
+        t.SetLayer(layer)
+        t.SetNet(net)
+        pb.Add(t)
+    found = coupling(pb, ["FB"], ["SW", "CLK"], apart=0.5)
+    assert [t[:2] for t in found] == [("FB", "SW")] and abs(found[0][2] - 5.0) < 0.11 and found[0][3] == 0.3
+    assert coupling(pb, ["FB"], ["SW", "CLK"], apart=0.25) == []
+
+
+def test_negotiate_keeps_a_quiet_net_away_from_a_noisy_one(project, tmp_path):
+    """SIG is routed as before, or as a quiet net beside the noisy MID: the result is as clean, and what the
+    router says is left beside is what coupling() measures on the board, within the grid."""
+    from leiterbahn.kicad.board import coupling
+    left = []
+    for quiet in ((), ("SIG",)):
+        b = planes_board(project)
+        assert b.fan_to_planes() == []
+        b.fill_zones()
+        got = b.negotiate(str(tmp_path), quiet=quiet, noisy=("MID",), apart=0.6)
+        b.fill_zones()
+        assert got["open"] == [] and b.unrouted() == 0
+        near = coupling(b.board, [b.resolve("SIG")], [b.resolve("MID")], 0.6)
+        left.append(sum(t[2] for t in near))
+        if not quiet:
+            assert got["beside"] == {}
+        else:
+            assert abs(sum(got["beside"].values()) - left[-1]) < 1.0
+    assert left[1] <= left[0]
+    pcb = str(tmp_path / "quiet.kicad_pcb")
+    b.save(pcb)
+    report = drc(pcb, str(tmp_path / "drc.rpt"))
+    assert "Found 0 unconnected" in report
+    assert not re.search(r"\[(clearance|shorting_items|tracks_crossing|hole_clearance|copper_edge_clearance)\]", report)
+
+
 def plain(kind, net="N", layer=0, soft=True, **kw):
     """An item as finish.copper_items() gives it, without a board."""
     it = dict(kind=kind, net=net, layers={layer}, hole=0.0, soft=soft, r=0.1, **kw)

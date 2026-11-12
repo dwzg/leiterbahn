@@ -97,6 +97,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 - `foreign_copper(board, rect, allowed, layers=None)`: Tracks and vias inside rect (x0, y0, x1, y1) on nets not in `allowed`, on every copper layer unless `layers` names some.
 - `min_gap(board, nets_a, nets_b)`: Smallest copper-to-copper distance between two groups of nets on one copper layer: (mm, layer name, x, y, net_a, net_b), with (x, y) in the middle of the gap. None when the groups share no copper layer.
 - `acute_angles(board, limit=89.0)`: Joints where two tracks of a net meet at less than `limit` degrees (etch traps): shared endpoints and T-junctions. Returns [(net, layer, x, y, angle)].
+- `coupling(board, quiet, noisy, apart=0.5)`: Where tracks of quiet nets run nearer than `apart` mm to copper of noisy nets on their layer: [(quiet net, noisy net, mm of track, nearest gap in mm)], the longest first.
 - `narrow_tracks(board, classes, default)`: Tracks narrower than their net class (neck-downs). classes: Board.classes.
 - `drc(pcb_path, report_path, schematic_parity=True)`: 
 - `render(pcb_path, png_path, layers='F.Cu,B.Cu,F.SilkS,F.Fab,Edge.Cuts,F.CrtYd', width=2400)`: 
@@ -184,4 +185,4 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
 - `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
 - `shut_in(board, tmp_dir, step=0.1, skip=(), say=None)`: The nets that have no way even alone on the board: [(net, [(x, y)])].
-- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3)`: Route every net of the board that is in more than one piece, all at once.
+- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0)`: Route every net of the board that is in more than one piece, all at once.
