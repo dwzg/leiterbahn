@@ -66,12 +66,20 @@ struct Grids {
     via_r: f64,
     via_hole: f64,
     hole_clear: f64,
-    hard: Vec<Vec<u16>>,
-    soft: Vec<Vec<u16>>,
-    hist: Vec<Vec<f32>>,
-    hard_via: Vec<Vec<u16>>,
-    soft_via: Vec<Vec<u16>>,
-    hist_via: Vec<Vec<f32>>,
+    /// Per kind of track, a cell for every place on every layer; per kind of via, one for every place.
+    track: Vec<Vec<Cell>>,
+    via: Vec<Vec<Cell>>,
+}
+
+/// What a track's centre (or a via's) finds at one place: how much copper that stays is too
+/// near (`hard`), how much routed copper of other nets (`soft`), and what the place has cost
+/// in earlier rounds. Together in 8 bytes: the search reads all three for every step, and as
+/// three arrays they were three places in memory.
+#[derive(Clone, Copy, Default)]
+struct Cell {
+    hard: u16,
+    soft: u16,
+    hist: f32,
 }
 
 fn dist2(item: &Item, x: f64, y: f64) -> f64 {
@@ -92,8 +100,10 @@ fn dist2(item: &Item, x: f64, y: f64) -> f64 {
     dx * dx + dy * dy
 }
 
-/// Add `delta` to every cell of one layer whose centre is within `grow` cells of the item.
-fn raster(grid: &mut [u16], nx: usize, ny: usize, layer: usize, item: &Item, grow: f64, delta: i32) {
+/// Add `delta` to the hard (or soft) count of every cell of one layer whose centre is within
+/// `grow` cells of the item.
+#[allow(clippy::too_many_arguments)]
+fn raster(grid: &mut [Cell], soft: bool, nx: usize, ny: usize, layer: usize, item: &Item, grow: f64, delta: i32) {
     let a = &item.a;
     let (x0, x1) = (a[0].min(a[2]) - grow, a[0].max(a[2]) + grow);
     let (y0, y1) = (a[1].min(a[3]) - grow, a[1].max(a[3]) + grow);
@@ -120,7 +130,8 @@ fn raster(grid: &mut [u16], nx: usize, ny: usize, layer: usize, item: &Item, gro
         for i in i0..=i1 {
             if dist2(item, i as f64, j as f64) <= limit {
                 let cell = &mut grid[row + i];
-                *cell = (*cell as i32 + delta).clamp(0, u16::MAX as i32) as u16;
+                let count = if soft { &mut cell.soft } else { &mut cell.hard };
+                *count = (*count as i32 + delta).clamp(0, u16::MAX as i32) as u16;
             }
         }
     }
@@ -156,26 +167,26 @@ impl Grids {
         for k in 0..self.kinds.len() {
             let (half, clearance) = self.kinds[k];
             let grow = item.r + (item.clearance.max(clearance) + half + margin) / step;
-            let grid = if soft { &mut self.soft[k] } else { &mut self.hard[k] };
+            let grid = &mut self.track[k];
             for &l in &item.layers {
-                raster(grid, nx, ny, l, item, grow, delta);
+                raster(grid, soft, nx, ny, l, item, grow, delta);
             }
             if item.hole > 0.0 {
                 let grow = item.hole + (self.hole_clear + half + margin) / step;
                 for l in 0..nl {
-                    raster(grid, nx, ny, l, &centre, grow, delta);
+                    raster(grid, soft, nx, ny, l, &centre, grow, delta);
                 }
             }
         }
         for c in 0..self.via_kinds.len() {
-            let grid = if soft { &mut self.soft_via[c] } else { &mut self.hard_via[c] };
+            let grid = &mut self.via[c];
             if !item.layers.is_empty() {
                 let keep = (item.clearance.max(self.via_kinds[c]) + self.via_r).max(self.hole_clear + self.via_hole / 2.0);
-                raster(grid, nx, ny, 0, item, item.r + (keep + margin) / step, delta);
+                raster(grid, soft, nx, ny, 0, item, item.r + (keep + margin) / step, delta);
             }
             if item.hole > 0.0 {
                 let grow = item.hole + (self.hole_clear + self.via_r + margin) / step;
-                raster(grid, nx, ny, 0, &centre, grow, delta);
+                raster(grid, soft, nx, ny, 0, &centre, grow, delta);
             }
         }
     }
@@ -209,11 +220,97 @@ struct Job {
     boxes: Vec<[i32; 4]>,
 }
 
+/// The cells a search has reached and not yet gone on from, cheapest first to a quarter of a
+/// cell. A binary heap took 43 % of the router's time on a board with 158 nets: here a cell
+/// goes into the bucket of its cost, and the buckets are emptied in turn. The ring of buckets
+/// covers costs up to `RING / 4` cells above the cheapest waiting cell; what costs more (a way
+/// across other nets, late in the rounds) waits in a heap until the ring gets there.
+struct Queue {
+    ring: Vec<Vec<(u32, f32)>>,
+    far: BinaryHeap<Reverse<(u64, u32, u32)>>,
+    /// The bucket being emptied, the highest one used, and how many cells are in the ring.
+    at: u64,
+    top: u64,
+    count: usize,
+}
+
+const RING: u64 = 1 << 16;
+
+impl Queue {
+    fn new() -> Queue {
+        Queue {
+            ring: vec![Vec::new(); RING as usize],
+            far: BinaryHeap::new(),
+            at: 0,
+            top: 0,
+            count: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        if self.count > 0 {
+            for b in self.at..=self.top.min(self.at + RING - 1) {
+                self.ring[(b % RING) as usize].clear();
+            }
+        }
+        self.far.clear();
+        (self.at, self.top, self.count) = (0, 0, 0);
+    }
+
+    /// `f`: what the way through this cell will cost at least; `g`: what it cost to get here.
+    fn push(&mut self, f: f32, g: f32, node: u32) {
+        let b = ((f * 4.0) as u64).max(self.at);
+        if b < self.at + RING {
+            self.ring[(b % RING) as usize].push((node, g));
+            self.top = self.top.max(b);
+            self.count += 1;
+        } else {
+            self.far.push(Reverse((b, g.to_bits(), node)));
+        }
+    }
+
+    /// What has come within the ring's reach moves from the heap into the ring.
+    fn pull(&mut self) {
+        while let Some(&Reverse((b, g, node))) = self.far.peek() {
+            if b >= self.at + RING {
+                break;
+            }
+            self.far.pop();
+            self.ring[(b % RING) as usize].push((node, f32::from_bits(g)));
+            self.top = self.top.max(b);
+            self.count += 1;
+        }
+    }
+
+    fn pop(&mut self) -> Option<(u32, f32)> {
+        loop {
+            if self.count == 0 {
+                let &Reverse((b, _, _)) = self.far.peek()?;
+                self.at = b;
+                self.pull();
+            }
+            if let Some(entry) = self.ring[(self.at % RING) as usize].pop() {
+                self.count -= 1;
+                return Some(entry);
+            }
+            self.at += 1;
+            self.pull();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Mark {
+    g: f32,
+    prev: u32,
+    seen: u32,
+}
+
 struct Search {
-    g: Vec<f32>,
-    prev: Vec<u32>,
-    seen: Vec<u32>,
+    /// Per cell: what the way to it costs, the cell before it, and the search that wrote this.
+    marks: Vec<Mark>,
     round: u32,
+    queue: Queue,
     target: Vec<u32>,
     /// Cells where the net being laid has a via already (== `laying`): a free change of layer.
     own_via: Vec<u32>,
@@ -347,8 +444,7 @@ impl Search {
         let round = self.round;
         let window = self.window;
         let (nx, ny, nl) = (grids.nx as i32, grids.ny as i32, grids.nl);
-        let (hard, soft, hist) = (&grids.hard[kind], &grids.soft[kind], &grids.hist[kind]);
-        let (hard_via, soft_via, hist_via) = (&grids.hard_via[via_kind], &grids.soft_via[via_kind], &grids.hist_via[via_kind]);
+        let (track, via) = (&grids.track[kind], &grids.via[via_kind]);
         let union = goals.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |u, b| {
             [u[0].min(b[0]), u[1].min(b[1]), u[2].max(b[2]), u[3].max(b[3])]
         });
@@ -363,25 +459,29 @@ impl Search {
             }
             best
         };
-        let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+        self.queue.clear();
         for &s in sources {
-            if hard[s as usize] > 0 || (press.is_none() && soft[s as usize] > 0) {
+            if track[s as usize].hard > 0 || (press.is_none() && track[s as usize].soft > 0) {
                 continue;
             }
-            self.g[s as usize] = 0.0;
-            self.prev[s as usize] = NONE;
-            self.seen[s as usize] = round;
+            self.marks[s as usize] = Mark {
+                g: 0.0,
+                prev: NONE,
+                seen: round,
+            };
             let (_l, i, j) = grids.split(s);
-            heap.push(Reverse((h(i as i32, j as i32).to_bits(), s)));
+            self.queue.push(h(i as i32, j as i32), 0.0, s);
         }
         let mut opened = 0u64;
-        while let Some(Reverse((_f, node))) = heap.pop() {
+        while let Some((node, g)) = self.queue.pop() {
             let n = node as usize;
-            let g = self.g[n];
+            if g > self.marks[n].g {
+                continue; // a cheaper way to this cell was found after this one was queued
+            }
             if self.target[n] != 0 {
                 let mut path = vec![node];
-                while self.prev[*path.last().unwrap() as usize] != NONE {
-                    path.push(self.prev[*path.last().unwrap() as usize]);
+                while self.marks[*path.last().unwrap() as usize].prev != NONE {
+                    path.push(self.marks[*path.last().unwrap() as usize].prev);
                 }
                 path.reverse();
                 self.expanded += opened;
@@ -400,50 +500,59 @@ impl Search {
                     continue;
                 }
                 let m = layer + (c * nx + a) as usize;
-                if hard[m] > 0 {
+                let cell = track[m];
+                if cell.hard > 0 {
                     continue;
                 }
-                if di != 0 && dj != 0 && (hard[layer + (j * nx + a) as usize] > 0 || hard[layer + (c * nx + i) as usize] > 0) {
+                if di != 0 && dj != 0 && (track[layer + (j * nx + a) as usize].hard > 0 || track[layer + (c * nx + i) as usize].hard > 0) {
                     continue;
                 }
-                let crowd = match (press, soft[m]) {
+                let crowd = match (press, cell.soft) {
                     (_, 0) => 1.0,
                     (None, _) => continue,
                     (Some(p), s) => 1.0 + p * s as f32,
                 };
-                let ng = g + len * (1.0 + hist[m] * memory) * crowd;
-                if self.seen[m] != round || ng < self.g[m] {
-                    self.seen[m] = round;
-                    self.g[m] = ng;
-                    self.prev[m] = node;
-                    heap.push(Reverse(((ng + h(a, c)).to_bits(), m as u32)));
+                let ng = g + len * (1.0 + cell.hist * memory) * crowd;
+                let mark = &mut self.marks[m];
+                if mark.seen != round || ng < mark.g {
+                    *mark = Mark {
+                        g: ng,
+                        prev: node,
+                        seen: round,
+                    };
+                    self.queue.push(ng + h(a, c), ng, m as u32);
                 }
             }
             let flat = (j * nx + i) as usize;
             let cost = if self.own_via[flat] == self.laying {
                 0.0
             } else {
-                if hard_via[flat] > 0 {
+                let cell = via[flat];
+                if cell.hard > 0 {
                     continue;
                 }
-                let crowd = match (press, soft_via[flat]) {
+                let crowd = match (press, cell.soft) {
                     (_, 0) => 1.0,
                     (None, _) => continue,
                     (Some(p), s) => 1.0 + p * s as f32,
                 };
-                via_cost * (1.0 + hist_via[flat] * memory) * crowd
+                via_cost * (1.0 + cell.hist * memory) * crowd
             };
             for other in 0..nl {
                 let m = other * (nx * ny) as usize + flat;
-                if other == l || hard[m] > 0 || (press.is_none() && soft[m] > 0) {
+                let cell = track[m];
+                if other == l || cell.hard > 0 || (press.is_none() && cell.soft > 0) {
                     continue;
                 }
-                let ng = g + cost + press.unwrap_or(0.0) * soft[m] as f32;
-                if self.seen[m] != round || ng < self.g[m] {
-                    self.seen[m] = round;
-                    self.g[m] = ng;
-                    self.prev[m] = node;
-                    heap.push(Reverse(((ng + h(i, j)).to_bits(), m as u32)));
+                let ng = g + cost + press.unwrap_or(0.0) * cell.soft as f32;
+                let mark = &mut self.marks[m];
+                if mark.seen != round || ng < mark.g {
+                    *mark = Mark {
+                        g: ng,
+                        prev: node,
+                        seen: round,
+                    };
+                    self.queue.push(ng + h(i, j), ng, m as u32);
                 }
             }
         }
@@ -475,7 +584,7 @@ impl Router<'_> {
             for s in 0..self.jobs[n].items[piece].len() {
                 let item = self.jobs[n].items[piece][s].clone();
                 self.grids.stamp(&item, false, margin, -delta);
-                let grid = &mut self.grids.hard_via[via_kind];
+                let grid = &mut self.grids.via[via_kind];
                 if item.hole > 0.0 {
                     let (x, y) = ((item.a[0] + item.a[2]) / 2.0, (item.a[1] + item.a[3]) / 2.0);
                     let centre = Item {
@@ -486,9 +595,9 @@ impl Router<'_> {
                         hole: 0.0,
                         clearance: 0.0,
                     };
-                    raster(grid, nx, ny, 0, &centre, item.hole + (hole_clear + via_r) / step, delta);
+                    raster(grid, false, nx, ny, 0, &centre, item.hole + (hole_clear + via_r) / step, delta);
                 } else if item.rect {
-                    raster(grid, nx, ny, 0, &item, via_r * 0.5 / step, delta);
+                    raster(grid, false, nx, ny, 0, &item, via_r * 0.5 / step, delta);
                 }
             }
         }
@@ -508,16 +617,18 @@ impl Router<'_> {
         let mut count = 0;
         for (path, &kind) in self.laid[n].nodes.iter().zip(&self.laid[n].kinds) {
             for &node in path {
-                if self.grids.soft[kind][node as usize] > 0 {
+                let cell = &mut self.grids.track[kind][node as usize];
+                if cell.soft > 0 {
                     count += 1;
-                    self.grids.hist[kind][node as usize] += remember;
+                    cell.hist += remember;
                 }
             }
         }
         for &flat in &self.laid[n].vias {
-            if self.grids.soft_via[via_kind][flat as usize] > 0 {
+            let cell = &mut self.grids.via[via_kind][flat as usize];
+            if cell.soft > 0 {
                 count += 1;
-                self.grids.hist_via[via_kind][flat as usize] += remember;
+                cell.hist += remember;
             }
         }
         count
@@ -667,7 +778,7 @@ impl Router<'_> {
                     hole: 0.0,
                     clearance: 0.0,
                 };
-                raster(&mut self.grids.hard_via[job.via_kind], self.grids.nx, self.grids.ny, 0, &hole, apart, 1);
+                raster(&mut self.grids.via[job.via_kind], false, self.grids.nx, self.grids.ny, 0, &hole, apart, 1);
                 near.push(hole);
                 self.search.own_via[flat as usize] = self.search.laying;
             }
@@ -682,7 +793,8 @@ impl Router<'_> {
         }
         for hole in &near {
             raster(
-                &mut self.grids.hard_via[self.jobs[n].via_kind],
+                &mut self.grids.via[self.jobs[n].via_kind],
+                false,
                 self.grids.nx,
                 self.grids.ny,
                 0,
@@ -726,12 +838,8 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         via_r: problem.via.d / 2.0,
         via_hole: problem.via.hole,
         hole_clear: problem.hole_clear,
-        hard: vec![vec![0; nx * ny * nl]; kinds.len()],
-        soft: vec![vec![0; nx * ny * nl]; kinds.len()],
-        hist: vec![vec![0.0; nx * ny * nl]; kinds.len()],
-        hard_via: vec![vec![0; nx * ny]; via_kinds.len()],
-        soft_via: vec![vec![0; nx * ny]; via_kinds.len()],
-        hist_via: vec![vec![0.0; nx * ny]; via_kinds.len()],
+        track: vec![vec![Cell::default(); nx * ny * nl]; kinds.len()],
+        via: vec![vec![Cell::default(); nx * ny]; via_kinds.len()],
         kinds,
         via_kinds,
     };
@@ -741,11 +849,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         let via = k >= grids.kinds.len();
         let half = if via { grids.via_r } else { grids.kinds[k].0 };
         let layers = if via { 1 } else { nl };
-        let grid = if via {
-            &mut grids.hard_via[k - grids.kinds.len()]
-        } else {
-            &mut grids.hard[k]
-        };
+        let grid = if via { &mut grids.via[k - grids.kinds.len()] } else { &mut grids.track[k] };
         if let Some(e) = problem.edge {
             let inset = problem.edge_clear + half;
             for l in 0..layers {
@@ -753,7 +857,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                     for i in 0..nx {
                         let (x, y) = (x0 + i as f64 * step, y0 + j as f64 * step);
                         if x < e[0] + inset - 1e-9 || x > e[2] - inset + 1e-9 || y < e[1] + inset - 1e-9 || y > e[3] - inset + 1e-9 {
-                            grid[(l * ny + j) * nx + i] += 1;
+                            grid[(l * ny + j) * nx + i].hard += 1;
                         }
                     }
                 }
@@ -774,11 +878,11 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             };
             if via {
                 if !keepout.layers.is_empty() {
-                    raster(grid, nx, ny, 0, &item, half / step, 1);
+                    raster(grid, false, nx, ny, 0, &item, half / step, 1);
                 }
             } else {
                 for &l in &keepout.layers {
-                    raster(grid, nx, ny, l, &item, half / step, 1);
+                    raster(grid, false, nx, ny, l, &item, half / step, 1);
                 }
             }
         }
@@ -841,9 +945,8 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         laid: vec![Laid::default(); jobs.len()],
         jobs,
         search: Search {
-            g: vec![0.0; nodes],
-            prev: vec![NONE; nodes],
-            seen: vec![0; nodes],
+            marks: vec![Mark { g: 0.0, prev: NONE, seen: 0 }; nodes],
+            queue: Queue::new(),
             round: 0,
             target: vec![0; nodes],
             own_via: vec![0; nx * ny],
@@ -1083,4 +1186,31 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         });
     }
     solution
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cells come out cheapest first to a quarter of a cell, also those that waited beyond the ring.
+    #[test]
+    fn the_queue_gives_the_cheapest_cell_first() {
+        let mut q = Queue::new();
+        let far = RING as f32; // four times the ring's reach
+        for (node, f) in [(1u32, 7.0f32), (2, 3.1), (3, far), (4, 3.9), (5, far / 2.0), (6, 0.2)] {
+            q.push(f, f, node);
+        }
+        let mut out = Vec::new();
+        while let Some((node, g)) = q.pop() {
+            out.push(node);
+            if node == 2 {
+                q.push(g + 1.0, g + 1.0, 7); // what a cell leads to costs more than the cell
+            }
+        }
+        assert_eq!(out, vec![6, 2, 4, 7, 1, 5, 3]);
+        q.push(1.0, 1.0, 8);
+        q.push(far * 3.0, 0.0, 9);
+        q.clear();
+        assert!(q.pop().is_none());
+    }
 }

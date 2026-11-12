@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.1
+
+Changed
+- The router is about twice as fast: the same board (158 nets, 0.05 mm grid) in 171 s
+  instead of 335 s, although the run took 117 rounds instead of 35. A profile showed 43 %
+  of the time in the binary heap of the search and the rest in the search loop. The heap is
+  now a ring of buckets a quarter of a cell wide; the three values the search reads per cell
+  lie together in 8 bytes, as do the three it writes. It needs 0.5 GB for that board
+  instead of 0.2 GB. Results differ slightly from 0.12.0 (cells of nearly equal cost are
+  taken in another order) and are the same from run to run.
+
 ## 0.12.0
 
 Added
