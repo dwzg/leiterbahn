@@ -50,9 +50,10 @@ ERC plus netlist proof: KiCad's connectivity must equal the nets the generator d
 
 Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 
+- `repeatable()`: Call first in a board script: the same script then gives the same board every time.
 - `copper_layers(board)`: Enabled copper layers of a pcbnew BOARD, front to back: [F_Cu, In1_Cu, ..., B_Cu].
 - class `Board`: A board built from a netlist. layers is the copper layer count (2, 4 or 6); planes lists inner layers (pcbnew.In1_Cu, ...) reserved for pours; copper_layers holds the enabled copper layers, front to back.
-  - `.__init__(netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=())`: 
+  - `.__init__(netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=(), seed=1)`: 
   - `.reopen(cls, pcb_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3, declared=None, planes=())`: A saved board, for rework after routing: rip_up(), track(), via(), route_open(), prune_dangling(), fill_zones(), unrouted(), save().
   - `.resolve(name)`: Map a plain net name to the board's net name (KiCad prefixes local nets with the sheet path).
   - `.netclass(name, nets, track, clearance=None)`: 

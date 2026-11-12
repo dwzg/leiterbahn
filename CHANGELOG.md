@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.1
+
+Added
+- `board.repeatable()`, to be called first in a board script, and seeded item ids in
+  `Board()` and `Board.reopen()`: the same script now gives the same board every time. Two
+  runs of one script had left different connections open after `route_open()` (Python's
+  set order and KiCad's random ids both changed from start to start), and rework drawn for
+  one result met the other.
+
+Fixed
+- `route_open()` could open a connection: it took a track out of the way to which another
+  track of the net was joined along the way (ending on its middle, or beside its via) and
+  did not join that one again. Such a track now stays, and the connection that wanted to
+  cross it is reported. `improve()` uses the same test (`finish.joined_only_at_ends`).
+
 ## 0.8.0
 
 Added

@@ -396,6 +396,46 @@ def in_the_way(items, placed, net, keep, wider=None):
     return hit
 
 
+def joined_only_at_ends(items, chain, ends):
+    """May this run (keys `chain` in `items`, between `ends`) be taken out and laid another way?
+    Not if it is all that joins some other copper of its net to the rest: a track that ends on
+    the middle of one of its tracks or beside one of its vias, a pad it passes over. That copper
+    would be cut off, and nothing would know to join it again. Copper that also hangs on what
+    stays at the run's ends is no hindrance."""
+    members = [items[u] for u in chain]
+    net = members[0]["net"]
+    rest = {u: o for u, o in items.items() if o["net"] == net and u not in chain}
+    joined = {u for u, o in rest.items() if not any(o is e for e in ends) and any(overlapping(m, o) for m in members)}
+    if not joined:
+        return True
+
+    def at_end(o):
+        if any(o is e for e in ends):
+            return True
+        if o["kind"] == "pad":
+            return False
+        shape = o["seg"] if o["kind"] == "seg" else o["at"] * 2
+        for end in ends:
+            if end["kind"] == "point" and end["layers"] & o["layers"] and \
+                    seg_dist(shape, end["at"] * 2) <= o.get("r", 0.0) + 1e-3:
+                return True
+            if end["kind"] == "pad" and (end["layers"] & o["layers"] or end["hole"]) and any(
+                    end["box"][0] <= x <= end["box"][2] and end["box"][1] <= y <= end["box"][3]
+                    for x, y in (shape[:2], shape[2:])):
+                return True
+        return False
+    reached = {u for u, o in rest.items() if at_end(o)}    # what stays at the ends, and all that hangs on it
+    todo = list(reached)
+    left = set(rest) - reached
+    while todo and not joined <= reached:
+        cur = rest[todo.pop()]
+        near = [u for u in left if overlapping(cur, rest[u])]
+        left.difference_update(near)
+        reached.update(near)
+        todo += near
+    return joined <= reached
+
+
 def runs_in_the_way(items, placed, net, keep, wider=None):
     """Removable tracks and vias that the new copper `placed` [(layers, seg, r)] comes too close to,
     each as its whole run up to the next pad, junction or fixed track:
@@ -589,7 +629,10 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     of detour per 0.1 mm crossed (rip=0: never). Each crossed track is taken out up to the
     next pad or junction and has to find another way, which may in turn cross tracks, `depth`
     levels deep; the last level needs free paths. If one track finds no way, nothing is
-    changed and the connection is reported. So a call never leaves more open than it found.
+    changed and the connection is reported. A track with other copper of its net joined to it
+    along the way (a track ending on its middle) is not taken out, nor is the track that ends
+    there: nothing would know to join them again. So a call never leaves more open than it
+    found.
     Locked copper is never touched. `limit` bounds one search (grid cells visited).
 
     With `hug` > 0 a step away from all copper costs that much more than one along a pad or
@@ -622,6 +665,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
             return through
         runs = runs_in_the_way(items, through[2], net, max(clearance, wider.get(net, 0.0)) + through[4],
                                dict(wider, **{"": max(clearance, wider.get(net, 0.0))}))
+        if not all(joined_only_at_ends(items, chain, ends) for _n, chain, ends in runs):
+            return got + ", and a track in the way has others joined to it"       # it would cut those off
         taken.update({u: items.pop(u) for _n, chain, _e in runs for u in chain if u in items})
         added += note(items, net, through[2])
         plans.append((net,) + through)
@@ -730,20 +775,7 @@ def runs_of(items, layers, nets=None):
             seen |= chain
             if len(ends) != 2 or ends[0] is ends[1]:
                 continue
-            tips = [e["at"] for e in ends if e["kind"] == "point"]
-            boxes = [e["box"] for e in ends if e["kind"] == "pad"]
-
-            def at_an_end(o, tips=tips, boxes=boxes):
-                """Is this copper joined at one of the run's two ends, not along it?"""
-                shape = o["seg"] if o["kind"] == "seg" else o["at"] * 2
-                if any(seg_dist(shape, t * 2) <= o.get("r", 0.0) + 1e-3 for t in tips):
-                    return True
-                pts = (shape[:2], shape[2:])
-                return any(b[0] <= x <= b[2] and b[1] <= y <= b[3] for b in boxes for x, y in pts)
-            members = [mine[u] for u in chain]
-            joined = [o for u, o in mine.items() if u not in chain and not any(o is e for e in ends)
-                      and any(overlapping(m, o) for m in members)]
-            if all(o["kind"] != "pad" and at_an_end(o) for o in joined):
+            if joined_only_at_ends(mine, chain, ends):
                 runs.append((net, chain, ends))
     return runs
 

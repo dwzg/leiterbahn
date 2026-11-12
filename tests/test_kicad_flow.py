@@ -985,3 +985,45 @@ def test_improve_lets_a_run_push_another_out_of_its_way_when_the_sum_gets_shorte
     found = set(re.findall(r"^\[(\w+)\]", (tmp_path / "drc.rpt").read_text(), re.M))
     assert not found & {"clearance", "shorting_items", "tracks_crossing", "hole_clearance"}, found
 
+
+def test_the_same_script_gives_the_same_item_ids(project, tmp_path):
+    """KiCad gives every item a random id; sets of ids are walked by the finishing passes. Board()
+    and Board.reopen() seed the ids, so two runs make the same board (with board.repeatable())."""
+    def build():
+        b = planes_board(project)
+        b.track("SIG", [("J1", 1), ("R1", 1)], locked=False)
+        return b
+    first, second = build(), build()
+    ids = [[t.m_Uuid.AsString() for t in b.board.GetTracks()] for b in (first, second)]
+    assert ids[0] == ids[1] and len(ids[0]) == 1
+    pcb = str(tmp_path / "ids.kicad_pcb")
+    first.save(pcb)
+    new = []
+    for _ in range(2):
+        c = Board.reopen(pcb, planes=[pcbnew.In1_Cu])
+        new.append(c.via("SIG", 106.0, 110.0).m_Uuid.AsString())
+    assert new[0] == new[1] and new[0] not in ids[0]
+
+
+def test_route_open_leaves_a_track_in_the_way_that_another_is_joined_to(project, tmp_path):
+    """MID shuts R1.1 in, and a second MID track ends on the middle of the first. Taking the first
+    out to let SIG through would cut the second off: the connection is reported instead."""
+    from hwdesign.kicad import finish
+    b = planes_board(project)
+    b.keepout(107.6, 111.2, 7.0, 0.8, name="wall")
+    b.keepout(100.5, 100.5, 39.0, 29.0, layers=[pcbnew.B_Cu, pcbnew.In2_Cu], name="one layer", fills=False)
+    b.track("MID", [("R1", 2), (110.91, 108.6), (107.2, 108.6), (107.2, 112.6), (107.5, 112.9), (109.09, 112.9),
+                    ("R2", 1)], locked=False)
+    items = finish.copper_items(b.board, b.copper_layers)
+    (net, chain, ends), = finish.runs_of(items, [pcbnew.F_Cu])
+    assert finish.joined_only_at_ends(items, chain, ends)
+    b.track("MID", [(107.2, 110.5), (105.5, 110.5), (105.5, 115.0)], locked=False)     # ends on the middle
+    items = finish.copper_items(b.board, b.copper_layers)
+    assert finish.runs_of(items, [pcbnew.F_Cu]) == []
+    b.fill_zones()
+    before = b.unrouted()
+    routed, failed = b.route_open(str(tmp_path), only=["SIG"])
+    assert routed == 0 and "joined to it" in failed[0][1]
+    b.fill_zones()
+    assert b.unrouted() == before
+

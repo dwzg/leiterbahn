@@ -18,6 +18,8 @@ import math
 import os
 import re
 import subprocess
+import sys
+import zlib
 
 import pcbnew
 
@@ -26,6 +28,19 @@ from .netlist import read_netlist  # noqa: F401  (re-exported)
 
 FP_DIR = os.environ.get("KICAD_FOOTPRINT_DIR", "/usr/share/kicad/footprints")
 MM = pcbnew.FromMM
+
+
+def repeatable():
+    """Call first in a board script: the same script then gives the same board every time.
+
+    Python orders its sets by a hash that changes with every start; the finishing passes
+    walk such sets, and two runs of one script left different connections open (and rework
+    drawn for the one result met the other). This starts the script again with
+    PYTHONHASHSEED=0 unless it is set. KiCad's item ids, random as well, are seeded by Board().
+    """
+    if os.environ.get("PYTHONHASHSEED") is None:
+        os.environ["PYTHONHASHSEED"] = "0"
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def copper_layers(board):
@@ -44,9 +59,10 @@ class Board:
     """
 
     def __init__(self, netlist_path, track=0.3, clearance=0.2, via=(0.6, 0.3), min_drill=0.3,
-                 declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=()):
+                 declared=None, route_margin=0.02, fp_dirs=(), layers=2, planes=(), seed=1):
         if layers not in (2, 4, 6):
             raise ValueError("layers must be 2, 4 or 6, not %r" % (layers,))
+        pcbnew.KIID.SeedGenerator(seed)                     # the same ids for the same script: see repeatable()
         self.fp_dirs = list(fp_dirs)
         self.comps, self.nets = read_netlist(netlist_path)
         self.declared = {}
@@ -93,6 +109,8 @@ class Board:
         """
         self = object.__new__(cls)
         self.fp_dirs, self.comps = [], {}
+        with open(pcb_path, "rb") as f:                    # new ids repeat from run to run, and are not those
+            pcbnew.KIID.SeedGenerator(zlib.crc32(f.read()) or 1)       # the board was built with
         self.board = pcbnew.LoadBoard(pcb_path)
         self.declared = {}
         if declared:

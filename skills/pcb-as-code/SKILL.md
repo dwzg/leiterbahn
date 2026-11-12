@@ -220,6 +220,10 @@ domains taught:
   out. Find the via sites before drawing: pads of the parts on the other side and wide
   tracks on inner layers left one row of sites 0.45 mm high above that pin row. Three vias
   there for three pins, the other two pins leave on tracks above them.
+- Start a board script with `repeatable()` (from `hwdesign.kicad.board`). Without it two runs
+  of one script differ: the finishing pass left other connections open (VIN and a slope pin
+  in one run, a switch node in the next), and hand rework written for the first result did
+  not fit the second. Check it once: run the script twice and compare the boards.
 - `b.improve()` after the board is closed: every autorouted run is searched again and
   replaced if shorter. Expect little on a dense board (2 % of the track length, 10 of 288
   vias there): each run is near its shortest with the others in place. Before spending time

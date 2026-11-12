@@ -11,8 +11,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "tools", "hw-design", "src"))
 import pcbnew  # noqa: E402
 from hwdesign.kicad.board import (Board, acute_angles, drc, foreign_copper,  # noqa: E402
-                                  narrow_tracks, path_length, render)
+                                  narrow_tracks, path_length, render, repeatable)
 
+repeatable()                                          # the same board from every run of this script
 BUILD = os.path.join(HERE, "build")
 PCB = os.path.join(HERE, "my-board.kicad_pcb")
 
