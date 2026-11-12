@@ -1083,6 +1083,37 @@ def test_acute_angles_finds_a_sharp_joint_and_ignores_a_piece_shorter_than_its_w
     assert joints(((0, 0), (5, 0)), ((0, 0), (0.05, 0.05)), ((0.05, 0.05), (4.38, 2.55))) == [30]
 
 
+def test_kinks_counts_a_step_aside_and_a_turn_back():
+    """A 0.2 mm step aside between two straight runs is a jog; a track that comes back beside itself within
+    1 mm is a hook; a plain corner is neither, and locked (hand) tracks are counted only when asked."""
+    from leiterbahn.kicad.board import kinks
+
+    def made(*lines, locked=False):
+        pb = pcbnew.BOARD()
+        net = pcbnew.NETINFO_ITEM(pb, "N", 1)
+        pb.Add(net)
+        for line in lines:
+            for (x0, y0), (x1, y1) in zip(line, line[1:], strict=False):
+                t = pcbnew.PCB_TRACK(pb)
+                t.SetStart(pcbnew.VECTOR2I_MM(x0, y0))
+                t.SetEnd(pcbnew.VECTOR2I_MM(x1, y1))
+                t.SetWidth(pcbnew.FromMM(0.15))
+                t.SetLayer(pcbnew.F_Cu)
+                t.SetNet(net)
+                t.SetLocked(locked)
+                pb.Add(t)
+        return pb
+
+    jog = [(10, 10), (12, 10), (12.2, 10.2), (15, 10.2)]
+    hook = [(10, 20), (13, 20), (13.5, 20.5), (13, 21), (11, 21)]
+    corner = [(10, 30), (13, 30), (15, 32), (15, 35)]
+    got = kinks(made(jog, hook, corner))
+    assert [j[2:] for j in got["jogs"]] == [(12.1, 10.1, 0.28)]
+    assert [h[2:] for h in got["hooks"]] == [(13.5, 20.5, 180)]
+    assert kinks(made(jog, hook, locked=True)) == dict(jogs=[], hooks=[])
+    assert len(kinks(made(jog, hook, locked=True), hand=True)["jogs"]) == 1
+
+
 def test_coupling_says_where_a_quiet_track_runs_beside_a_noisy_one():
     """Two tracks 0.2 mm wide, 0.5 mm apart for 5 mm on one layer: 0.3 mm between their copper. On different
     layers they are not beside each other; nor is a net that was not named."""

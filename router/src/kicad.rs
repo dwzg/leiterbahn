@@ -638,6 +638,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         alone: false,
         apart: 0.0,
         shy: 3.0,
+        straight: true,
         stall: 20,
         limit: 50_000_000,
     })

@@ -18,6 +18,8 @@ use problem::{Path, Problem, Role, Routed, Shape, Solution};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
+mod smooth;
+
 const NONE: u32 = u32::MAX;
 const DIAG: f32 = std::f32::consts::SQRT_2;
 const STEPS: [(i32, i32, f32); 8] = [
@@ -1389,6 +1391,25 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         }
     }
     router.search.window = whole;
+    if problem.straight {
+        let (mut before, mut after, mut nets) = (0, 0, 0);
+        for round in 0..3 {
+            // again, for what one net gives up another may take
+            let mut now = 0;
+            for &n in &order {
+                let (b, a) = router.straighten(n);
+                before += if round == 0 { b } else { 0 };
+                nets += (round == 0 && a < b) as usize;
+                now += a;
+            }
+            let done = round > 0 && now == after;
+            after = now;
+            if done {
+                break;
+            }
+        }
+        say(format!("straightened: {} bends became {}, in {} nets", before, after, nets));
+    }
     solution.expanded = router.search.expanded;
     for (n, net) in problem.nets.iter().enumerate() {
         let laid = &router.laid[n];

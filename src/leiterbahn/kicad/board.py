@@ -1738,6 +1738,81 @@ def acute_angles(board, limit=89.0):
     return out
 
 
+def kinks(board, hand=False):
+    """Tracks that are not as straight as they could be: dict(jogs, hooks).
+
+    jogs: [(net, layer name, x, y, mm)]: a piece shorter than 0.45 mm between two parallel
+    runs of more than 0.3 mm each, the offset a grid router leaves where it steps aside one
+    cell at a time. hooks: [(net, layer name, x, y, degrees)]: a track that turns back by
+    135 degrees or more within 2 mm of its length. Both are legal and neither is needed; a
+    reviewer counted 133 and 26 on a board of 158 nets. hand: count locked tracks too.
+    """
+    mm = pcbnew.ToMM
+    by = {}
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_VIA" or (t.IsLocked() and not hand):
+            continue
+        a, e = t.GetStart(), t.GetEnd()
+        if (a.x, a.y) != (e.x, e.y):
+            by.setdefault((t.GetNetname(), t.GetLayer()), []).append(((a.x, a.y), (e.x, e.y)))
+    jogs, hooks = [], []
+    for (net, layer), segs in sorted(by.items()):
+        at = {}
+        for k, (a, e) in enumerate(segs):
+            at.setdefault(a, []).append((k, 0))
+            at.setdefault(e, []).append((k, 1))
+
+        def walk(k, end, seen, segs=segs, at=at):          # on from segment k's other end, while the track is one line
+            out = []
+            while True:
+                here = segs[k][1 - end]
+                on = [(j, e) for j, e in at[here] if j != k]
+                if len(on) != 1 or on[0][0] in seen:
+                    return out
+                k, end = on[0]
+                seen.add(k)
+                out.append((k, end))
+
+        done = set()
+        for k0 in range(len(segs)):
+            if k0 in done:
+                continue
+            seen = {k0}
+            ahead = walk(k0, 0, seen)
+            behind = walk(k0, 1, seen)
+            chain = [(k, 1 - e) for k, e in reversed(behind)] + [(k0, 0)] + ahead
+            done |= seen
+            way, long = [], []
+            for k, end in chain:                           # each piece as it is passed: from end `end` to the other
+                (x0, y0), (x1, y1) = segs[k][end], segs[k][1 - end]
+                d = math.hypot(x1 - x0, y1 - y0)
+                way.append(((x1 - x0) / d, (y1 - y0) / d))
+                long.append(mm(d))
+            for i in range(1, len(chain) - 1):
+                same = way[i - 1][0] * way[i + 1][0] + way[i - 1][1] * way[i + 1][1] > 0.99
+                if long[i] < 0.45 and same and long[i - 1] > 0.3 and long[i + 1] > 0.3:
+                    (x0, y0), (x1, y1) = segs[chain[i][0]]
+                    jogs.append((net, board.GetLayerName(layer), round(mm((x0 + x1) / 2), 2),
+                                 round(mm((y0 + y1) / 2), 2), round(long[i], 2)))
+            i = 0
+            while i < len(chain):                          # each turn back once, with the most it turns
+                run, most, first, far = 0.0, -0.70, None, i
+                for j in range(i + 1, len(chain)):
+                    dot = way[i][0] * way[j][0] + way[i][1] * way[j][1]
+                    if dot < most + 1e-9 and long[i] > 0.25 and long[j] > 0.25:
+                        most, far = min(most, dot), j
+                        first = j if first is None else first
+                    run += long[j]
+                    if run > 2.0:
+                        break
+                if first is not None:
+                    x, y = segs[chain[first][0]][chain[first][1]]
+                    hooks.append((net, board.GetLayerName(layer), round(mm(x), 2), round(mm(y), 2),
+                                  round(math.degrees(math.acos(max(-1.0, most))))))
+                i = max(far, i + 1)
+    return dict(jogs=jogs, hooks=hooks)
+
+
 def coupling(board, quiet, noisy, apart=0.5):
     """Where tracks of quiet nets run nearer than `apart` mm to copper of noisy nets on their layer:
     [(quiet net, noisy net, mm of track, nearest gap in mm)], the longest first.

@@ -319,3 +319,34 @@ fn a_quiet_and_a_noisy_net_that_are_both_routed_part() {
     }
     assert_eq!(near[0], 0.0); // nothing is counted where nothing was asked
 }
+
+/// Past two walls that stand in its straight way a track has many shapes of one length, and the
+/// search leaves it with a bend wherever it stepped aside: 15 corner points here, of which a
+/// handful are needed. Straightened it has those, is no longer, and keeps clear as before.
+#[test]
+fn a_track_is_straightened_without_growing_longer() {
+    for (x, y) in [(9.0, 3.4), (9.0, 4.6), (7.0, 5.2)] {
+        let mut got = Vec::new();
+        for straight in [false, true] {
+            let s = solve(json!({
+                "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "straight": straight,
+                "fixed": [{"seg": [4.0, 2.0, 4.0, 3.6], "r": 0.075, "layers": [0], "clearance": 0.15},
+                          {"seg": [6.0, 3.9, 6.0, 5.6], "r": 0.075, "layers": [0], "clearance": 0.15}],
+                "nets": [{"name": "A", "width": 0.15, "clearance": 0.15, "pieces": [[pad(1.0, 3.0, 0)], [pad(x, y, 0)]]}]
+            }));
+            assert!(s.nets[0].open.is_empty());
+            for (wx, y0, y1) in [(4.0, 2.0, 3.6), (6.0, 3.9, 5.6)] {
+                for &(_, _, ax, ay, bx, by) in &lines(&s) {
+                    for k in 0..=20 {
+                        let (px, py) = ((ax + (bx - ax) * k as f64 / 20.0) * 0.05, (ay + (by - ay) * k as f64 / 20.0) * 0.05);
+                        let d = (px - wx).hypot((y0 - py).max(py - y1).max(0.0));
+                        assert!(d > 0.075 + 0.075 + 0.15 - 0.03, "{} mm from a wall's middle at ({}, {})", d, px, py);
+                    }
+                }
+            }
+            got.push((s.nets[0].paths.iter().map(|p| p.cells.len()).sum::<usize>(), s.nets[0].cost));
+        }
+        assert!(got[0].0 >= 10 && got[1].0 <= 6, "corner points {:?}", got);
+        assert!(got[1].1 <= got[0].1 + 1e-6, "cost {:?}", got);
+    }
+}

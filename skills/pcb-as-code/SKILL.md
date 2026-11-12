@@ -87,6 +87,7 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
 - `foreign_copper` in the switcher hot loop;
 - `narrow_tracks` on autorouted copper (neck-downs);
 - `acute_angles` (etch traps, duplicate loops);
+- `kinks` (steps aside and turns back the router left: legal, and what a reviewer sees first);
 - `coupling` (quiet tracks beside noisy copper). Name the nets that swing (switch nodes,
   boot and gate nets, transformer and rectifier nodes, clocks) and those that take up what
   is near them (feedback, compensation, sense, reference, amplifier inputs) once, give both

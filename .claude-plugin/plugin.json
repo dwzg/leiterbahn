@@ -1,6 +1,6 @@
 {
   "name": "leiterbahn",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Circuit boards as code: KiCad schematics and boards from Python, a router of its own (all nets at once), layout checks DRC can't do, and JLCPCB fab files.",
   "author": {
     "name": "Dennis Witzig",

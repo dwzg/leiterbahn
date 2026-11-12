@@ -67,6 +67,9 @@ pub struct Problem {
     /// where they find a way that is not more than `shy` times longer for it. 0: no such wish.
     #[serde(default)]
     pub apart: f64,
+    /// Straighten the finished tracks: see smooth.rs.
+    #[serde(default = "d_true")]
+    pub straight: bool,
     #[serde(default = "d_shy")]
     pub shy: f64,
 }

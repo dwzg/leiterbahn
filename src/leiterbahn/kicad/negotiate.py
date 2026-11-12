@@ -86,6 +86,7 @@ def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cos
                 hole_clear=rules["hole_clear"], hole_to_hole=rules["hole_clear"],
                 edge=list(rules["edge"]), edge_clear=rules["edge_clear"],
                 apart=rules.get("apart", 0.0) if role else 0.0, shy=rules.get("shy", 3.0),
+                straight=rules.get("straight", True),
                 keepouts=keepouts, fixed=fixed, nets=nets, max_iter=max_iter), routed
 
 
@@ -106,7 +107,7 @@ def solve(prob, tmp_dir, say=None):
 
 
 def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
-                   weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0):
+                   weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True):
     """(the finisher's view of the board, its copper items, the problem, {net: [[item key]]})."""
     from . import finish
     r = finish._Router(board, None, step, via_cost, 0, False, 0.0, locked)
@@ -121,7 +122,7 @@ def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, 
     rules = dict(routing=r.routing, edge=r.edge, edge_clear=edge_clear, clearance=r.clearance,
                  via=(r.via_d, r.via_hole), hole_clear=finish.HOLE, width=r.class_width, track=r.thin, wider=r.wider,
                  areas=r.areas, quiet={board.resolve(n) for n in quiet}, noisy={board.resolve(n) for n in noisy},
-                 apart=apart, shy=shy)
+                 apart=apart, shy=shy, straight=straight)
     prob, routed = problem(items, piece, rules, None if only is None else {board.resolve(n) for n in only},
                            {board.resolve(n) for n in skip}, box, step, via_cost, max_iter,
                            {board.resolve(n): w for n, w in (weights or {}).items()})
@@ -156,7 +157,7 @@ def shut_in(board, tmp_dir, step=0.1, skip=(), say=None):
 
 
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
-              say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0):
+              say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True):
     """Route every net of the board that is in more than one piece, all at once.
 
     box: (x0, y0, x1, y1) on the sheet: route only inside it (copper outside stays; a net is
@@ -168,7 +169,10 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     feedback node, a sense line; a switch node, a gate drive, a clock): a track of the one
     keeps `apart` mm from all copper of the other, pads and fixed tracks too, where a way
     exists that is not more than `shy` times longer for the stretch in question; beside in
-    the result says what is left, {net: mm} (see also board.coupling()). Returns dict(nets,
+    the result says what is left, {net: mm} (see also board.coupling()). straight: finished
+    tracks are straightened: each stretch takes the way with one bend where that is free,
+    no longer and no nearer to what it keeps away from (a grid search leaves a bend wherever
+    it stepped aside; board.kinks() counts what is left). Returns dict(nets,
     routed, open [(net, pieces left apart)], rounds, seconds, cost, alone, by_net): cost is
     all tracks in mm with a via as
     `via_cost` and narrow track half as much again; alone is the same with each net alone on
@@ -179,7 +183,7 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     """
     from . import finish
     r, items, prob, routed = _board_problem(board, only, skip, box, step, via_cost, max_iter, locked, weights,
-                                            edge_clear, quiet, noisy, apart, shy)
+                                            edge_clear, quiet, noisy, apart, shy, straight)
     started = time.time()
     answer = solve(prob, tmp_dir, say)
     grid = finish.Grid(prob["box"], step)

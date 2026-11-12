@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.21.0
+
+Added
+- Finished tracks are straightened (`negotiate(straight=True)`, on by default). On a grid
+  with diagonals most ways have many shapes of one length, and the search left a bend
+  wherever it stepped aside: 2962 pieces for 2 m of track on a board of 158 nets, with 131
+  steps aside between parallel runs. Each stretch now takes the way with one bend between
+  its ends, over as many of its bends as that way is free for: never longer, never nearer
+  to copper the net keeps away from, no sharper where it meets what stays. The same board:
+  1545 pieces and 40 steps aside, the same length, DRC clean, 2 s more.
+- `board.kinks(board)`: steps aside (a short piece between two parallel runs) and turns
+  back (135 degrees or more within 2 mm) of the autorouted tracks, with where.
+
+Turns back are not fewer for it (23 and 22): each is the shortest way round something
+that is there, and goes only when what it goes round moves.
+
 ## 0.20.0
 
 Added
