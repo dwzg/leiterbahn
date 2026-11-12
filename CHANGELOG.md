@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.3
+
+Fixed
+- `route_open()` on a net with a pour: which of the net's pieces a connection joined still
+  depended on the two items KiCad happened to name, so two runs of one script differed in
+  a few ground tracks. The pieces are now taken from KiCad's connectivity, pours included
+  (`finish.cluster_of(items, key, pieces)`), and such a connection ends on the nearest
+  copper of another piece, like any other net's.
+
 ## 0.8.2
 
 Fixed

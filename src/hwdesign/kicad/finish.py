@@ -350,14 +350,18 @@ def overlapping(p, q):
     return seg_dist(ga, gb) <= ra + rb
 
 
-def cluster_of(items, start):
-    """The keys of all items of start's net that are joined to it by tracks, vias and pads."""
+def cluster_of(items, start, pieces=None):
+    """The keys of all items of start's net that are joined to it by tracks, vias and pads.
+    pieces: {key: number} for items KiCad has found joined (the same number: one piece of copper,
+    pours included); what was laid since is found by its shape."""
     net = items[start]["net"]
     rest = {k for k, it in items.items() if it["net"] == net and k != start}
     found, todo = {start}, [start]
+    pieces = pieces or {}
     while todo:
-        cur = items[todo.pop()]
-        near = [k for k in rest if touching(cur, items[k])]
+        key = todo.pop()
+        cur, mine = items[key], pieces.get(key)
+        near = [k for k in rest if (mine is not None and pieces.get(k) == mine) or touching(cur, items[k])]
         rest.difference_update(near)
         found.update(near)
         todo += near
@@ -559,6 +563,7 @@ class _Router:
         self.poured = {z.GetNetname() for z in self.pb.Zones() if not z.GetIsRuleArea()}   # joined by copper this
         self.fresh = 0                                                                 # module does not see
         self.drawn = set()
+        self.pieces = {}                                   # {key: number}: what KiCad found joined, see cluster_of()
 
     def keep(self, net):
         return max(self.clearance, self.wider.get(net, 0.0))
@@ -571,8 +576,8 @@ class _Router:
         step, edge = self.step, self.edge
         reason = "no path"
         mine, others = [a], [b]
-        if ka is not None and net not in self.poured:
-            group = cluster_of(items, ka)
+        if ka is not None:
+            group = cluster_of(items, ka, self.pieces)
             mine = [items[k] for k in group]
             others = [it for k, it in items.items() if it["net"] == net and k not in group]
         if box is not None:
@@ -634,7 +639,7 @@ def _box_of(it):
     return it["box"] if it["kind"] == "pad" else it["at"] * 2
 
 
-def _same_every_time(items, pairs, poured):
+def _same_every_time(items, pairs, pieces):
     """KiCad names an open connection by two of its items, and which two changes from run to
     run. Name it by the two nearest items of the two pieces instead, and put the list in an
     order that depends on the copper only: shortest first."""
@@ -649,18 +654,15 @@ def _same_every_time(items, pairs, poured):
         if ua not in items or ub not in items:
             continue
         net = items[ua]["net"]
-        if net in poured:
-            ka, kb = sorted((ua, ub), key=lambda u: name(items[u]))
-        else:
-            one = cluster_of(items, ua)
-            if ub in one:
-                continue
-            two = cluster_of(items, ub)
-            if (len(two), min(name(items[u]) for u in two)) < (len(one), min(name(items[u]) for u in one)):
-                one, two = two, one                        # start from the smaller piece
-            _d, _na, _nb, ka, kb = min(
-                (math.hypot(spot(items[p])[0] - spot(items[q])[0], spot(items[p])[1] - spot(items[q])[1]),
-                 name(items[p]), name(items[q]), p, q) for p in one for q in two)
+        one = cluster_of(items, ua, pieces)
+        if ub in one:
+            continue
+        two = cluster_of(items, ub, pieces)
+        if (len(two), min(name(items[u]) for u in two)) < (len(one), min(name(items[u]) for u in one)):
+            one, two = two, one                            # start from the smaller piece
+        _d, _na, _nb, ka, kb = min(
+            (math.hypot(spot(items[p])[0] - spot(items[q])[0], spot(items[p])[1] - spot(items[q])[1]),
+             name(items[p]), name(items[q]), p, q) for p in one for q in two)
         a, b = items[ka], items[kb]
         key = (net, name(a), name(b))
         if key not in seen:
@@ -679,7 +681,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     board's track width); narrow_tracks() reports the second kind and widen() restores what
     fits. To copper of another net it keeps the larger of the two net classes' clearances.
     Ground nets on plane layers are routed like any other net: give their pads vias
-    with fan_to_planes() first. Nets in `skip` are left alone; with `only`, all others are.
+    with fan_to_planes() first. What a pour joins counts as joined (KiCad's connectivity).
+    Nets in `skip` are left alone; with `only`, all others are.
     only=[...], locked=True routes chosen nets before the autorouter, which then keeps them.
     Use it for single connections; with all wide nets routed first, their tracks ran past the
     pads of a QFN and shut its pins in.
@@ -703,7 +706,7 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     """
     router = _Router(board, width, step, via_cost, limit, fine, hug, locked)
     pb, find, note, draw = board.board, router.find, router.note, router.draw
-    clearance, wider, poured = router.clearance, router.wider, router.poured
+    clearance, wider = router.clearance, router.wider
     skip = {board.resolve(n) for n in skip}
     only = None if only is None else {board.resolve(n) for n in only}
     pcb = os.path.join(tmp_dir, "route_open.kicad_pcb")
@@ -740,7 +743,15 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
         board.fill_zones()
         pcbnew.SaveBoard(pcb, pb)
         items = copper_items(pb, board.copper_layers, fixed=mine)
-        pairs = _same_every_time(items, open_pairs(pcb), poured)
+        pairs = open_pairs(pcb)
+        conn, pieces = pb.GetConnectivity(), {}            # KiCad's pieces of copper, pours included, for the
+        for n, u in enumerate(u for pair in pairs for u, _x, _y in pair):          # two ends of every pair
+            if u in items and u not in pieces:
+                pieces[u] = n
+                for other in conn.GetConnectedItems(items[u]["obj"], 0):
+                    pieces.setdefault(other.m_Uuid.AsString(), n)
+        router.pieces = pieces
+        pairs = _same_every_time(items, pairs, pieces)
         if only is not None or skip:
             pairs = [p for p in pairs if items[p[0][0]]["net"] not in skip
                      and (only is None or items[p[0][0]]["net"] in only)]
@@ -758,7 +769,7 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
             net = a["net"]
             if net in skip or (only is not None and net not in only):
                 continue
-            if net not in poured and ub in cluster_of(items, ua):
+            if ub in cluster_of(items, ua, pieces):
                 continue                                   # joined by a track laid earlier in this round
             taken, added, plans = {}, [], []
             done = attempt(items, net, a, b, ua, depth, taken, added, plans)

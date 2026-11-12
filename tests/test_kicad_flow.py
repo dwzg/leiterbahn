@@ -1029,3 +1029,16 @@ def test_route_open_joins_again_what_hung_on_a_track_it_takes_out(project, tmp_p
     b.fill_zones()
     assert routed == 1 and failed == [] and b.unrouted() == before - 1
 
+
+def test_pieces_of_a_net_that_a_pour_joins_count_as_one():
+    """Two tracks of a net that do not meet are two pieces, unless KiCad found them joined (by a
+    pour): then a connection is not routed between them, and a third track is not 'the other piece'."""
+    from hwdesign.kicad import finish
+
+    def seg(x0, y0, x1, y1):
+        return dict(kind="seg", net="GND", seg=(x0, y0, x1, y1), r=0.1, layers={0}, hole=0.0, soft=True)
+    items = {"a": seg(0, 0, 2, 0), "b": seg(5, 0, 7, 0), "c": seg(7, 0, 9, 0), "d": seg(20, 0, 22, 0)}
+    assert finish.cluster_of(items, "a") == {"a"}
+    assert finish.cluster_of(items, "a", {"a": 0, "b": 0}) == {"a", "b", "c"}       # c hangs on b by its shape
+    assert finish.cluster_of(items, "d", {"a": 0, "b": 0}) == {"d"}
+
