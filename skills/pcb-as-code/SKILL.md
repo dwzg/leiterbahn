@@ -172,6 +172,21 @@ domains taught:
   shunts, anything that crosses an isolation gap. The placer minimises wire length: left
   alone it put a bypass FET next to the output relay 40 mm from its shunt, because one of
   its nets ended there.
+- After `large()` and `small()`, `improve()` moves, turns and exchanges what they placed. On
+  a 65 × 56 mm board with 287 parts it took 12 % off the wire length estimate and, routed,
+  12 % off the track length. It knows nothing of routing: of eight seeds three routed
+  without an open connection, five left 1 to 11 open (most often a gate drive whose pad at
+  a hand-placed FET had been shut in). Give the script a mode that places and routes
+  without writing anything, run several seeds through it, and keep the best that routes
+  clean. Weights (`weights={net: 3}`) are worth using here: three nets at a controller
+  went from 16 to 2 mm, 8 to 1 mm and 18 to 4 mm.
+- Where one part sits can matter more than any router setting. A buck-boost controller
+  6 mm nearer its power stage: its 13 sensitive nets 22 % shorter, the board routed in 22
+  rounds instead of 96. The half perimeter estimate follows what a net would cost alone on
+  the board closely (correlation 0.95 over 20 routed placements) and the routed result
+  with all nets only loosely (0.6 to 0.7): compare placements by routing them.
+- Say where parts may go with `inside()`, `only()` and `keep()`, not with functions in
+  `rules`: `improve()` cannot see into a function.
 - Run `large()` for every group before `small()` for any. Group by group, the resistors of
   the first groups took the front and a 11 × 7 mm transformer found no room within 45 mm.
 - Reserve the room of hand routes with `keep()` before the automatic passes, and the spots

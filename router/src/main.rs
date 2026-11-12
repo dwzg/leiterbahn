@@ -7,7 +7,11 @@
 //!     the new tracks. The rules come from the .kicad_pro beside the board. --problem also writes
 //!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
 //!     in mm, their cost with the net alone on the board, pieces left apart.
-use leiterbahn_route::{kicad, problem::Problem, route};
+//!
+//! leiterbahn-route place problem.json result.json
+//!     Improves a placement (see `place.rs`): parts are shifted, turned and exchanged where that
+//!     shortens the connections, within the rules given.
+use leiterbahn_route::{kicad, place, problem::Problem, route};
 use std::{env, fs, process};
 
 fn fail(message: String) -> ! {
@@ -82,8 +86,14 @@ fn main() {
         fs::write(&args[3], out).unwrap_or_else(|e| fail(format!("{}: {}", args[3], e)));
         process::exit(if solution.nets.iter().all(|n| n.open.is_empty()) { 0 } else { 1 });
     }
+    if args.len() == 4 && args[1] == "place" {
+        let problem: place::Problem = serde_json::from_str(&read(&args[2])).unwrap_or_else(|e| fail(format!("{}: {}", args[2], e)));
+        let result = place::place(&problem, &mut |line| eprintln!("{}", line)).unwrap_or_else(|e| fail(format!("{}: {}", args[2], e)));
+        fs::write(&args[3], serde_json::to_string(&result).unwrap()).unwrap_or_else(|e| fail(format!("{}: {}", args[3], e)));
+        return;
+    }
     if args.len() != 3 {
-        fail("usage: leiterbahn-route problem.json result.json\n       leiterbahn-route board in.kicad_pcb out.kicad_pcb [options]".to_string());
+        fail("usage: leiterbahn-route problem.json result.json\n       leiterbahn-route board in.kicad_pcb out.kicad_pcb [options]\n       leiterbahn-route place problem.json result.json".to_string());
     }
     let problem: Problem = serde_json::from_str(&read(&args[1])).unwrap_or_else(|e| fail(format!("{}: {}", args[1], e)));
     let result = route(&problem, &mut |line| eprintln!("{}", line));

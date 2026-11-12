@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.13.0
+
+Added
+- `Placer.improve()`: the parts `near()`, `large()` and `small()` placed are moved, turned,
+  put on the other side and exchanged where that shortens the connections (simulated
+  annealing in `leiterbahn-route place`, Rust; the same result for the same seed; 5 million
+  moves on 250 parts in a few seconds). The cost is the half perimeter of each net's pads,
+  a tie of each capacitor to the supply pin it serves, the pull to the block's anchor, the
+  price of the back, and a limit on pads per 2 mm square, set by what the placement that
+  came in held: without that limit 7 of 8 results on a board with 287 parts left
+  connections without a way, with it 5 of 8. So a result is a candidate: route it, and
+  take another seed if something stays open. The best of eight on that board: routed
+  length 2294 mm instead of 2618 mm, 225 vias instead of 236, the 13 nets weighted 3 at
+  200 mm instead of 235 mm, DRC clean.
+- Where parts may go, as data: `Placer.inside(refs, *rectangles)`, `Placer.only(refs, "F")`,
+  and `keep()` as before. `improve()` works with these; it cannot see into a function in
+  `rules` and refuses to run with one.
+- `Board.separate_silk()`: drops silkscreen graphics that come nearer to a neighbour's than
+  the rules allow (courtyards 0.2 mm apart do not keep a pin-1 mark off the next outline).
+
 ## 0.12.2
 
 Fixed

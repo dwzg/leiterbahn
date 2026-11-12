@@ -388,6 +388,24 @@ def test_reference_labels_are_placed_per_board_side(project):
         assert lines and not any(box.Intersects(g.GetBoundingBox()) for g in lines)
 
 
+def test_silk_of_neighbours_is_kept_apart(project):
+    def close_pairs(b):
+        lines = [(fp.GetReference(), g.GetBoundingBox()) for fp in b.board.GetFootprints() for g in fp.GraphicalItems()
+                 if g.GetLayer() == pcbnew.F_SilkS and g.GetClass() != "PCB_FIELD"]
+        for _, box in lines:
+            box.Inflate(pcbnew.FromMM(0.075))
+        return sum(1 for i, (r, a) in enumerate(lines) for q, c in lines[i + 1:] if r != q and a.Intersects(c))
+    b = board(project)
+    place_all(b)
+    assert close_pairs(b) == 0 and b.separate_silk() == 0  # apart as placed: nothing goes
+    silk = [g.GetBoundingBox() for g in b.fps["R1"].GraphicalItems()
+            if g.GetLayer() == pcbnew.F_SilkS and g.GetClass() != "PCB_FIELD"]
+    height = pcbnew.ToMM(max(s.GetBottom() for s in silk) - min(s.GetTop() for s in silk))
+    b.place("R2", 110, 110 + height + 0.1)                 # R2's silk 0.1 mm under R1's
+    assert close_pairs(b) > 0
+    assert b.separate_silk() > 0 and close_pairs(b) == 0
+
+
 def test_pad_labels_stay_out_of_cut_outs(project):
     def label(cut=None):
         b = board(project)
@@ -497,6 +515,52 @@ def test_rules_keep_parts_out_and_fixed_parts_ignore_them(project):
     assert p.boxes["R2"][0] >= 20
     assert not p.free("R4", 10, 20) and p.free("R4", 30, 20)
     assert not p.free("R4", 39.5, 20)                     # over the board edge
+
+
+def test_areas_and_sides_given_as_data(project):
+    b, p = placer(project)
+    p.inside(["R2"], (20, None, None, None), (None, None, 3, 3))     # right of x = 20, or in the corner
+    p.only(["R4"], "B")
+    p.fix("R1", 10, 10)
+    p.near("R2", anchor=(10, 10))
+    assert p.boxes["R2"][0] >= 20
+    assert not p.free("R2", 10, 20) and p.free("R2", 30, 20)
+    assert not p.free("R4", 30, 20) and p.free("R4", 30, 20, 0, True)
+    p.near("R4", anchor=(10, 10))
+    assert p.at["R4"][3] and set(p.auto) == {"R2", "R4"}
+
+
+def test_improve_moves_placed_parts_closer_within_the_rules(project, tmp_path):
+    b, p = placer(project)
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    p.inside(["R3", "R4"], (20, None, None, None))        # the right half is theirs
+    p.keep(8, 0, 12, 30, "F")
+    for ref, at in (("R1", (30, 4)), ("R2", (30, 26)), ("R3", (22, 26)), ("R4", (22, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)        # all in the wrong corner
+    before, old = p.length(), dict(p.at)
+    got = p.improve(str(tmp_path), moves=3000)
+    assert got["moved"] >= 3 and sum(got["after"].values()) < sum(got["before"].values()) and p.length() < 0.6 * before
+    assert p.at["J1"] == old["J1"] and p.at["J2"] == old["J2"]
+    assert b.courtyard_overlaps() == ([], []) and p.boxes["R3"][0] >= 20 and p.boxes["R4"][0] >= 20
+    for ref in ("R1", "R2", "R3", "R4"):
+        x, y, rot, back = p.at[ref]
+        assert back or not overlap(p.boxes[ref], (8, 0, 12, 30))
+        fp = b.fps[ref]
+        assert (pcbnew.ToMM(fp.GetPosition().x), pcbnew.ToMM(fp.GetPosition().y)) == pytest.approx((100 + x, 100 + y))
+        assert fp.IsFlipped() == back
+    again = placer(project)[1]
+    again.fix("J1", 4, 10)
+    again.fix("J2", 36, 10)
+    again.inside(["R3", "R4"], (20, None, None, None))
+    again.keep(8, 0, 12, 30, "F")
+    for ref, at in (("R1", (30, 4)), ("R2", (30, 26)), ("R3", (22, 26)), ("R4", (22, 4))):
+        again.near(ref, anchor=at, start=at, pull=0.0)
+    again.improve(str(tmp_path), moves=3000)
+    assert again.at == p.at                               # the same seed, the same placement
+    p.rules.append(lambda ref, box, back, through: False)
+    with pytest.raises(ValueError):
+        p.improve(str(tmp_path))                          # it cannot see into a function
 
 
 def test_face_and_find(project):

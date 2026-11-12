@@ -7,14 +7,20 @@ connect to. Coordinates are millimetres from the board's top left corner, seen f
 
     p = Placer(b, planes=("GND",))                        # after b.outline(...)
     p.fix("J1", 4, 10)                                    # footprint origin, as Board.place()
-    p.rules.append(lambda ref, box, back, through: back and box[2] > 30)   # True: not allowed there
+    p.inside(["U1", "R1"], (0, 0, 30, None))              # these stay left of x = 30
+    p.only(["U2"], "F")                                   # too tall for the back
     p.keep(10, 4, 12, 20)                                 # room for a hand route
     p.large(["U1", "U2"], anchor=(20, 12))
     p.small(["R1", "R2", "C1"], anchor=(20, 12))
+    p.improve(tmp_dir)                                    # then move, turn and exchange them for shorter connections
 
 It places; it does not judge a layout. Look at the render: a switching loop or a sense
 resistor belongs where the circuit needs it, not where the wire length is shortest.
 """
+import json
+import os
+import subprocess
+
 import pcbnew
 
 CELL = 5.0                                # bucket size of the collision index, mm
@@ -31,8 +37,10 @@ class Placer:
 
     nets: {net: [(ref, pad)]}, default the board's declared netlist. planes: nets on a
     plane, whose pads may be anywhere. gap: extra distance between courtyards. edge: distance
-    kept from the board outline. rules: functions (ref, box, back, through) that return True
-    where a part must not go; box is the courtyard (x0, y0, x1, y1). block: {ref: group}; a
+    kept from the board outline. Where a part may go is said with inside(), only() and keep().
+    rules: functions (ref, box, back, through) that return True where a part must not go, for
+    what those three cannot say; box is the courtyard (x0, y0, x1, y1). improve() cannot see
+    into a function and refuses to run with one. block: {ref: group}; a
     capacitor prefers supply pins of its own group. back_cost: what a place on the back costs,
     in mm of wire (a via, and a second assembly side): at 1.0 a resistor went under the pad
     it connects to although the front next to it was free.
@@ -53,6 +61,10 @@ class Placer:
         self.pads = {}                    # net -> [(x, y, ref, pad)] of placed parts
         self.served = {}                  # (ref, pad) -> number of capacitors placed for it
         self.rules = []
+        self.keeps = []                   # (x0, y0, x1, y1, sides)
+        self.areas = {}                   # ref -> [[(x0, y0, x1, y1)]]: inside one rectangle of each list
+        self.sides = {}                   # ref -> "F" or "B"
+        self.auto = {}                    # ref -> (anchor, pull, sides, rots) of the parts near() placed
         self.block = {}
         self._shape = {}
 
@@ -96,6 +108,15 @@ class Placer:
         e = self.edge
         if box[0] < e or box[1] < e or box[2] > self.size[0] - e or box[3] > self.size[1] - e:
             return False
+        if self.sides.get(ref, "FB").find("B" if back else "F") < 0:
+            return False
+        for group in self.areas.get(ref, ()):
+            if not any(r[0] <= box[0] and r[1] <= box[1] and box[2] <= r[2] and box[3] <= r[3] for r in group):
+                return False
+        mine = "FB" if through else "B" if back else "F"
+        for x0, y0, x1, y1, sides in self.keeps:
+            if any(c in sides for c in mine) and box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3]:
+                return False
         if any(rule(ref, box, back, through) for rule in self.rules):
             return False
         g = self.gap
@@ -109,10 +130,20 @@ class Placer:
 
     def keep(self, x0, y0, x1, y1, sides="F"):
         """Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route."""
-        def rule(ref, box, back, through):
-            mine = "FB" if through else "B" if back else "F"
-            return any(c in sides for c in mine) and box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3]
-        self.rules.append(rule)
+        self.keeps.append((x0, y0, x1, y1, sides))
+
+    def inside(self, refs, *rects):
+        """Each of refs must lie with its whole courtyard inside one of the rectangles
+        (x0, y0, x1, y1); None for a side that is open. Called again for a part, both hold."""
+        far = 1e9
+        group = [tuple(v if v is not None else (-far if k < 2 else far) for k, v in enumerate(r)) for r in rects]
+        for ref in refs:
+            self.areas.setdefault(ref, []).append(group)
+
+    def only(self, refs, side):
+        """refs go on the front ("F") or on the back ("B") only."""
+        for ref in refs:
+            self.sides[ref] = side
 
     # ---- placing by hand -------------------------------------------------------
     def fix(self, ref, x, y, rot=0, back=False):
@@ -254,6 +285,7 @@ class Placer:
             raise RuntimeError("no room for %s within %.0f mm of (%.1f, %.1f)" % (ref, max_r, sx, sy))
         c, x, y, rot, back, hits = best
         self.fix(ref, x, y, rot, back)
+        self.auto[ref] = (tuple(anchor), pull, tuple(sides), tuple(rots))
         for h in hits:
             self.served[h] = self.served.get(h, 0) + 1
         return c, x, y, rot, back
@@ -293,3 +325,108 @@ class Placer:
             xs, ys = [q[0] for q in pads], [q[1] for q in pads]
             total += max(xs) - min(xs) + max(ys) - min(ys)
         return total
+
+    # ---- improving what is placed ------------------------------------------------
+    def _lift(self, ref):
+        x, y, rot, back = self.at.pop(ref)
+        box = self.boxes.pop(ref)
+        for side in (False, True):
+            for cell in self._cells(box, side):
+                if ref in self.cells.get(cell, ()):
+                    self.cells[cell].remove(ref)
+        for net in set(self.pins.get(ref, {}).values()):
+            self.pads[net] = [t for t in self.pads.get(net, ()) if t[2] != ref]
+
+    def problem(self, moves=20000, seed=1, weights=None):
+        """The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
+
+        The parts near() placed may move, to the sides and rotations it was allowed; what was
+        fixed by hand stays. A net with up to 5 pads counts with the half perimeter of the box
+        around its pads, times its weight. On a supply rail a resistor or capacitor is tied to
+        the nearest pin of a part that uses the rail (of its own block, if there is one): a
+        capacitor with nothing but supply on its pads firmly, others at a quarter.
+        """
+        weights = weights or {}
+        refs = sorted(self.at)
+        index = {ref: i for i, ref in enumerate(refs)}
+        parts = []
+        for ref in refs:
+            x, y, rot, back = self.at[ref]
+            auto = self.auto.get(ref)
+            combos = {(rot % 360, back)}
+            if auto:
+                may = self.sides.get(ref, "FB")
+                combos |= {(r % 360, bk) for bk in auto[2] for r in auto[3] if ("B" if bk else "F") in may}
+            shapes, through = {}, False
+            for r, bk in sorted(combos):
+                box, pads, through = self.shape(ref, r, bk)
+                key = "%d/%s" % (r if auto else 0, "B" if bk else "F")
+                mine = self.pins.get(ref, {})
+                shapes[key] = dict(box=list(box), pads={k: list(v[0]) for k, v in pads.items() if k in mine})
+            part = dict(name=ref, at=[x, y, rot % 360 if auto else 0, back], fixed=not auto, through=through,
+                        shapes=shapes, inside=[[list(r) for r in group] for group in self.areas.get(ref, ())])
+            if auto:
+                part.update(anchor=list(auto[0]), pull=auto[1])
+            parts.append(part)
+
+        def pin(ref, pad):
+            return ref in index and pad in next(iter(parts[index[ref]]["shapes"].values()))["pads"]
+        nets, tethers = [], []
+        for net in sorted(self.nets):
+            pins = [(ref, pad) for ref, pad in self.nets[net] if pin(ref, pad)]
+            if net in self.planes or len(pins) < 2:
+                continue
+            users = [t for t in pins if not passive(t[0])]
+            if len(self.nets[net]) <= RAIL or not users:
+                nets.append(dict(name=net, pins=[[index[r], p] for r, p in pins],
+                                 weight=weights.get(net, 1.0) * (1.0 if len(self.nets[net]) <= RAIL else 0.25)))
+                continue
+            for ref, pad in pins:
+                if not passive(ref) or ref not in self.auto:
+                    continue
+                same = [t for t in users if self.block.get(t[0]) == self.block.get(ref)]
+                here = self.pad(ref, pad)
+
+                def far(t, here=here):
+                    there = self.pad(*t)
+                    return abs(there[0] - here[0]) + abs(there[1] - here[1])
+                to = min(same or users, key=far)
+                signal = any(n not in self.planes and len(self.nets[n]) <= RAIL for n in self.pins[ref].values())
+                tethers.append({"from": [index[ref], pad], "to": [index[to[0]], to[1]],
+                                "weight": 0.25 if signal else 1.0})
+        return dict(size=list(self.size), edge=self.edge, gap=self.gap, back_cost=self.back_cost, moves=moves,
+                    seed=seed, keeps=[dict(box=list(k[:4]), sides=k[4]) for k in self.keeps], parts=parts, nets=nets,
+                    tethers=tethers)
+
+    def improve(self, tmp_dir, moves=20000, seed=1, weights=None, say=None):
+        """Move, turn and exchange the parts near() placed where that shortens the connections.
+
+        Simulated annealing in `leiterbahn-route place`: `moves` tries per part, the same
+        result for the same `seed`. weights: {net: number} for nets that matter more. The
+        rules of inside(), only() and keep() hold, as do gap and edge; parts fixed by hand
+        stay. Returns dict(before, after: the cost in mm and what it is made of, moved, tried,
+        kept). The cost does not know whether the board can be routed: route the result to
+        judge it.
+        """
+        from .negotiate import binary
+        if self.rules:
+            raise ValueError("improve() cannot see into rules given as functions: use inside(), only(), keep()")
+        os.makedirs(tmp_dir, exist_ok=True)
+        src, out = os.path.join(tmp_dir, "place-problem.json"), os.path.join(tmp_dir, "place-result.json")
+        with open(src, "w") as f:
+            json.dump(self.problem(moves, seed, weights), f)
+        done = subprocess.run([binary(), "place", src, out], capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError("leiterbahn-route place failed: " + done.stderr[-2000:])
+        if say:
+            for line in done.stderr.splitlines():
+                say(line)
+        with open(out) as f:
+            answer = json.load(f)
+        keep = {ref: self.auto[ref] for ref, *_ in answer["parts"]}
+        for ref, *_ in answer["parts"]:
+            self._lift(ref)
+        for ref, x, y, rot, back in answer["parts"]:
+            self.fix(ref, x, y, rot, back)
+        self.auto.update(keep)
+        return {k: answer[k] for k in ("before", "after", "moved", "tried", "kept")}

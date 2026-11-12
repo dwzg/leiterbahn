@@ -10,6 +10,7 @@
 //! clearances are kept by counting, for every kind of track (width, clearance), how much copper
 //! lies too near each cell for the centre of such a track.
 pub mod kicad;
+pub mod place;
 pub mod problem;
 pub mod sexp;
 

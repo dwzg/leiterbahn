@@ -67,6 +67,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.text(s, x, y, size=1.0, thickness=0.15, layer=pcbnew.F_SilkS, angle=0, justify='center')`: 
   - `.label_near(ref, pad, text, size=1.0, thickness=0.15, gap=0.2, edge=0.5, dist=(1.4, 2.2, 3.0))`: Silkscreen text next to a pad, at the first clear spot around it. Returns the text or None.
   - `.clip_silk(ref)`: Drop a footprint's silkscreen graphics that leave the board outline (e.g. an overhanging antenna).
+  - `.separate_silk(clearance=0.16)`: Drop silkscreen graphics of one footprint that come within `clearance` of another's.
   - `.place_refs(size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=(), silk=0.16)`: Put every reference label just outside its courtyard, clear of pads, silk and other labels.
   - `.zone(net, layer, inset=0.3, clearance=0.3, min_width=0.2, thermal_gap=0.3, spoke=0.4, rect=None, polygon=None)`: Copper pour of `net` on `layer`: the board box `inset` mm inside the outline, or only the region rect=(x, y, w, h) or polygon=[(x, y), ...].
   - `.keepout(x, y, w, h, layers=None, name='keepout', tracks=True, vias=True, fills=True)`: Rule area; by default no copper pour, tracks or vias (footprint pads still allowed) on every copper layer of the board.
@@ -110,6 +111,8 @@ Placement by connections, on both board sides.
   - `.area(ref)`: 
   - `.free(ref, x, y, rot=0, back=False)`: True if ref fits at (x, y): on the board, allowed by the rules, clear of placed parts.
   - `.keep(x0, y0, x1, y1, sides='F')`: Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route.
+  - `.inside(refs, *rects)`: Each of refs must lie with its whole courtyard inside one of the rectangles (x0, y0, x1, y1); None for a side that is open. Called again for a part, both hold.
+  - `.only(refs, side)`: refs go on the front ("F") or on the back ("B") only.
   - `.fix(ref, x, y, rot=0, back=False)`: Put ref's footprint origin at (x, y). Rules, gap and edge do not apply: you decided.
   - `.centre(ref, cx, cy, rot=0, back=False)`: Put the middle of ref's courtyard at (cx, cy): handy for connectors, whose origin is pin 1.
   - `.pad(ref, pad)`: Position of a placed part's pad.
@@ -122,6 +125,8 @@ Placement by connections, on both board sides.
   - `.large(refs, anchor, sides=(False,), pull=0.6)`: First pass: the unplaced large parts of refs around anchor, largest first.
   - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.
   - `.length()`: Half-perimeter wire length of all nets off the planes, mm: a figure to compare placements by.
+  - `.problem(moves=20000, seed=1, weights=None)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
+  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
 ## `leiterbahn.kicad.planar`
 

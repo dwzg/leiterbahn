@@ -416,6 +416,37 @@ class Board:
                     and not board.Contains(g.GetBoundingBox())):
                 fp.Remove(g)
 
+    def separate_silk(self, clearance=0.16):
+        """Drop silkscreen graphics of one footprint that come within `clearance` of another's.
+
+        Courtyards 0.2 mm apart do not keep silkscreen apart: a pin-1 mark outside the courtyard
+        of one part met the outline of the next at 0.09 mm (the rules ask for 0.15). Of two
+        such graphics the smaller goes (the mark, not the outline). Boxes are compared, so a
+        slanted line counts for more room than it takes. Returns how many were dropped.
+        """
+        dropped = 0
+        for layer in (pcbnew.F_SilkS, pcbnew.B_SilkS):
+            items = []
+            for fp in self.board.GetFootprints():
+                for g in fp.GraphicalItems():
+                    if g.GetLayer() == layer and g.GetClass() != "PCB_FIELD":
+                        bb = g.GetBoundingBox()
+                        box = (bb.GetLeft(), bb.GetTop(), bb.GetRight(), bb.GetBottom())
+                        items.append([box, (box[2] - box[0]) + (box[3] - box[1]), fp, g, True])
+            items.sort(key=lambda t: t[0][0])
+            d = MM(clearance)
+            for i, a in enumerate(items):
+                for b in items[i + 1:]:
+                    if b[0][0] >= a[0][2] + d:
+                        break
+                    if (a[4] and b[4] and a[2] is not b[2]
+                            and a[0][1] < b[0][3] + d and b[0][1] < a[0][3] + d and a[0][0] < b[0][2] + d):
+                        loser = a if a[1] < b[1] else b
+                        loser[4] = False
+                        loser[2].Remove(loser[3])
+                        dropped += 1
+        return dropped
+
     def place_refs(self, size=0.8, thickness=0.12, gap=0.2, edge=0.5, keep=(), silk=0.16):
         """Put every reference label just outside its courtyard, clear of pads, silk and other labels.
 
