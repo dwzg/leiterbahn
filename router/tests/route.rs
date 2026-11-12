@@ -218,3 +218,41 @@ fn rounds_that_stall_start_over_and_still_end() {
     }));
     assert!(s.nets.iter().all(|n| n.open.is_empty()) && s.iterations <= 6, "{} rounds", s.iterations);
 }
+
+/// A pin between two others, 0.5 mm apart: a 0.6 mm track has no way out of it, a 0.15 mm one
+/// has. The net's other pad is 8 mm away with nothing in between. The track is narrow at the pin
+/// and wide from where there is room, whichever of the two pads the net starts from.
+#[test]
+fn a_narrow_track_is_only_as_long_as_it_must_be() {
+    let pin = json!({"box": [0.6, 2.875, 1.4, 3.125], "layers": [0]});
+    for swapped in [false, true] {
+        let pieces = if swapped {
+            json!([[pad(9.0, 3.0, 0)], [pin]])
+        } else {
+            json!([[pin], [pad(9.0, 3.0, 0)]])
+        };
+        let s = solve(json!({
+            "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+            "fixed": [{"box": [0.6, 2.375, 1.4, 2.625], "layers": [0]}, {"box": [0.6, 3.375, 1.4, 3.625], "layers": [0]},
+                      {"box": [0.2, 2.375, 0.4, 3.625], "layers": [0]}],
+            "nets": [{"name": "A", "width": 0.6, "narrow": 0.15, "clearance": 0.2, "pieces": pieces}]
+        }));
+        assert!(s.nets[0].open.is_empty());
+        let length = |narrow: bool| -> f64 {
+            let mut sum = 0.0;
+            for path in s.nets[0].paths.iter().filter(|p| (p.width < 0.3) == narrow) {
+                for w in path.cells.windows(2) {
+                    sum += (((w[1][1] - w[0][1]).pow(2) + (w[1][2] - w[0][2]).pow(2)) as f64).sqrt() * 0.05;
+                }
+            }
+            sum
+        };
+        assert!(
+            length(true) > 0.2 && length(true) < 1.5,
+            "narrow for {} mm (started at the pin: {})",
+            length(true),
+            !swapped
+        );
+        assert!(length(false) > 6.0, "wide for {} mm", length(false));
+    }
+}

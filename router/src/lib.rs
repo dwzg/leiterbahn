@@ -773,7 +773,65 @@ impl Router<'_> {
                     self.problem.limit,
                 );
             }
-            let piece = found.as_ref().map(|path| self.search.target[*path.last().unwrap() as usize] as usize - 1);
+            let mut piece = found.as_ref().map(|path| self.search.target[*path.last().unwrap() as usize] as usize - 1);
+            // A narrow track only as long as it must be: it was laid because a pin had no way out at the
+            // net's width, and then ran narrow all the way (7 mm of 0.127 mm to a 100 uF capacitor). From
+            // the first cell of it where the full width has room to the last such cell, at full width
+            // where that has a way that is not too dear; what is left narrow is the piece at the pin.
+            let mut parts: Vec<(Vec<u32>, usize)> = Vec::new();
+            if let (true, Some(thin)) = (kind != job.kind, &found) {
+                let wide = &self.grids.track[job.kind];
+                let fits = |c: u32| wide[c as usize].hard == 0 && (press.is_some() || wide[c as usize].soft == 0);
+                let first = thin.iter().position(|&c| fits(c));
+                let last = thin.iter().rposition(|&c| fits(c));
+                if let (Some(i), Some(j)) = (first, last) {
+                    if i < j {
+                        let end = thin[j];
+                        // what the narrow piece in between is worth: a track a quarter as wide has four
+                        // times the resistance, so the full width may be up to that much dearer
+                        let worth = (self.grids.kinds[job.kind].0 / self.grids.kinds[kind].0).clamp(1.5, 4.0) as f32;
+                        let most = worth * (self.search.marks[end as usize].g - self.search.marks[thin[i] as usize].g);
+                        let own = self.search.target[end as usize] == 0;
+                        if own {
+                            self.search.target[end as usize] = u32::MAX;
+                        }
+                        let (_l, a, c) = self.grids.split(end);
+                        let mut to = goals.clone();
+                        to.push([a as i32, c as i32, a as i32, c as i32]);
+                        let mut starts = sources.clone();
+                        starts.push(thin[i]);
+                        let way = self.search.run(
+                            &self.grids,
+                            job.kind,
+                            job.via_kind,
+                            &starts,
+                            &to,
+                            press,
+                            memory,
+                            self.via_cost,
+                            self.problem.limit,
+                        );
+                        if own {
+                            self.search.target[end as usize] = 0;
+                        }
+                        let way = way.filter(|w| self.search.marks[*w.last().unwrap() as usize].g <= most);
+                        if let Some(way) = way {
+                            let at = self.search.target[*way.last().unwrap() as usize];
+                            if at != 0 {
+                                piece = Some(at as usize - 1); // the full width found its own way to a piece
+                            }
+                            if way[0] == thin[i] && i > 0 {
+                                parts.push((thin[..=i].to_vec(), kind));
+                            }
+                            let reaches = *way.last().unwrap() == end && j + 1 < thin.len();
+                            parts.push((way, job.kind));
+                            if reaches {
+                                parts.push((thin[j..].to_vec(), kind));
+                            }
+                        }
+                    }
+                }
+            }
             for node in marked {
                 self.search.target[node as usize] = 0;
             }
@@ -783,34 +841,39 @@ impl Router<'_> {
             };
             let piece = piece.unwrap();
             joined[piece] = true;
-            sources.extend(path.iter().copied());
-            sources.extend(job.cells[piece].iter().map(|c| c.0));
-            let bends = corners(&self.grids, &path);
-            let had = laid.vias.len();
-            copper(&self.grids, job, self.grids.kinds[kind].0, &bends, &mut laid.items, &mut laid.vias);
-            for &flat in &laid.vias[had..] {
-                // the net's next via: on this one or a hole's distance away
-                let (x, y) = ((flat as usize % self.grids.nx) as f64, (flat as usize / self.grids.nx) as f64);
-                let hole = Item {
-                    rect: false,
-                    a: [x, y, x, y],
-                    r: 0.0,
-                    layers: vec![],
-                    hole: 0.0,
-                    clearance: 0.0,
-                };
-                raster(&mut self.grids.via[job.via_kind], false, self.grids.nx, self.grids.ny, 0, &hole, apart, 1);
-                near.push(hole);
-                self.search.own_via[flat as usize] = self.search.laying;
+            if parts.is_empty() {
+                parts.push((path, kind));
             }
-            laid.paths.push(Path {
-                cells: bends,
-                width: self.grids.kinds[kind].0 * 2.0,
-                from: origin.get(&path[0]).copied(),
-                to: origin.get(path.last().unwrap()).copied(),
-            });
-            laid.kinds.push(kind);
-            laid.nodes.push(path);
+            sources.extend(job.cells[piece].iter().map(|c| c.0));
+            for (path, kind) in parts {
+                sources.extend(path.iter().copied());
+                let bends = corners(&self.grids, &path);
+                let had = laid.vias.len();
+                copper(&self.grids, job, self.grids.kinds[kind].0, &bends, &mut laid.items, &mut laid.vias);
+                for &flat in &laid.vias[had..] {
+                    // the net's next via: on this one or a hole's distance away
+                    let (x, y) = ((flat as usize % self.grids.nx) as f64, (flat as usize / self.grids.nx) as f64);
+                    let hole = Item {
+                        rect: false,
+                        a: [x, y, x, y],
+                        r: 0.0,
+                        layers: vec![],
+                        hole: 0.0,
+                        clearance: 0.0,
+                    };
+                    raster(&mut self.grids.via[job.via_kind], false, self.grids.nx, self.grids.ny, 0, &hole, apart, 1);
+                    near.push(hole);
+                    self.search.own_via[flat as usize] = self.search.laying;
+                }
+                laid.paths.push(Path {
+                    cells: bends,
+                    width: self.grids.kinds[kind].0 * 2.0,
+                    from: origin.get(&path[0]).copied(),
+                    to: origin.get(path.last().unwrap()).copied(),
+                });
+                laid.kinds.push(kind);
+                laid.nodes.push(path);
+            }
         }
         for hole in &near {
             raster(

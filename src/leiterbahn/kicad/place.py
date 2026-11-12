@@ -90,6 +90,7 @@ class Placer:
         self.planes_at = {}               # net -> [(x0, y0, x1, y1)]: where a pad on that net may lie
         self.hosts_from = 3               # a part with this many pads can be what a resistor or capacitor belongs to
         self.tied_to = {}                 # (ref, pad) -> (to, to_pad, weight), said with tie()
+        self.kept = set()                 # placed with first()
         self.sides = {}                   # ref -> "F" or "B"
         self.auto = {}                    # ref -> (anchor, pull, sides, rots) of the parts near() placed
         self.block = {}
@@ -556,6 +557,7 @@ class Placer:
             self.near(ref, start or (self.size[0] / 2, self.size[1] / 2), start=start, sides=sides, pull=0.0,
                       step=0.25, reach=reach)
             del self.auto[ref]
+            self.kept.add(ref)
 
     def ties_of(self, ref):
         """ties() of one part that is not placed yet or placed: where its pads belong."""
@@ -570,13 +572,15 @@ class Placer:
 
     def strays(self, limit=3.0):
         """The resistors and capacitors further than `limit` mm from the pin they belong at
-        (see ties()), of those near() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing:
+        (see ties()), of those near() or first() placed: [(mm, ref, pad, to, to_pad)], the furthest
+        first. Print it after placing:
         a board routes just as well with a boot capacitor 8 mm from its pins."""
         out = []
         for ref, pad, to, to_pad, weight in self.ties():
             (ax, ay), (bx, by) = self.pad(ref, pad), self.pad(to, to_pad)
             d = math.hypot(ax - bx, ay - by)
-            if weight >= 1.0 and d > limit and ref in self.auto:   # where a part set with fix() lies was decided
+            placed = ref in self.auto or ref in self.kept          # where a part set with fix() lies was decided
+            if weight >= 1.0 and d > limit and placed:
                 out.append((round(d, 2), ref, pad, to, to_pad))
         return sorted(out, reverse=True)
 

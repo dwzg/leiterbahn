@@ -135,7 +135,7 @@ Placement by connections, on both board sides.
   - `.tie(ref, pad, to, to_pad, weight=3.0)`: Say where a pad belongs: pad `pad` of ref at pad `to_pad` of `to`. improve() pulls it there with `weight` mm of cost per mm of distance, strays() lists it when it is far.
   - `.first(refs, sides=(False, True), reach=1.5)`: Place these now, in this order, each as near as it gets to the pins it belongs at (see ties(); a part with none goes where its nets pull it), and keep them there: improve() does not move them. For the few parts that must win the room next to a fine-pitch part: with everything tied to its pins at the same weight, a controller's supply capacitor ended 5 mm out behind a divider that could have been anywhere.
   - `.ties_of(ref)`: ties() of one part that is not placed yet or placed: where its pads belong.
-  - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
+  - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() or first() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
   - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
 ## `leiterbahn.kicad.planar`

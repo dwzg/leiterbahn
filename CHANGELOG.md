@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.0
+
+Changed
+- Router: a narrow track is only as long as it must be. A pin with no way out at its net's
+  width got the whole connection at the board's track width, and what `widen()` could not
+  restore stayed: 7 mm of 0.127 mm between a converter's input transistor and its 100 uF
+  capacitor. Now the full width takes over from the first cell where it has room, if its
+  way is not dearer than the narrow one by more than the ratio of the widths (at most 4:
+  taking every full-width way left connections open on boards that had routed). On that
+  board 1.1 mm of narrow track in 2 pieces, before 30 mm in 37; 8 of 8 seeds route.
+- `strays()` also lists the parts placed with `first()`.
+
 ## 0.18.0
 
 Changed

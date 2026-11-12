@@ -642,7 +642,8 @@ def test_a_tie_said_by_hand_and_parts_placed_first(project, tmp_path):
     p.first(["R1"])                                       # at J1, and it stays there
     assert "R1" not in p.auto and max(abs(a - c) for a, c in zip(p.pad("R1", 1), p.pad("J1", 1), strict=True)) < 3.5
     was = p.at["R1"]
-    assert sorted(t[1] for t in p.strays(3.0)) == ["R3", "R4"]   # R4 belongs to J2 by its net, R3 because it was said
+    assert "R1" in [t[1] for t in p.strays(0.5)]          # a part placed first is still asked about
+    assert sorted(t[1] for t in p.strays(3.6)) == ["R3", "R4"]   # R4 belongs to J2 by its net, R3 because it was said
     p.improve(str(tmp_path), moves=3000)
     assert p.at["R1"] == was and p.strays(4.0) == []
 
