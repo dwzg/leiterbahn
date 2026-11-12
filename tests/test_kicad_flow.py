@@ -563,6 +563,24 @@ def test_improve_moves_placed_parts_closer_within_the_rules(project, tmp_path):
         p.improve(str(tmp_path))                          # it cannot see into a function
 
 
+def test_improve_from_where_forces_put_the_parts_keeps_the_rules(project, tmp_path):
+    b, p = placer(project)
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    p.inside(["R3", "R4"], (20, None, None, None))
+    p.keep(8, 0, 12, 30, "F")
+    for ref, at in (("R1", (30, 4)), ("R2", (30, 26)), ("R3", (22, 26)), ("R4", (22, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    before, lines = p.length(), []
+    got = p.improve(str(tmp_path), moves=0, spread=True, say=lines.append)   # the forces alone, no annealing after
+    assert any(line.startswith("spread in") for line in lines) and got["started"] == got["after"]
+    assert sum(got["started"].values()) < sum(got["before"].values()) and p.length() < 0.7 * before
+    assert b.courtyard_overlaps() == ([], []) and p.boxes["R3"][0] >= 20 and p.boxes["R4"][0] >= 20
+    for ref in ("R1", "R2", "R3", "R4"):
+        assert p.at[ref][3] or not overlap(p.boxes[ref], (8, 0, 12, 30))
+
+
+
 def test_room_in_front_of_the_pins_of_a_fine_pitch_part():
     from leiterbahn.kicad.place import with_lanes
     # a 3 x 3 mm part: three pads 0.9 x 0.25 on its left and right side, a square pad in the middle

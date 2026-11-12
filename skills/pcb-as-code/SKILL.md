@@ -182,6 +182,17 @@ domains taught:
   all eight routed. Give the script a mode that places and routes without writing
   anything, run several seeds through it, and keep the best that routes clean. Weights (`weights={net: 3}`) are worth using here: three nets at a controller
   went from 16 to 2 mm, 8 to 1 mm and 18 to 4 mm.
+- `improve(spread=True)` does not begin from where `large()` and `small()` put the parts
+  but from where forces put them: connections pull, courtyards push each other apart.
+  On the same board the cost ended 9 % lower than without with every one of eight seeds,
+  and routed the tracks were 7 % shorter. But the forces take the anchors at their word,
+  where `near()` takes the nearest free spot. Two blocks had their anchors on one spot:
+  `large()` had set the first part down there and the second, an inductor, 17 mm from
+  its converter (a switch node of 30 mm that nobody had noticed, since it routed). The
+  forces put the inductor on its anchor, opposite a QFN on the other side, and 7 of 8
+  seeds left pins of the QFN open: their vias had nowhere to come out. So before
+  `spread=True`: no two blocks on one anchor, and `keep()` the side opposite a fine-pitch
+  part free by about 1 mm round its courtyard. With both, 7 of 8 seeds routed.
 - Where one part sits can matter more than any router setting. A buck-boost controller
   6 mm nearer its power stage: its 13 sensitive nets 22 % shorter, the board routed in 22
   rounds instead of 96. The half perimeter estimate follows what a net would cost alone on

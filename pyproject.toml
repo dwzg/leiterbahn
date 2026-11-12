@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "leiterbahn"
-version = "0.14.0"
+version = "0.15.0"
 description = "Circuit boards as code: KiCad schematics and boards from Python, a router of its own (all nets at once), layout checks DRC cannot do, and JLCPCB fab files."
 readme = "README.md"
 license = "MIT"

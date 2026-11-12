@@ -127,8 +127,8 @@ Placement by connections, on both board sides.
   - `.large(refs, anchor, sides=(False,), pull=0.6)`: First pass: the unplaced large parts of refs around anchor, largest first.
   - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.
   - `.length()`: Half-perimeter wire length of all nets off the planes, mm: a figure to compare placements by.
-  - `.problem(moves=20000, seed=1, weights=None)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
-  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None)`: Move, turn and exchange the parts near() placed where that shortens the connections.
+  - `.problem(moves=20000, seed=1, weights=None, spread=False)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
+  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
 ## `leiterbahn.kicad.planar`
 

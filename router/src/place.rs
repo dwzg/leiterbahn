@@ -1,6 +1,7 @@
 //! Placement of parts by simulated annealing.
 //!
-//! Starts from a placement that is allowed (the one a constructive placer made) and changes it
+//! Starts from a placement that is allowed (the one a constructive placer made, or with `spread`
+//! what forces made of it: see `place/spread.rs`) and changes it
 //! move by move: a part is shifted, turned, put on the other side, or changes places with
 //! another. A move that breaks a rule is not made. A move that makes the cost smaller is kept;
 //! one that makes it larger is kept with a probability that falls as the run goes on, so the
@@ -24,6 +25,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+mod spread;
 
 /// A part's courtyard and pads at one rotation on one side, relative to its origin.
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -117,8 +120,22 @@ pub struct Problem {
     /// What a pad too many costs, in mm (times the number too many).
     #[serde(default = "one")]
     pub crowd: f64,
+    /// Begin from where forces put the parts (see `place/spread.rs`), not from where they are.
+    #[serde(default)]
+    pub spread: bool,
+    /// For that: the share of the courtyard area that may still lie on other courtyards when the
+    /// forces stop. The rest is the work of the steps after: at 0.05 the forces had driven the
+    /// parts so far apart that the result was worse than without them, at 0.2 to 0.3 best.
+    #[serde(default = "d_spill")]
+    pub spill: f64,
+    /// How far a part is shifted at most at the start of the annealing, mm; None: a quarter of the board.
+    #[serde(default)]
+    pub reach: Option<f64>,
 }
 
+fn d_spill() -> f64 {
+    0.2
+}
 fn one() -> f64 {
     1.0
 }
@@ -159,6 +176,8 @@ pub struct Placed {
     /// Every part that may move: name, origin, rotation, on the back.
     pub parts: Vec<(String, f64, f64, u32, bool)>,
     pub before: Cost,
+    /// What the annealing began from: as before, or what the forces made of it.
+    pub started: Cost,
     pub after: Cost,
     pub tried: u64,
     pub kept: u64,
@@ -518,15 +537,41 @@ pub fn place(problem: &Problem, say: &mut dyn FnMut(String)) -> Result<Placed, S
     let free: Vec<usize> = (0..n).filter(|&p| !problem.parts[p].fixed).collect();
     let mut result = Placed {
         before,
+        started: before,
         after: before,
         ..Placed::default()
     };
+    let mut rng = Rng(problem.seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+    if problem.spread && !free.is_empty() {
+        for &p in &free {
+            state.index(p, false);
+            state.count(p, -1);
+        }
+        let want = spread::spread(&mut state, &free, &mut rng, say);
+        match spread::legalise(&mut state, &free, &want) {
+            Some(moved) => say(format!(
+                "every part set down where it is allowed, {:.2} mm from where it wanted to be on average",
+                moved
+            )),
+            None => {
+                say("a part found no place where it is allowed: the placement stays as it came".to_string());
+                for &p in &free {
+                    state.pose[p] = start[p];
+                    state.index(p, true);
+                }
+            }
+        }
+        for &p in &free {
+            state.count(p, 1);
+        }
+        result.started = state.cost();
+        say(format!("cost {:.0} mm as it came, {:.0} mm now", before.total(), result.started.total()));
+    }
     if !free.is_empty() {
         let total = problem.moves * free.len() as u64;
-        let mut rng = Rng(problem.seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
         let (mut nets, mut ties) = (Vec::new(), Vec::new());
-        let reach = problem.size[0].max(problem.size[1]) / 4.0;
-        let mut running = before.total();
+        let reach = problem.reach.unwrap_or(problem.size[0].max(problem.size[1]) / 4.0);
+        let mut running = result.started.total();
         for k in 0..total {
             let progress = k as f64 / total as f64;
             let warmth = problem.warm * (problem.cold / problem.warm).powf(progress);
