@@ -102,6 +102,54 @@ def solve(prob, tmp_dir, say=None):
         return json.load(f)
 
 
+def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
+                   weights=None):
+    """(the finisher's view of the board, its copper items, the problem, {net: [[item key]]})."""
+    from . import finish
+    r = finish._Router(board, None, step, via_cost, 0, False, 0.0, locked)
+    board.fill_zones()
+    items = finish.copper_items(board.board, board.copper_layers)
+    conn, piece = board.board.GetConnectivity(), {}
+    for n, (key, it) in enumerate(items.items()):
+        if key not in piece:
+            piece[key] = n
+            for other in conn.GetConnectedItems(it["obj"], 0):
+                piece.setdefault(other.m_Uuid.AsString(), n)
+    rules = dict(routing=r.routing, edge=r.edge, edge_clear=0.3, clearance=r.clearance, via=(r.via_d, r.via_hole),
+                 hole_clear=finish.HOLE, width=r.class_width, track=r.thin, wider=r.wider, areas=r.areas)
+    prob, routed = problem(items, piece, rules, None if only is None else {board.resolve(n) for n in only},
+                           {board.resolve(n) for n in skip}, box, step, via_cost, max_iter,
+                           {board.resolve(n): w for n, w in (weights or {}).items()})
+    return r, items, prob, routed
+
+
+def shut_in(board, tmp_dir, step=0.1, skip=(), say=None):
+    """The nets that have no way even alone on the board: [(net, [(x, y)])].
+
+    Each net that is in pieces is routed with no other net there. One that still cannot be
+    joined has a pad shut in by other parts' pads, fixed copper, keep-out areas or the lack
+    of a place for a via; no routing will join it, and the parts have to make room. The
+    points are the middles of the pads of the pieces that stayed apart and of the piece they
+    should have reached. skip: nets not to ask about (ground nets before their pads have
+    their vias into the plane). Takes seconds: ask before routing a placement. (What shut a
+    pin in on one board was a ground via of a part on the other side, set 0.2 mm in front
+    of the pin by fan_to_planes(lane=0); before the vias were set, the pin had its way.)
+    """
+    _r, items, prob, routed = _board_problem(board, skip=skip, step=step)
+    prob["alone"] = True
+    answer = solve(prob, tmp_dir, say)
+    found = []
+    for net in answer["nets"]:
+        if net["open"]:
+            keys = routed[net["name"]]
+            spots = []
+            for piece in [0] + net["open"]:
+                for box in (items[key]["box"] for key in keys[piece] if items[key]["kind"] == "pad"):
+                    spots.append(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
+            found.append((net["name"], spots))
+    return found
+
+
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
               say=None, weights=None):
     """Route every net of the board that is in more than one piece, all at once.
@@ -119,20 +167,7 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     widen() restores what fits).
     """
     from . import finish
-    r = finish._Router(board, None, step, via_cost, 0, False, 0.0, locked)
-    board.fill_zones()
-    items = finish.copper_items(board.board, board.copper_layers)
-    conn, piece = board.board.GetConnectivity(), {}
-    for n, (key, it) in enumerate(items.items()):
-        if key not in piece:
-            piece[key] = n
-            for other in conn.GetConnectedItems(it["obj"], 0):
-                piece.setdefault(other.m_Uuid.AsString(), n)
-    rules = dict(routing=r.routing, edge=r.edge, edge_clear=0.3, clearance=r.clearance, via=(r.via_d, r.via_hole),
-                 hole_clear=finish.HOLE, width=r.class_width, track=r.thin, wider=r.wider, areas=r.areas)
-    prob, routed = problem(items, piece, rules, None if only is None else {board.resolve(n) for n in only},
-                           {board.resolve(n) for n in skip}, box, step, via_cost, max_iter,
-                           {board.resolve(n): w for n, w in (weights or {}).items()})
+    r, items, prob, routed = _board_problem(board, only, skip, box, step, via_cost, max_iter, locked, weights)
     started = time.time()
     answer = solve(prob, tmp_dir, say)
     grid = finish.Grid(prob["box"], step)

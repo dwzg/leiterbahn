@@ -962,6 +962,24 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     };
     let mut solution = Solution::default();
     let near = (4.0 / step) as i32;
+    if problem.alone {
+        for &n in &order {
+            router.search.window = router.around(n, near);
+            router.lay(n, Some(0.0), 0.0); // nothing is counted into the grids: the next net does not see it
+        }
+        for (n, net) in problem.nets.iter().enumerate() {
+            let cost = router.cost(n) as f64 * step;
+            solution.nets.push(Routed {
+                name: net.name.clone(),
+                paths: Vec::new(),
+                open: router.laid[n].open.clone(),
+                cost,
+                alone: cost,
+            });
+        }
+        solution.expanded = router.search.expanded;
+        return solution;
+    }
     // Weights play no part in these rounds. Three ways to let them were measured on a board with
     // 158 nets, 13 of them weighted (260 mm with only those on the board, 315 mm without weights):
     // heavy nets feel congestion less (one came out six times longer, rounds doubled), heavy nets
@@ -969,6 +987,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     // three times as long). None is worth its code; weights act in the shortening below.
     let mut press = 0.5f32;
     let mut clean = false;
+    let (mut fewest, mut since, mut restarts) = (u64::MAX, 0u32, 0u32);
     for round in 0..problem.max_iter {
         let (mut found, mut again) = (0u64, 0usize);
         for &n in &order {
@@ -996,6 +1015,30 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             if again == 0 {
                 clean = true;
                 break;
+            }
+            // A few nets that need the same cells go on changing places for as long as they are
+            // asked to (seen on a board of 158 nets: 2 nets, 18 cells, from round 30 to round 200).
+            // When the conflicts have not got fewer for `stall` rounds, the price for crossing
+            // starts low again: the stuck nets may then lie across others, those are laid again in
+            // turn, and what the cells have cost so far is remembered. Of three such boards one
+            // came clean in 61 rounds instead of 187, one in 155 instead of 200, one not at all.
+            // After three such starts the rounds end.
+            if found < fewest {
+                (fewest, since) = (found, 0);
+            } else {
+                since += 1;
+            }
+            if since >= problem.stall {
+                say(format!(
+                    "round {}: the conflicts have not got fewer than {} cells for {} rounds",
+                    round, fewest, since
+                ));
+                if restarts >= 3 {
+                    break;
+                }
+                restarts += 1;
+                press = 0.5 / 1.6;
+                (fewest, since) = (u64::MAX, 0);
             }
         } else {
             say(format!("round 0: {} nets laid", again));
@@ -1031,7 +1074,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         }
         say(format!(
             "no clean result in {} rounds: {} nets laid again in the room left",
-            problem.max_iter,
+            solution.iterations,
             out.len()
         ));
     }

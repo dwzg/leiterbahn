@@ -563,6 +563,17 @@ def test_improve_moves_placed_parts_closer_within_the_rules(project, tmp_path):
         p.improve(str(tmp_path))                          # it cannot see into a function
 
 
+def test_room_in_front_of_the_pins_of_a_fine_pitch_part():
+    from leiterbahn.kicad.place import with_lanes
+    # a 3 x 3 mm part: three pads 0.9 x 0.25 on its left and right side, a square pad in the middle
+    pads = [(sx * 1.5 - 0.45, y - 0.125, sx * 1.5 + 0.45, y + 0.125) for sx in (-1, 1) for y in (-0.5, 0.0, 0.5)]
+    pads.append((-0.6, -0.6, 0.6, 0.6))
+    box = (-2.1, -1.6, 2.1, 1.6)
+    assert with_lanes(box, pads, 0.5) == pytest.approx((-2.45, -1.6, 2.45, 1.6))      # 0.5 mm beyond the pads' ends
+    assert with_lanes(box, pads, 0.0) == box and with_lanes(box, pads[:4], 0.5) == box    # no lane; too few pads
+    assert with_lanes((-3, -3, 3, 3), pads, 0.5) == (-3, -3, 3, 3)                      # a courtyard that has the room
+
+
 def test_face_and_find(project):
     b, p = placer(project)
     rot = p.face("R1", "MID", "left")
@@ -1123,6 +1134,19 @@ def test_pieces_of_a_net_that_a_pour_joins_count_as_one():
 
 
 @pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build leiterbahn-route")
+def test_shut_in_names_the_net_whose_pad_has_no_way_out(project, tmp_path):
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    assert b.shut_in(str(tmp_path)) == []                  # nothing routed, and every net has a way
+    x, y = b.pad_xy("R1", 1)
+    r = 0.9                                                # a fence of another net round the pad: no way on its
+    fence = [(x - r, y - r), (x + r, y - r), (x + r, y + r), (x - r, y + r), (x - r, y - r)]
+    b.track("ISO", fence, 0.2)                             # side, no room for a via inside
+    got = b.shut_in(str(tmp_path))
+    assert [net for net, _ in got] == [b.resolve("SIG")]
+    assert any(abs(px - x) < 0.01 and abs(py - y) < 0.01 for px, py in got[0][1])
+
+
 def test_negotiate_routes_all_nets_at_once(project, tmp_path):
     """Nothing is routed yet: leiterbahn-route lays every net, and KiCad finds nothing open and nothing too near."""
     b = planes_board(project)

@@ -1475,6 +1475,11 @@ class Board:
         from .negotiate import negotiate
         return negotiate(self, tmp_dir, **kw)
 
+    def shut_in(self, tmp_dir, **kw):
+        """The nets that have no way even alone on the board, with where: see negotiate.shut_in()."""
+        from .negotiate import shut_in
+        return shut_in(self, tmp_dir, **kw)
+
     def improve(self, **kw):
         """Route again what is routed, run by run, and keep what is shorter, has fewer vias or
         reaches its net class's width: dict(runs, better, mm, vias, widened). After route_open();

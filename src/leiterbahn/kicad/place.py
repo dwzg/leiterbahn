@@ -32,6 +32,24 @@ def passive(ref):
     return ref[0] in "RC" and ref[1:].isdigit()
 
 
+def with_lanes(box, pads, lane):
+    """The box (x0, y0, x1, y1) of a part, grown so that it reaches `lane` mm beyond the outer
+    end of every long pad that points out of the part. pads: the boxes of its SMD pads. A
+    part with fewer than five pads, or lane 0, keeps its box."""
+    if not lane or len(pads) < 5:
+        return tuple(box)
+    mx = sum(q[0] + q[2] for q in pads) / 2 / len(pads)
+    my = sum(q[1] + q[3] for q in pads) / 2 / len(pads)
+    x0, y0, x1, y1 = box
+    for q in pads:
+        w, h, cx, cy = q[2] - q[0], q[3] - q[1], (q[0] + q[2]) / 2, (q[1] + q[3]) / 2
+        if w >= 1.4 * h and abs(cx - mx) > 0.3:             # a pad along x: out to the side it is on
+            x0, x1 = (x0, max(x1, q[2] + lane)) if cx > mx else (min(x0, q[0] - lane), x1)
+        elif h >= 1.4 * w and abs(cy - my) > 0.3:
+            y0, y1 = (y0, max(y1, q[3] + lane)) if cy > my else (min(y0, q[1] - lane), y1)
+    return (x0, y0, x1, y1)
+
+
 class Placer:
     """Places the footprints of a Board that has its outline.
 
@@ -43,11 +61,16 @@ class Placer:
     into a function and refuses to run with one. block: {ref: group}; a
     capacitor prefers supply pins of its own group. back_cost: what a place on the back costs,
     in mm of wire (a via, and a second assembly side): at 1.0 a resistor went under the pad
-    it connects to although the front next to it was free.
+    it connects to although the front next to it was free. lane: room kept free in front of
+    the pins of a part with five or more pads, in mm straight out of every long pad (as
+    Board.fan_to_planes() keeps it free of vias): the part's box reaches that far. Without
+    it a capacitor was put 0.2 mm in front of four pins of a 0.5 mm pitch QFN, the track to
+    it ran along the row, and three of those pins never got out.
     """
 
-    def __init__(self, board, nets=None, planes=("GND",), gap=0.2, edge=0.5, back_cost=2.5):
+    def __init__(self, board, nets=None, planes=("GND",), gap=0.2, edge=0.5, back_cost=2.5, lane=0.0):
         self.b, self.gap, self.edge, self.planes, self.back_cost = board, gap, edge, tuple(planes), back_cost
+        self.lane = lane
         self.origin, self.size = (board.box[0], board.box[1]), (board.box[2], board.box[3])
         nets = board.declared if nets is None else nets
         self.nets = {n: [(r, str(p)) for r, p in pads] for n, pads in nets.items()}
@@ -82,6 +105,9 @@ class Placer:
             pads = {}
             for p in fp.Pads():
                 pads.setdefault(p.GetNumber(), []).append((mm(p.GetPosition().x), mm(p.GetPosition().y)))
+            smd = [p.GetBoundingBox() for p in fp.Pads() if not p.GetDrillSize().x and p.IsOnCopperLayer()]
+            box = with_lanes(box, [(mm(q.GetLeft()), mm(q.GetTop()), mm(q.GetRight()), mm(q.GetBottom())) for q in smd],
+                             self.lane)
             self._shape[key] = (box, pads, self.b._through(fp))
             if ref in self.at:                              # asked about a placed part: put it back
                 x, y, r, bk = self.at[ref]

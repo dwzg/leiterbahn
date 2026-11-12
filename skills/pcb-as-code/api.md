@@ -88,6 +88,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.prune_dangling(rounds=10)`: Remove unlocked vias and track stubs that lead nowhere (autorouter leftovers).
   - `.route_open(tmp_dir, **kw)`: Connect what the autorouter left open, one connection at a time, with a grid search: (routed, failed). Run it after autoroute() and before the outer pours; see finish.route_open.
   - `.negotiate(tmp_dir, **kw)`: Route all nets that are in pieces at once, by negotiated congestion: see negotiate.negotiate().
+  - `.shut_in(tmp_dir, **kw)`: The nets that have no way even alone on the board, with where: see negotiate.shut_in().
   - `.improve(**kw)`: Route again what is routed, run by run, and keep what is shorter, has fewer vias or reaches its net class's width: dict(runs, better, mm, vias, widened). After route_open(); see finish.improve.
   - `.fill_zones()`: 
   - `.unrouted()`: 
@@ -105,8 +106,9 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 Placement by connections, on both board sides.
 
 - `passive(ref)`: True for resistors and capacitors (R12, C3): the parts placed last, on either side.
+- `with_lanes(box, pads, lane)`: The box (x0, y0, x1, y1) of a part, grown so that it reaches `lane` mm beyond the outer end of every long pad that points out of the part. pads: the boxes of its SMD pads. A part with fewer than five pads, or lane 0, keeps its box.
 - class `Placer`: Places the footprints of a Board that has its outline.
-  - `.__init__(board, nets=None, planes=('GND',), gap=0.2, edge=0.5, back_cost=2.5)`: 
+  - `.__init__(board, nets=None, planes=('GND',), gap=0.2, edge=0.5, back_cost=2.5, lane=0.0)`: 
   - `.shape(ref, rot, back)`: (courtyard (x0, y0, x1, y1), {pad: [(dx, dy)]}, through) relative to the part's origin.
   - `.area(ref)`: 
   - `.free(ref, x, y, rot=0, back=False)`: True if ref fits at (x, y): on the board, allowed by the rules, clear of placed parts.
@@ -173,4 +175,5 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `touches(it, box)`: 
 - `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
 - `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
+- `shut_in(board, tmp_dir, step=0.1, skip=(), say=None)`: The nets that have no way even alone on the board: [(net, [(x, y)])].
 - `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None)`: Route every net of the board that is in more than one piece, all at once.

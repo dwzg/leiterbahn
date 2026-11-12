@@ -11,6 +11,10 @@ fn d_iter() -> u32 {
 fn d_one() -> f64 {
     1.0
 }
+fn d_stall() -> u32 {
+    20
+}
+
 fn d_relax() -> u32 {
     12
 }
@@ -52,6 +56,13 @@ pub struct Problem {
     /// Cells one search may open before it gives up.
     #[serde(default = "d_limit")]
     pub limit: u64,
+    /// The rounds end when the conflicts have not got fewer for this many of them.
+    #[serde(default = "d_stall")]
+    pub stall: u32,
+    /// Lay no tracks: only say, per net, which pieces have no way to the first with the net alone on
+    /// the board (`open`), and what its tracks would cost (`alone`). Seconds for a board.
+    #[serde(default)]
+    pub alone: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

@@ -186,3 +186,35 @@ fn no_net_costs_less_than_alone_on_the_board() {
     );
     assert!(!s.shortened.is_empty());
 }
+
+/// Asked only whether each net has a way at all: two nets that would cross on one layer both
+/// have one (each is alone when asked), the one behind a wall has none; no tracks come back.
+#[test]
+fn alone_says_which_nets_have_no_way_at_all() {
+    let s = solve(json!({
+        "box": [0, 0, 10, 10], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "alone": true,
+        "fixed": [{"box": [0.0, 7.4, 10.0, 7.6], "layers": [0]}],
+        "nets": [
+            {"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(1.0, 4.0, 0)], [pad(9.0, 4.0, 0)]]},
+            {"name": "B", "width": 0.2, "clearance": 0.2, "pieces": [[pad(5.0, 1.0, 0)], [pad(5.0, 6.5, 0)]]},
+            {"name": "C", "width": 0.2, "clearance": 0.2, "pieces": [[pad(5.0, 2.0, 0)], [pad(5.0, 9.0, 0)]]}
+        ]
+    }));
+    let open: Vec<usize> = s.nets.iter().map(|n| n.open.len()).collect();
+    assert_eq!(open, vec![0, 0, 1]);
+    assert!(s.nets.iter().all(|n| n.paths.is_empty()) && s.nets[0].alone > 7.0 && s.iterations == 0);
+}
+
+/// With no patience at all for rounds that bring no fewer conflicts, the rounds start over from a
+/// low price up to three times and then end: what can be routed still is.
+#[test]
+fn rounds_that_stall_start_over_and_still_end() {
+    let s = solve(json!({
+        "box": [0, 0, 10, 10], "step": 0.1, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "stall": 0, "max_iter": 50,
+        "nets": [
+            {"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(1.0, 5.0, 0)], [pad(9.0, 5.0, 0)]]},
+            {"name": "B", "width": 0.2, "clearance": 0.2, "pieces": [[pad(5.0, 1.0, 0)], [pad(5.0, 9.0, 0)]]}
+        ]
+    }));
+    assert!(s.nets.iter().all(|n| n.open.is_empty()) && s.iterations <= 6, "{} rounds", s.iterations);
+}

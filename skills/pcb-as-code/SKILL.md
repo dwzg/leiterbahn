@@ -175,10 +175,12 @@ domains taught:
 - After `large()` and `small()`, `improve()` moves, turns and exchanges what they placed. On
   a 65 × 56 mm board with 287 parts it took 12 % off the wire length estimate and, routed,
   12 % off the track length. It knows nothing of routing: of eight seeds three routed
-  without an open connection, five left 1 to 11 open (most often a gate drive whose pad at
-  a hand-placed FET had been shut in). Give the script a mode that places and routes
-  without writing anything, run several seeds through it, and keep the best that routes
-  clean. Weights (`weights={net: 3}`) are worth using here: three nets at a controller
+  without an open connection, five left 1 to 11 open. Two causes, each found by looking
+  at what stayed open: a ground via of `fan_to_planes(lane=0)` in front of a pin (ask
+  `shut_in()` after the vias are set: it names such a net in seconds), and a capacitor in
+  front of a row of fine-pitch pins. With `fan_to_planes(lane=0.5)` and `Placer(lane=0.3)`
+  all eight routed. Give the script a mode that places and routes without writing
+  anything, run several seeds through it, and keep the best that routes clean. Weights (`weights={net: 3}`) are worth using here: three nets at a controller
   went from 16 to 2 mm, 8 to 1 mm and 18 to 4 mm.
 - Where one part sits can matter more than any router setting. A buck-boost controller
   6 mm nearer its power stage: its 13 sensitive nets 22 % shorter, the board routed in 22

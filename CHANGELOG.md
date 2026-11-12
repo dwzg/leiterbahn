@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.14.0
+
+Added
+- `Board.shut_in()`: the nets that have no way even alone on the board, with the pads
+  concerned, in seconds (`leiterbahn-route` with `"alone": true`). No routing joins such a
+  net. It found why 3 of 8 improved placements of a board left a gate drive open: a
+  capacitor's ground via, set by `fan_to_planes(lane=0)`, came out on the other side
+  0.2 mm in front of a controller pin. With `lane=0.5` those three route.
+- `Placer(lane=0.5)`: room in front of the pins of a part with five or more pads; the
+  part's box reaches that far beyond every long pad. Without it `improve()` put a capacitor
+  in front of four pins of a 0.5 mm pitch QFN; the track to it ran along the row, three
+  of those pins never got out, and the rounds went on to their limit. Of eight seeds on
+  that board, routed: 3 clean before either change, 7 with `fan_to_planes(lane=0.5)`, 8
+  with that and `Placer(lane=0.3)` or `0.5` (the tracks are then 1 to 3 % longer, for the
+  parts stand further from the pins).
+
+Changed
+- The router's rounds no longer run to their limit when a few nets go on changing places
+  over the same cells (2 nets, 18 cells, from round 30 to round 200 on one board): when
+  the conflicts have not got fewer for 20 rounds (`stall`), the price for crossing starts
+  low again, with what the cells cost so far remembered; after three such starts the
+  rounds end. Of three boards that stalled, one came clean in 61 rounds instead of 187,
+  one in 155 instead of 200, one stayed as it was (one connection open). Letting an open
+  net push others two levels deep, at a high price for crossing and keeping what it had,
+  was tried on these and closed nothing; it is not in.
+
 ## 0.13.0
 
 Added

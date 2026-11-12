@@ -632,6 +632,8 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         nets,
         max_iter: options.max_iter,
         relax: 12,
+        alone: false,
+        stall: 20,
         limit: 50_000_000,
     })
 }
