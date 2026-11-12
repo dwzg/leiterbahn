@@ -1,9 +1,15 @@
 """Wiring inside blocks: the router's rules, and that what it draws connects exactly the declared nets."""
+import os
+
 import pytest
 from conftest import comb  # noqa: F401  (fixture module)
 
 from leiterbahn.kicad import autowire as aw
-from leiterbahn.kicad.schematic import Schematic, SymbolLib
+from leiterbahn.kicad.schematic import SYMBOL_DIR, Schematic, SymbolLib
+
+# tests that place parts from KiCad's own symbol libraries: skipped where KiCad is not installed (as in CI)
+kicad_symbols = pytest.mark.skipif(not os.path.exists(os.path.join(SYMBOL_DIR, "Device.kicad_sym")),
+                                   reason="needs KiCad's symbol libraries")
 
 
 def design(symdir, **kw):
@@ -169,6 +175,7 @@ def test_justification_swap_matches_kicad(rot, mirror, flips):
     assert _just(rot, "left", -1 if mirror else 1) == ("right" if flips else "left")
 
 
+@kicad_symbols
 @pytest.mark.parametrize("rot,mirror", [(90, False), (270, False), (90, True), (0, True), (180, False)])
 def test_moved_texts_are_modelled_where_kicad_draws_them(rot, mirror):
     sch = Schematic("t")
@@ -186,6 +193,7 @@ def test_moved_texts_are_modelled_where_kicad_draws_them(rot, mirror):
     assert box[0] == pytest.approx(x1 + 0.6)          # the text starts at the anchor and runs to the right
 
 
+@kicad_symbols
 def test_texts_of_a_part_on_its_side_go_above_it_not_onto_its_wires():
     sch = Schematic("t", autowire=True)
     sch.add("R1", "Device:R", (100, 100), "10k", "", {"1": "A", "2": "B"}, rot=90)
@@ -202,6 +210,7 @@ def test_texts_of_a_part_on_its_side_go_above_it_not_onto_its_wires():
             assert box[3] <= body[1] or box[1] >= body[3]        # above or below, not at an end
 
 
+@kicad_symbols
 def test_pins_of_a_mirrored_part_on_its_side_are_where_kicad_puts_them():
     # A FET placed with rot=270 and mirror: KiCad's ERC reported its gate above the body, drain
     # to the left and source to the right, and all three pins as not connected, because the
@@ -215,6 +224,7 @@ def test_pins_of_a_mirrored_part_on_its_side_are_where_kicad_puts_them():
     assert sch.parts["Q1"]["pins"]["1"]["out"] == (0, -1)
 
 
+@kicad_symbols
 @pytest.mark.parametrize("direction,side", [("right", 1), ("left", -1)])
 def test_name_of_a_power_symbol_on_its_side_is_beyond_its_tip(direction, side):
     # Seen on a controller with supply pins on its left and right: the rotated symbol's name lay

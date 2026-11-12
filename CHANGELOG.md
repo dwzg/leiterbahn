@@ -16,6 +16,10 @@ Removed
   `.render`; functions unchanged). `leiterbahn.kicad.geometry` still writes the `board.json`
   a housing is generated from. The package's extra `[mcad]` is gone with it.
 
+Fixed
+- CI: nine schematic tests place parts from KiCad's own symbol libraries and failed where
+  KiCad is not installed (every CI run since they were added); they skip themselves there now.
+
 Earlier entries below use the names of their time.
 
 ## 0.9.0
