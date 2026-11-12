@@ -1,35 +1,34 @@
-# hw-design
+# leiterbahn
 
-Electronics and mechanical design as code, for Claude Code, GitHub Copilot CLI and people.
+Circuit boards as code, for Claude Code, GitHub Copilot CLI and people. (*Leiterbahn* is German
+for a track on a circuit board.)
 
-- **A Python library, `hwdesign`.**
-  - Generates KiCad schematics and boards from scripts, routes with Freerouting, cleans up
-    after it, runs the layout checks DRC can't, and writes JLCPCB fab files.
-  - Measures 3D-printed enclosures built in build123d.
+- **A Python library, `leiterbahn`.** It generates KiCad schematics and boards from scripts,
+  routes them with a router of its own (or with Freerouting), runs the layout checks DRC
+  can't, and writes JLCPCB fab files.
 - **A plugin for Claude Code and GitHub Copilot CLI** with skills and agents that know how to
   use the library, and the mistakes it was built to prevent.
 
 It grew out of a real board-plus-housing project
 ([probe-wink](https://github.com/dwzg/probe-wink)). Every rule in the skills comes from
-something that went wrong there.
+something that went wrong there. Until 0.9 it was called `hw-design` and also held the
+housing side, which is now [gehaeuse](https://github.com/dwzg/gehaeuse).
 
 ## What's in it
 
 | Part | What it does |
 |---|---|
-| `hwdesign.kicad.schematic` | Schematic generator, one sheet or several: parts declare their nets; wires, labels and power symbols realise them; text collisions are detected and fixed; project symbol libraries are searched before KiCad's |
-| `hwdesign.kicad.verify` | ERC plus proof that KiCad's netlist equals the declared nets |
-| `hwdesign.kicad.board` | Board builder for 2, 4 or 6 copper layers: placement, outline with slots and notches, hand routes, keepouts, parallel cached Freerouting, cleanup passes (`remove_redundant`, `widen`, `straighten`, `chamfer_corners`, `prune_dangling`), pours per region and stitching, layout checks (`path_length`, `foreign_copper`, `min_gap`, `narrow_tracks`, `acute_angles`), DRC and renders |
-| `hwdesign.kicad.place` | Placement by connections on both board sides: fixed parts by hand, the rest around anchors, with rules for domains and room reserved for hand routes |
-| `hwdesign.kicad.negotiate` | Routing of all nets at once with `hwroute` (`router/`, Rust): negotiated congestion on a grid, net class widths and clearances |
-| `hwdesign.kicad.fab` | JLCPCB Gerbers for every copper layer, BOM and CPL with per-footprint rotation corrections |
-| `hwdesign.kicad.planar` | Plane geometry without pcbnew: the gap between two groups of copper shapes, outline contours with notches |
-| `hwdesign.kicad.geometry` | Board data (outline, parts, pads, keepouts) as JSON for an enclosure generator |
-| `hwdesign.mcad` | Measure build123d solids (ray casts, distances), gasket and print estimates, headless renders |
+| `leiterbahn.kicad.schematic` | Schematic generator, one sheet or several: parts declare their nets; wires, labels and power symbols realise them; text collisions are detected and fixed; project symbol libraries are searched before KiCad's |
+| `leiterbahn.kicad.verify` | ERC plus proof that KiCad's netlist equals the declared nets |
+| `leiterbahn.kicad.board` | Board builder for 2, 4 or 6 copper layers: placement, outline with slots and notches, hand routes, keepouts, parallel cached Freerouting, cleanup passes (`remove_redundant`, `widen`, `straighten`, `chamfer_corners`, `prune_dangling`), pours per region and stitching, layout checks (`path_length`, `foreign_copper`, `min_gap`, `narrow_tracks`, `acute_angles`), DRC and renders |
+| `leiterbahn.kicad.place` | Placement by connections on both board sides: fixed parts by hand, the rest around anchors, with rules for domains and room reserved for hand routes |
+| `leiterbahn.kicad.negotiate` | Routing of all nets at once with `leiterbahn-route` (`router/`, Rust): negotiated congestion on a grid, net class widths and clearances |
+| `leiterbahn.kicad.fab` | JLCPCB Gerbers for every copper layer, BOM and CPL with per-footprint rotation corrections |
+| `leiterbahn.kicad.planar` | Plane geometry without pcbnew: the gap between two groups of copper shapes, outline contours with notches |
+| `leiterbahn.kicad.geometry` | Board data (outline, parts, pads, keepouts) as JSON for an enclosure generator ([gehaeuse](https://github.com/dwzg/gehaeuse)) |
 | skill `pcb-as-code` | The workflow and order of passes, with an API reference and a board script skeleton |
 | skill `pcb-review` | Turn someone's circles on a render into causes, fixes and new renders |
 | skill `jlcpcb-order` | Fab export, rotation corrections, placement-preview check, order options |
-| skill `printed-enclosure` | Board-driven housings with measured checks; sealing, fasteners, printing |
 | agent `layout-reviewer` | Independent routing review of a generated board |
 | agent `placement-preview-checker` | Checks a JLC placement-preview screenshot part by part |
 
@@ -37,9 +36,8 @@ something that went wrong there.
 
 - KiCad 10 (`kicad-cli`, and its Python module `pcbnew`).
 - Rust's `cargo`, for the router (`router/`, built on first use by `Board.negotiate()`).
-- [Freerouting](https://github.com/freerouting/freerouting) as `freerouting` on `PATH`.
-- For `hwdesign.mcad`: build123d, numpy, scipy (`pip install "hwdesign[mcad]"`); `f3d` for
-  renders.
+- [Freerouting](https://github.com/freerouting/freerouting) as `freerouting` on `PATH`, only
+  for `Board.autoroute()`.
 
 `pcbnew` is not on PyPI. Run the KiCad parts with the Python that KiCad installed, or in a
 venv created with `--system-site-packages`.
@@ -49,32 +47,32 @@ venv created with `--system-site-packages`.
 **The plugin**, in Claude Code:
 
 ```
-/plugin marketplace add dwzg/hw-design
-/plugin install hw-design@hw-design
+/plugin marketplace add dwzg/leiterbahn
+/plugin install leiterbahn@leiterbahn
 ```
 
-In GitHub Copilot CLI (the same manifest; agents are named `hw-design:layout-reviewer` and
-`hw-design:placement-preview-checker`):
+In GitHub Copilot CLI (the same manifest; agents are named `leiterbahn:layout-reviewer` and
+`leiterbahn:placement-preview-checker`):
 
 ```bash
-copilot plugin marketplace add dwzg/hw-design
-copilot plugin install hw-design@hw-design
+copilot plugin marketplace add dwzg/leiterbahn
+copilot plugin install leiterbahn@leiterbahn
 ```
 
 **The library in a project:** pin it as a submodule, so every build uses the same version:
 
 ```bash
-git submodule add https://github.com/dwzg/hw-design tools/hw-design
+git submodule add https://github.com/dwzg/leiterbahn tools/leiterbahn
 ```
 
 ```python
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "hw-design", "src"))
-from hwdesign.kicad.board import Board
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "leiterbahn", "src"))
+from leiterbahn.kicad.board import Board
 ```
 
 Clone such projects with `git clone --recurse-submodules`. Or install it as a package:
-`pip install -e path/to/hw-design` (add `[mcad]` for the mechanical helpers).
+`pip install -e path/to/leiterbahn`.
 
 ## Quick start
 
@@ -92,7 +90,7 @@ the skills take it from there.
 
 ```bash
 python3 -m venv --system-site-packages .venv      # lets the tests import KiCad's pcbnew
-.venv/bin/pip install -e ".[mcad,dev]"
+.venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -q
 ruff check .
 python3 scripts/gen_api.py        # after changing a public signature

@@ -2,8 +2,8 @@
 import pytest
 from conftest import comb  # noqa: F401  (fixture module)
 
-from hwdesign.kicad import autowire as aw
-from hwdesign.kicad.schematic import Schematic, SymbolLib
+from leiterbahn.kicad import autowire as aw
+from leiterbahn.kicad.schematic import Schematic, SymbolLib
 
 
 def design(symdir, **kw):
@@ -164,7 +164,7 @@ def test_justification_swap_matches_kicad(rot, mirror, flips):
     # field: where the text ran to the left of its anchor, KiCad had swapped the justification.
     # The library only knew about 180 deg, so texts moved by autoplace_fields() landed on the
     # body of every resistor lying on its side.
-    from hwdesign.kicad.schematic import _flips, _just
+    from leiterbahn.kicad.schematic import _flips, _just
     assert _flips(rot, -1 if mirror else 1) is flips
     assert _just(rot, "left", -1 if mirror else 1) == ("right" if flips else "left")
 
@@ -176,8 +176,8 @@ def test_moved_texts_are_modelled_where_kicad_draws_them(rot, mirror):
     info = sch.syminfo["R1"]
     x0, y0, x1, y1 = sch.body_box("R1")
     f = info["fields"]["Reference"]
-    from hwdesign.kicad.schematic import _just, _n
-    from hwdesign.kicad.sexp import Sym, find1
+    from leiterbahn.kicad.schematic import _just, _n
+    from leiterbahn.kicad.sexp import Sym, find1
     find1(f, "at")[1:3] = [_n(x1 + 0.6), _n(y0 - 2)]
     eff = find1(f, "effects")
     eff[:] = [e for e in eff if not (isinstance(e, list) and e[0] == "justify")]

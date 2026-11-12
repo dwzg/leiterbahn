@@ -1,4 +1,4 @@
-from hwdesign.kicad.sexp import Sym, dump, find, find1, parse
+from leiterbahn.kicad.sexp import Sym, dump, find, find1, parse
 
 SRC = '(kicad_pcb (version 20250114) (net 1 "/SIG") (footprint "R_0805" (at 1.5 -2 90)))'
 

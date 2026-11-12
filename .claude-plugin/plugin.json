@@ -1,22 +1,19 @@
 {
-  "name": "hw-design",
-  "version": "0.9.0",
-  "description": "Electronics and mechanical design as code: KiCad schematics and boards from Python, Freerouting with cleanup and layout checks, JLCPCB fab files, and 3D-printed enclosures in build123d with measured checks.",
+  "name": "leiterbahn",
+  "version": "0.10.0",
+  "description": "Circuit boards as code: KiCad schematics and boards from Python, a router of its own (all nets at once), layout checks DRC can't do, and JLCPCB fab files.",
   "author": {
     "name": "Dennis Witzig",
     "url": "https://github.com/dwzg"
   },
-  "repository": "https://github.com/dwzg/hw-design",
+  "repository": "https://github.com/dwzg/leiterbahn",
   "license": "MIT",
   "keywords": [
     "kicad",
     "pcb",
-    "freerouting",
+    "router",
+    "autorouter",
     "jlcpcb",
-    "build123d",
-    "enclosure",
-    "3d-printing",
-    "ecad",
-    "mcad"
+    "ecad"
   ]
 }

@@ -2,9 +2,9 @@
 import pytest
 from conftest import two_pin, write_lib
 
-from hwdesign.kicad import schematic
-from hwdesign.kicad.schematic import Schematic, SymbolLib
-from hwdesign.kicad.sexp import find, find1, parse, walk
+from leiterbahn.kicad import schematic
+from leiterbahn.kicad.schematic import Schematic, SymbolLib
+from leiterbahn.kicad.sexp import find, find1, parse, walk
 
 
 def load(path):

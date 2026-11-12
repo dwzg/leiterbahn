@@ -3,13 +3,13 @@
 ## Layout
 
 ```
-src/hwdesign/        the library (kicad/: needs pcbnew; mcad/: needs build123d)
-tests/               pytest; tests needing pcbnew or build123d skip themselves
+src/leiterbahn/      the library (kicad/: needs pcbnew)
+tests/               pytest; tests needing pcbnew skip themselves
 skills/<skill>/      SKILL.md plus reference files, loaded on demand
 agents/<agent>.md    subagents
 .claude-plugin/      plugin manifest and its one-entry marketplace
 scripts/gen_api.py   regenerates skills/pcb-as-code/api.md from the source
-router/              hwroute, the router (Rust); kicad/negotiate.py builds and runs it
+router/              leiterbahn-route, the router (Rust); kicad/negotiate.py builds and runs it
 ```
 
 The repository root is the plugin, so an installed plugin carries the library with it.
@@ -29,7 +29,7 @@ The repository root is the plugin, so an installed plugin carries the library wi
 - **The plugin serves Claude Code and GitHub Copilot CLI.** Both read `.claude-plugin/`,
   `skills/` and `agents/`. An agent that needs a shell lists `Bash` (Claude Code) and
   `execute` (Copilot) in `tools`: Copilot on Windows maps `Bash` to nothing, and the agents
-  lost their shell there. Copilot names plugin agents `hw-design:<agent>`.
+  lost their shell there. Copilot names plugin agents `leiterbahn:<agent>`.
 - **After changing a public signature**, run `python3 scripts/gen_api.py`. CI fails when
   `api.md` is out of date.
 

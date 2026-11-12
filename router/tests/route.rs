@@ -1,4 +1,4 @@
-use hwroute::problem::{Problem, Solution};
+use leiterbahn_route::problem::{Problem, Solution};
 use serde_json::json;
 
 fn pad(x: f64, y: f64, layer: usize) -> serde_json::Value {
@@ -7,7 +7,7 @@ fn pad(x: f64, y: f64, layer: usize) -> serde_json::Value {
 
 fn solve(p: serde_json::Value) -> Solution {
     let problem: Problem = serde_json::from_value(p).unwrap();
-    hwroute::route(&problem, &mut |_| {})
+    leiterbahn_route::route(&problem, &mut |_| {})
 }
 
 /// Track centre lines as (net, layer, x0, y0, x1, y1) in cells.

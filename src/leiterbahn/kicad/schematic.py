@@ -538,7 +538,7 @@ class Page:
 
         A block is a frame() and the parts placed in it; parts outside every frame form one
         more block. Inside a block the still unconnected pins of a net are joined by
-        orthogonal wires (hwdesign.kicad.autowire has the rules). A net that also has pins
+        orthogonal wires (leiterbahn.kicad.autowire has the rules). A net that also has pins
         in another block or on another sheet gets one label per block, at the end of a short
         wire where there is room; a block's only pin of a net keeps its label at the pin.
         Supply nets keep their power symbols. Called by finish() when the design was created

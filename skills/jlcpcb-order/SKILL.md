@@ -7,7 +7,7 @@ description: Produce JLCPCB PCB and assembly (PCBA) files from a KiCad board, an
 
 ## Export
 
-`hwdesign.kicad.fab.export(pcb, netlist, outdir, name, rot_offset)` writes:
+`leiterbahn.kicad.fab.export(pcb, netlist, outdir, name, rot_offset)` writes:
 - a Gerber and drill zip;
 - `<name>-bom-jlc.csv` (one line per LCSC number);
 - `<name>-cpl-jlc.csv` (positions and rotations).

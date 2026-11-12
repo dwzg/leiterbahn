@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+Changed
+- **The project is now called `leiterbahn`** (was `hw-design`), and so is its Python package
+  (was `hwdesign`): `from leiterbahn.kicad.board import Board`. The plugin and its agents are
+  `leiterbahn` and `leiterbahn:<agent>`; the repository is `dwzg/leiterbahn` (GitHub forwards
+  the old address). A project with the submodule changes its path, its URL and its imports.
+- The router's program and crate are `leiterbahn-route` (was `hwroute`); `LEITERBAHN_ROUTE`
+  names another binary (was `HWROUTE`).
+
+Removed
+- `hwdesign.mcad` and the skill `printed-enclosure`: they are a project of their own now,
+  [gehaeuse](https://github.com/dwzg/gehaeuse) (`gehaeuse.probe`, `.gasket`, `.printing`,
+  `.render`; functions unchanged). `leiterbahn.kicad.geometry` still writes the `board.json`
+  a housing is generated from. The package's extra `[mcad]` is gone with it.
+
+Earlier entries below use the names of their time.
+
 ## 0.9.0
 
 Added

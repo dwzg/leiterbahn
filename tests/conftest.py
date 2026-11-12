@@ -59,7 +59,7 @@ def power(name, pin_type="power_in"):
 def write_lib(directory, lib, symbols):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / (lib + ".kicad_sym")
-    path.write_text('(kicad_symbol_lib (version 20251024) (generator "hwdesign_tests") (generator_version "10.0")\n'
+    path.write_text('(kicad_symbol_lib (version 20251024) (generator "leiterbahn_tests") (generator_version "10.0")\n'
                     + "\n".join(symbols) + "\n)\n")
     return path
 

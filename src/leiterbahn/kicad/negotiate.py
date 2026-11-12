@@ -1,7 +1,7 @@
-"""Route many nets at once with the `hwroute` program (router/, Rust): negotiated congestion.
+"""Route many nets at once with the `leiterbahn-route` program (router/, Rust): negotiated congestion.
 
 route_open() lays one connection after the other, and the first one takes the place the second
-one needed: on a dense board the result depends on the order. hwroute lets all nets lie where
+one needed: on a dense board the result depends on the order. leiterbahn-route lets all nets lie where
 they want, on top of each other, and makes every contested cell dearer round by round until each
 is used by one net. This module turns a board into its problem file and its answer into tracks.
 """
@@ -15,21 +15,21 @@ CRATE = os.path.normpath(os.path.join(HERE, "..", "..", "..", "router"))
 
 
 def binary():
-    """Path of the hwroute program; built with cargo when it is missing or older than its source."""
-    exe = os.environ.get("HWROUTE") or os.path.join(CRATE, "target", "release", "hwroute")
-    if os.environ.get("HWROUTE"):
+    """Path of the leiterbahn-route program; built with cargo when it is missing or older than its source."""
+    exe = os.environ.get("LEITERBAHN_ROUTE") or os.path.join(CRATE, "target", "release", "leiterbahn-route")
+    if os.environ.get("LEITERBAHN_ROUTE"):
         return exe
     code = os.path.join(CRATE, "src")
     src = [os.path.join(CRATE, "Cargo.toml")] + [os.path.join(code, f) for f in os.listdir(code)]
     if not os.path.exists(exe) or os.path.getmtime(exe) < max(os.path.getmtime(f) for f in src):
         done = subprocess.run(["cargo", "build", "--release"], cwd=CRATE, capture_output=True, text=True)
         if done.returncode:
-            raise RuntimeError("hwroute does not build (is cargo installed?):\n" + done.stderr[-2000:])
+            raise RuntimeError("leiterbahn-route does not build (is cargo installed?):\n" + done.stderr[-2000:])
     return exe
 
 
 def shape_of(it, index):
-    """An item of finish.copper_items() as hwroute's shape. index: {layer id: routing layer number}."""
+    """An item of finish.copper_items() as leiterbahn-route's shape. index: {layer id: routing layer number}."""
     if it["kind"] == "via" or it["hole"]:
         layers = sorted(index.values())
     else:
@@ -50,7 +50,7 @@ def touches(it, box):
 
 
 def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200):
-    """(problem for hwroute, {net: [[item key]]} of the nets in it).
+    """(problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
 
     items: finish.copper_items(); piece: {item key: number}, the same number for copper that is
     joined already. rules: dict(routing [layer ids], edge, edge_clear, clearance, via (d, hole),
@@ -84,14 +84,14 @@ def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cos
 
 
 def solve(prob, tmp_dir, say=None):
-    """Run hwroute on a problem; returns its answer (see router/src/problem.rs)."""
+    """Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs)."""
     os.makedirs(tmp_dir, exist_ok=True)
-    src, out = os.path.join(tmp_dir, "hwroute-problem.json"), os.path.join(tmp_dir, "hwroute-result.json")
+    src, out = os.path.join(tmp_dir, "route-problem.json"), os.path.join(tmp_dir, "route-result.json")
     with open(src, "w") as f:
         json.dump(prob, f)
     done = subprocess.run([binary(), src, out], capture_output=True, text=True)
     if done.returncode:
-        raise RuntimeError("hwroute failed: " + done.stderr[-2000:])
+        raise RuntimeError("leiterbahn-route failed: " + done.stderr[-2000:])
     if say:
         for line in done.stderr.splitlines():
             say(line)

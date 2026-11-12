@@ -16,8 +16,8 @@ from conftest import two_pin, write_lib
 
 pcbnew = pytest.importorskip("pcbnew")
 
-from hwdesign.kicad import fab, verify  # noqa: E402
-from hwdesign.kicad.board import (  # noqa: E402
+from leiterbahn.kicad import fab, verify  # noqa: E402
+from leiterbahn.kicad.board import (  # noqa: E402
     FP_DIR,
     Board,
     copper_layers,
@@ -26,9 +26,9 @@ from hwdesign.kicad.board import (  # noqa: E402
     min_gap,
     path_length,
 )
-from hwdesign.kicad.place import Placer  # noqa: E402
-from hwdesign.kicad.schematic import FILE_VERSION, GENERATOR_VERSION, SYMBOL_DIR, Schematic  # noqa: E402
-from hwdesign.kicad.sexp import find1, parse  # noqa: E402
+from leiterbahn.kicad.place import Placer  # noqa: E402
+from leiterbahn.kicad.schematic import FILE_VERSION, GENERATOR_VERSION, SYMBOL_DIR, Schematic  # noqa: E402
+from leiterbahn.kicad.sexp import find1, parse  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     not (shutil.which("kicad-cli") and os.path.isdir(SYMBOL_DIR) and os.path.isdir(FP_DIR)),
@@ -103,7 +103,7 @@ def test_multi_sheet_design_passes_erc_and_parity(project):
 
 
 def test_nets_keep_flat_names_across_sheets(project):
-    from hwdesign.kicad.netlist import read_netlist
+    from leiterbahn.kicad.netlist import read_netlist
     comps, nets = read_netlist(project["net"])
     assert sorted(nets["SIG"]) == [("J1", "1"), ("R1", "1")]                 # root and Left: one net
     assert sorted(nets["GNDA"]) == [("J2", "2"), ("R3", "2"), ("R4", "2")]   # root and Right
@@ -794,7 +794,7 @@ def test_a_movable_track_does_not_open_a_rule_area_or_the_board_edge():
     """In the finisher's map a cell is 2 where only a movable track is in the way. Inside a rule
     area and at the board edge it stays 1 whatever lies there: a via once landed in an
     isolation gap along a track that ran beside it."""
-    from hwdesign.kicad import finish
+    from leiterbahn.kicad import finish
     grid = finish.Grid((0, 0, 10, 10), 0.1)
     track = dict(kind="seg", net="OTHER", layers={0}, hole=0.0, soft=True, seg=(1.0, 5.0, 10.0, 5.0), r=0.1)
     area = ((4.0, 3.0, 6.0, 7.0), {0}, True, True)
@@ -809,7 +809,7 @@ def test_a_movable_track_does_not_open_a_rule_area_or_the_board_edge():
 def test_the_finisher_keeps_the_wider_clearance_of_either_net_class():
     """A net class with its own clearance (relay contacts, 0.5 mm) is kept away from by tracks of
     every other net: a 5 V track was laid 0.25 mm from a contact's via before."""
-    from hwdesign.kicad import finish
+    from leiterbahn.kicad import finish
     grid = finish.Grid((0, 0, 10, 10), 0.1)
     pad = dict(kind="pad", net="CONTACT", layers={0}, hole=0.0, soft=False, box=(4.0, 4.0, 6.0, 6.0), at=(5.0, 5.0))
 
@@ -870,7 +870,7 @@ def test_a_saved_board_can_be_reopened_for_rework(project, tmp_path):
 
 
 def joints(*tracks, width=0.6):
-    from hwdesign.kicad.board import acute_angles
+    from leiterbahn.kicad.board import acute_angles
     pb = pcbnew.BOARD()
     net = pcbnew.NETINFO_ITEM(pb, "N")
     pb.Add(net)
@@ -906,7 +906,7 @@ def plain(kind, net="N", layer=0, soft=True, **kw):
 
 
 def test_runs_of_follows_a_run_through_its_via_and_leaves_one_with_a_branch_alone():
-    from hwdesign.kicad.finish import runs_of
+    from leiterbahn.kicad.finish import runs_of
     items = dict(p1=plain("pad", box=(-0.5, -0.5, 0.5, 0.5)), p2=plain("pad", layer=1, box=(9.5, -0.5, 10.5, 0.5)),
                  a=plain("seg", seg=(0, 0, 5, 0)), v=plain("via", at=(5, 0)),
                  b=plain("seg", layer=1, seg=(5, 0, 10, 0)))
@@ -930,7 +930,7 @@ def test_runs_of_follows_a_run_through_its_via_and_leaves_one_with_a_branch_alon
 def test_improve_replaces_a_detour_with_two_vias_by_a_straight_track(project, tmp_path):
     """The autorouter's leftovers: a connection that wanders and changes sides twice. improve()
     routes it again and keeps the shorter way; hand-drawn (locked) copper stays as drawn."""
-    from hwdesign.kicad.finish import route_stats
+    from leiterbahn.kicad.finish import route_stats
     b = planes_board(project)
     assert b.fan_to_planes() == []
     (x0, y0), (x1, y1) = b.pad_xy("J1", 1), b.pad_xy("R1", 1)
@@ -959,7 +959,7 @@ def test_improve_lets_a_run_push_another_out_of_its_way_when_the_sum_gets_shorte
     """MID runs around R1.1 and shuts it in, so SIG reaches it through a via. Each is as short
     as it can be with the other in place. Together they are shorter: SIG straight, MID round the
     other end of the keep-out, a little longer."""
-    from hwdesign.kicad.finish import route_stats
+    from leiterbahn.kicad.finish import route_stats
     b = planes_board(project)
     b.keepout(107.6, 111.2, 7.0, 0.8, name="wall")         # below R1: MID has to go round one of its ends
     b.track("MID", [("R1", 2), (110.91, 108.6), (107.2, 108.6), (107.2, 112.6), (107.5, 112.9), (109.09, 112.9),
@@ -1008,7 +1008,7 @@ def test_the_same_script_gives_the_same_item_ids(project, tmp_path):
 def test_route_open_joins_again_what_hung_on_a_track_it_takes_out(project, tmp_path):
     """MID shuts R1.1 in, and R2.1 hangs on it by a track that ends on the middle of one of its
     tracks. Taking MID's track out to let SIG through cuts R2.1 off: it is joined again."""
-    from hwdesign.kicad import finish
+    from leiterbahn.kicad import finish
     b = planes_board(project)
     b.keepout(107.6, 111.2, 7.0, 0.8, name="wall")
     b.keepout(100.5, 100.5, 39.0, 29.0, layers=[pcbnew.B_Cu, pcbnew.In2_Cu], name="one layer", fills=False)
@@ -1033,7 +1033,7 @@ def test_route_open_joins_again_what_hung_on_a_track_it_takes_out(project, tmp_p
 def test_pieces_of_a_net_that_a_pour_joins_count_as_one():
     """Two tracks of a net that do not meet are two pieces, unless KiCad found them joined (by a
     pour): then a connection is not routed between them, and a third track is not 'the other piece'."""
-    from hwdesign.kicad import finish
+    from leiterbahn.kicad import finish
 
     def seg(x0, y0, x1, y1):
         return dict(kind="seg", net="GND", seg=(x0, y0, x1, y1), r=0.1, layers={0}, hole=0.0, soft=True)
@@ -1043,9 +1043,9 @@ def test_pieces_of_a_net_that_a_pour_joins_count_as_one():
     assert finish.cluster_of(items, "d", {"a": 0, "b": 0}) == {"d"}
 
 
-@pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build hwroute")
+@pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build leiterbahn-route")
 def test_negotiate_routes_all_nets_at_once(project, tmp_path):
-    """Nothing is routed yet: hwroute lays every net, and KiCad finds nothing open and nothing too near."""
+    """Nothing is routed yet: leiterbahn-route lays every net, and KiCad finds nothing open and nothing too near."""
     b = planes_board(project)
     assert b.fan_to_planes() == []
     b.fill_zones()

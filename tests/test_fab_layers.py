@@ -1,7 +1,7 @@
 """Which copper layers a board file enables, read without pcbnew."""
 import pytest
 
-from hwdesign.kicad.fab import copper_layers
+from leiterbahn.kicad.fab import copper_layers
 
 HEAD = """(kicad_pcb
 \t(version 20260206)

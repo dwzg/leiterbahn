@@ -47,7 +47,7 @@ percent puts every mark on the wrong part.
 
 ```python
 import pcbnew
-from hwdesign.kicad.board import render
+from leiterbahn.kicad.board import render
 
 b = pcbnew.LoadBoard("board.kicad_pcb")
 for z in list(b.Zones()):

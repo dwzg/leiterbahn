@@ -1,8 +1,8 @@
 [package]
-name = "hwroute"
+name = "leiterbahn-route"
 version = "0.1.0"
 edition = "2021"
-description = "Grid router with negotiated congestion for hw-design: all nets at once, no net order"
+description = "Grid router with negotiated congestion, the router of leiterbahn: all nets at once, no net order"
 license = "MIT"
 
 [dependencies]

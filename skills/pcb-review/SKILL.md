@@ -70,5 +70,5 @@ schematic, firmware pin map, docs and silkscreen legend together.
 - Results first, one line per mark: what it was, what changed.
 - Also name what is still not ideal and why: a forced detour, a trade-off.
 - **If parts moved, the enclosure may have changed too** (clamping fingers avoid parts and
-  fiducials). Check before they print (see the `printed-enclosure` skill). Regenerate the
+  fiducials). Check before they print (skill `printed-enclosure` in the plugin `gehaeuse`). Regenerate the
   fab files and say that you did.

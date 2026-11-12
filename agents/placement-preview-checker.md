@@ -31,7 +31,7 @@ netlist in `build/`, if present). Use KiCad's system Python (`pcbnew`).
 5. **Decide** per part: OK, rotated 90° (say which way), 180°, or flipped. Mismatches usually
    cluster by footprint: a JLC model with a different zero orientation. Express corrections
    per footprint name, in degrees counter-clockwise, ready for `rot_offset` in
-   `hwdesign.kicad.fab.export`.
+   `leiterbahn.kicad.fab.export`.
 
 ## Output
 

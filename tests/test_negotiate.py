@@ -1,9 +1,9 @@
-"""negotiate.py without KiCad: the problem it writes for hwroute, and hwroute's answer to it."""
+"""negotiate.py without KiCad: the problem it writes for leiterbahn-route, and leiterbahn-route's answer to it."""
 import shutil
 
 import pytest
 
-from hwdesign.kicad import negotiate
+from leiterbahn.kicad import negotiate
 
 RULES = dict(routing=[0, 6, 2], edge=(0.0, 0.0, 20.0, 10.0), edge_clear=0.3, clearance=0.2, via=(0.6, 0.3),
              hole_clear=0.25, width={"PWR": 0.5}, track=0.2, wider={"HV": 0.5}, areas=[])
@@ -43,8 +43,8 @@ def test_in_a_box_only_the_pieces_that_reach_into_it_are_joined():
     assert routed == {} and len(prob["fixed"]) == 1               # one piece in the box: nothing to join there
 
 
-@pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build hwroute")
-def test_hwroute_joins_two_nets_that_cross_on_two_layers(tmp_path):
+@pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build leiterbahn-route")
+def test_the_router_joins_two_nets_that_cross_on_two_layers(tmp_path):
     items = {"a1": pad("A", 2, 5), "a2": pad("A", 18, 5), "b1": pad("B", 10, 1), "b2": pad("B", 10, 9)}
     prob, routed = negotiate.problem(items, {k: n for n, k in enumerate(items)}, RULES, step=0.1)
     lines = []

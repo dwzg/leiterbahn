@@ -677,7 +677,7 @@ def _same_every_time(items, pairs, pieces):
 
 def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000, skip=(), only=None, locked=False,
                rip=2.0, rounds=4, fine=True, depth=2, hug=0.0):
-    """Connect what is unconnected on `board` (a hwdesign Board). Returns (routed, failed):
+    """Connect what is unconnected on `board` (a leiterbahn Board). Returns (routed, failed):
     failed lists (net, reason, (x, y), (x, y)) for the connections that found no path.
 
     Each connection is tried at its net class's track width, then at `width` (default: the

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This repository is both a Python library (`src/hwdesign`) and a Claude Code plugin (the
+This repository is both a Python library (`src/leiterbahn`) and a Claude Code plugin (the
 repository root: `skills/`, `agents/`, `.claude-plugin/`). Read `CONTRIBUTING.md` before
 changing anything; its rules apply to you.
 

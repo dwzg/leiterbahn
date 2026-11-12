@@ -3,7 +3,7 @@ import random
 
 import pytest
 
-from hwdesign.kicad import planar
+from leiterbahn.kicad import planar
 
 
 def square(x, y, side, tag=None, hole=None):

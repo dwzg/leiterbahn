@@ -1,5 +1,5 @@
-from hwdesign.kicad.netlist import read_netlist
-from hwdesign.kicad.schematic import compare_netlist
+from leiterbahn.kicad.netlist import read_netlist
+from leiterbahn.kicad.schematic import compare_netlist
 
 NET = """(export (version "E")
   (components

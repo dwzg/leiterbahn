@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install (KiCad's pcbnew is not available here; tests that need it are skipped)
-        run: pip install -e ".[mcad,dev]"
+        run: pip install -e ".[dev]"
       - name: Lint
         run: ruff check .
       - name: Test

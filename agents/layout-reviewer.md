@@ -10,13 +10,13 @@ Write renders and scratch files to a temporary directory.
 
 ## Inputs
 
-You get the path to a `.kicad_pcb`, and usually the board's origin and size. If the hwdesign
-library is not importable, find it: a `tools/hw-design/src` submodule in the project, or the
+You get the path to a `.kicad_pcb`, and usually the board's origin and size. If the leiterbahn
+library is not importable, find it: a `tools/leiterbahn/src` submodule in the project, or the
 plugin's own `src/`. Use KiCad's system Python (it has `pcbnew`).
 
 ## Steps
 
-1. Render the front and back four ways with `hwdesign.kicad.board.render`: copper with pours,
+1. Render the front and back four ways with `leiterbahn.kicad.board.render`: copper with pours,
    and tracks only (remove the non-rule-area zones from a copy of the board first). Use
    width 1600 or more.
 2. Look at each image in sections (crop and enlarge with `magick`). Note every spot that

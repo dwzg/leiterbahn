@@ -8,9 +8,9 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "tools", "hw-design", "src"))
+sys.path.insert(0, os.path.join(HERE, "..", "tools", "leiterbahn", "src"))
 import pcbnew  # noqa: E402
-from hwdesign.kicad.board import (Board, acute_angles, drc, foreign_copper,  # noqa: E402
+from leiterbahn.kicad.board import (Board, acute_angles, drc, foreign_copper,  # noqa: E402
                                   narrow_tracks, path_length, render, repeatable)
 
 repeatable()                                          # the same board from every run of this script
@@ -88,7 +88,7 @@ render(PCB, os.path.join(BUILD, "back.png"), layers="B.Cu,Edge.Cuts", width=2000
 sys.exit(1 if bad else 0)
 ```
 
-Routing with hwroute instead of Freerouting (this ran on two 65 x 56 mm boards of four and six
+Routing with leiterbahn-route instead of Freerouting (this ran on two 65 x 56 mm boards of four and six
 layers, not on the board above): replace the `autoroute` line and the two tidy-up lines after
 it. The rest stays.
 
@@ -114,7 +114,7 @@ only: DRC clean, four copper Gerbers, `min_gap` 2.0 mm on `In1.Cu`. Freerouting 
 of that run.
 
 ```python
-from hwdesign.kicad.board import Board, drc, min_gap
+from leiterbahn.kicad.board import Board, drc, min_gap
 
 b = Board(NET, layers=4, planes=[pcbnew.In1_Cu], declared=DECLARED)   # In1.Cu: pours only
 b.outline_rounded(100, 100, 40, 30, r=1.5)
