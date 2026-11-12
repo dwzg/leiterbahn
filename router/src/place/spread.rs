@@ -305,10 +305,10 @@ impl Work<'_, '_> {
             }
             let mean = charge / room;
             let mut over = 0.0;
-            for b in 0..moving.len() {
-                self.rho[b] = if inside(b) { moving[b] / area + (1.0 - system.room[b]) * mean } else { mean };
+            for (b, (rho, &here)) in self.rho.iter_mut().zip(moving).enumerate() {
+                *rho = if inside(b) { here / area + (1.0 - system.room[b]) * mean } else { mean };
                 if inside(b) {
-                    over += (moving[b] - system.room[b] * area).max(0.0);
+                    over += (here - system.room[b] * area).max(0.0);
                 }
             }
             let own: f64 = system
