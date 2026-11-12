@@ -124,12 +124,16 @@ Placement by connections, on both board sides.
   - `.cost(ref, x, y, rot, back, anchor, pull)`: (cost in mm of wire, supply pins this spot would decouple). Lower is better.
   - `.near(ref, anchor, start=None, sides=(False, True), rots=(0, 90, 180, 270), pull=0.15, step=0.5, reach=3.0, max_r=45.0)`: Place ref at the cheapest free spot around `start` (default: where its nets pull it).
   - `.big(ref)`: Placed in the first pass: everything but small resistors, capacitors and test points.
+  - `.bulk(ref)`: A capacitor too large to be a part's own (see ties()).
   - `.linked(ref)`: How many of ref's signal pads have a placed counterpart.
   - `.large(refs, anchor, sides=(False,), pull=0.6)`: First pass: the unplaced large parts of refs around anchor, largest first.
   - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.
   - `.length()`: Half-perimeter wire length of all nets off the planes, mm: a figure to compare placements by.
   - `.problem(moves=20000, seed=1, weights=None, spread=False)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
   - `.ties()`: Which pad of a resistor or capacitor belongs at which pin: [(ref, pad, to, to_pad, weight)].
+  - `.tie(ref, pad, to, to_pad, weight=3.0)`: Say where a pad belongs: pad `pad` of ref at pad `to_pad` of `to`. improve() pulls it there with `weight` mm of cost per mm of distance, strays() lists it when it is far.
+  - `.first(refs, sides=(False, True), reach=1.5)`: Place these now, in this order, each as near as it gets to the pins it belongs at (see ties(); a part with none goes where its nets pull it), and keep them there: improve() does not move them. For the few parts that must win the room next to a fine-pitch part: with everything tied to its pins at the same weight, a controller's supply capacitor ended 5 mm out behind a divider that could have been anywhere.
+  - `.ties_of(ref)`: ties() of one part that is not placed yet or placed: where its pads belong.
   - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
   - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
@@ -179,4 +183,4 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
 - `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
 - `shut_in(board, tmp_dir, step=0.1, skip=(), say=None)`: The nets that have no way even alone on the board: [(net, [(x, y)])].
-- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None)`: Route every net of the board that is in more than one piece, all at once.
+- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3)`: Route every net of the board that is in more than one piece, all at once.

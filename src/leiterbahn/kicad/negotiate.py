@@ -103,7 +103,7 @@ def solve(prob, tmp_dir, say=None):
 
 
 def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
-                   weights=None):
+                   weights=None, edge_clear=0.3):
     """(the finisher's view of the board, its copper items, the problem, {net: [[item key]]})."""
     from . import finish
     r = finish._Router(board, None, step, via_cost, 0, False, 0.0, locked)
@@ -115,8 +115,9 @@ def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, 
             piece[key] = n
             for other in conn.GetConnectedItems(it["obj"], 0):
                 piece.setdefault(other.m_Uuid.AsString(), n)
-    rules = dict(routing=r.routing, edge=r.edge, edge_clear=0.3, clearance=r.clearance, via=(r.via_d, r.via_hole),
-                 hole_clear=finish.HOLE, width=r.class_width, track=r.thin, wider=r.wider, areas=r.areas)
+    rules = dict(routing=r.routing, edge=r.edge, edge_clear=edge_clear, clearance=r.clearance,
+                 via=(r.via_d, r.via_hole), hole_clear=finish.HOLE, width=r.class_width, track=r.thin, wider=r.wider,
+                 areas=r.areas)
     prob, routed = problem(items, piece, rules, None if only is None else {board.resolve(n) for n in only},
                            {board.resolve(n) for n in skip}, box, step, via_cost, max_iter,
                            {board.resolve(n): w for n, w in (weights or {}).items()})
@@ -151,14 +152,15 @@ def shut_in(board, tmp_dir, step=0.1, skip=(), say=None):
 
 
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
-              say=None, weights=None):
+              say=None, weights=None, edge_clear=0.3):
     """Route every net of the board that is in more than one piece, all at once.
 
     box: (x0, y0, x1, y1) on the sheet: route only inside it (copper outside stays; a net is
     joined where its pieces reach into the box). weights: {net: number} for nets whose length
     matters more than that of others (default 1): once all nets are laid, each is given a
     shorter way where it finds one, also by pushing others aside, as long as the sum of
-    lengths times weights gets smaller. Returns dict(nets, routed, open [(net, pieces left
+    lengths times weights gets smaller. edge_clear: what tracks and vias keep from the board's
+    edge, mm (0.6 mm tracks were laid 0.3 mm from it). Returns dict(nets, routed, open [(net, pieces left
     apart)], rounds, seconds, cost, alone, by_net): cost is all tracks in mm with a via as
     `via_cost` and narrow track half as much again; alone is the same with each net alone on
     the board (no result is below that); by_net is {net: (cost, alone)}. Tracks are laid at
@@ -167,7 +169,8 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     widen() restores what fits).
     """
     from . import finish
-    r, items, prob, routed = _board_problem(board, only, skip, box, step, via_cost, max_iter, locked, weights)
+    r, items, prob, routed = _board_problem(board, only, skip, box, step, via_cost, max_iter, locked, weights,
+                                            edge_clear)
     started = time.time()
     answer = solve(prob, tmp_dir, say)
     grid = finish.Grid(prob["box"], step)

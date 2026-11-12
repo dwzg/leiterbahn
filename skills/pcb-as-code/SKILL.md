@@ -206,6 +206,12 @@ domains taught:
   so that a pad the planes do not reach gets a track of some width; print `strays()` and
   the length of each switch node and feedback node after placing; and have the
   `layout-reviewer` agent look at every placement that is to be kept.
+- Round a fine-pitch part not everything can be nearest. Say the order: `first()` places
+  the few parts that must win (supply and boot capacitors, what hangs on a feedback node)
+  at their pins before anything else and keeps them there; `tie()` says where a part
+  belongs when the netlist does not show it (a clock's series resistor at the oscillator,
+  the parts of a network that feeds a feedback pin). Then review again: the first round
+  of fixes made 6 of 27 findings worse.
 - A block's anchor is where its most sensitive net ends, not where there happened to be
   room: the network that feeds a controller's feedback pin had its anchor 25 mm from the
   controller, and no weight on the net could shorten it, since the net was as long as

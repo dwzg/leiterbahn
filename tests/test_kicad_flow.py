@@ -627,6 +627,37 @@ def test_small_parts_are_tied_to_the_pins_they_belong_at(project, tmp_path):
     assert p.strays(4.0) == [] and b.courtyard_overlaps()[0] == []      # as near as the courtyards allow
 
 
+def test_a_tie_said_by_hand_and_parts_placed_first(project, tmp_path):
+    nets = {"A": [("J1", "1"), ("R1", "1")], "B": [("J1", "2"), ("R1", "2")],          # R1 across J1's two pins
+            "D": [("J2", "1"), ("R3", "1"), ("R4", "1")], "GND": [("R3", "2"), ("R4", "2"), ("J2", "2")]}
+    b, p = placer(project, nets=nets)
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 20)
+    for ref, at in (("R3", (10, 26)), ("R4", (22, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    assert p.ties() == []                                 # J1 and J2 have two pads: nothing belongs to them
+    p.tie("R3", 1, "J2", 1)
+    assert p.ties() == [("R3", "1", "J2", "1", 3.0)]
+    p.hosts_from = 2
+    p.first(["R1"])                                       # at J1, and it stays there
+    assert "R1" not in p.auto and max(abs(a - c) for a, c in zip(p.pad("R1", 1), p.pad("J1", 1), strict=True)) < 3.5
+    was = p.at["R1"]
+    assert sorted(t[1] for t in p.strays(3.0)) == ["R3", "R4"]   # R4 belongs to J2 by its net, R3 because it was said
+    p.improve(str(tmp_path), moves=3000)
+    assert p.at["R1"] == was and p.strays(4.0) == []
+
+
+def test_a_large_capacitor_belongs_at_the_largest_pad_of_its_net(project):
+    nets = {"V": [("J1", "1"), ("R1", "1"), ("R4", "1")], "GND": [("J1", "2"), ("R1", "2"), ("R4", "2")]}
+    b, p = placer(project, nets=nets)
+    p.fix("J1", 4, 10)
+    for ref, at in (("R1", (30, 4)), ("R4", (22, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    assert p.ties() == []                                 # small parts: J1 with its two pads is no host
+    p.bulk = lambda ref: ref == "R4"                      # were R4 a large capacitor,
+    assert p.ties() == [("R4", "1", "J1", "1", 3.0)]      # it would belong at the pad where the current goes
+
+
 def test_face_and_find(project):
     b, p = placer(project)
     rot = p.face("R1", "MID", "left")

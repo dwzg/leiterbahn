@@ -89,6 +89,7 @@ class Placer:
         self.areas = {}                   # ref -> [[(x0, y0, x1, y1)]]: inside one rectangle of each list
         self.planes_at = {}               # net -> [(x0, y0, x1, y1)]: where a pad on that net may lie
         self.hosts_from = 3               # a part with this many pads can be what a resistor or capacitor belongs to
+        self.tied_to = {}                 # (ref, pad) -> (to, to_pad, weight), said with tie()
         self.sides = {}                   # ref -> "F" or "B"
         self.auto = {}                    # ref -> (anchor, pull, sides, rots) of the parts near() placed
         self.block = {}
@@ -341,6 +342,10 @@ class Placer:
         """Placed in the first pass: everything but small resistors, capacitors and test points."""
         return not ref.startswith("TP") and (not passive(ref) or self.area(ref) > 12.0)
 
+    def bulk(self, ref):
+        """A capacitor too large to be a part's own (see ties())."""
+        return ref[0] == "C" and self.big(ref)
+
     def linked(self, ref):
         """How many of ref's signal pads have a placed counterpart."""
         return sum(1 for net in self.pins.get(ref, {}).values()
@@ -446,6 +451,13 @@ class Placer:
         one. A part with no such host is tied by its rail pad only, at a quarter. Test
         points and other parts with fewer than three pads are no hosts: capacitors had
         gathered at the test point of their rail, 20 mm from the regulator.
+
+        A large capacitor (see bulk()) is another matter: it belongs
+        where the current of its net flows, and that is the largest pad on the net (a
+        transistor's drain, an inductor, a diode), not the nearest pin of an integrated
+        circuit. Tied to the nearest, a 100 uF capacitor of a converter's output went to the
+        controller's sense pin, 32 mm from the transistor. What tie() says replaces all this
+        for its pad.
         """
         def far(a, b):
             (ax, ay), (bx, by) = self.pad(*a), self.pad(*b)
@@ -455,10 +467,22 @@ class Placer:
             if net not in self.planes:
                 hosts[net] = [(r, p) for r, p in pads
                               if r in self.at and not passive(r) and len(self.pins.get(r, ())) >= self.hosts_from]
-        found = []
+        found = [(ref, pad, to, to_pad, w) for (ref, pad), (to, to_pad, w) in sorted(self.tied_to.items())
+                 if ref in self.at and to in self.at]
         for ref in sorted(r for r in self.at if passive(r)):
-            mine = [(pad, net) for pad, net in sorted(self.pins.get(ref, {}).items()) if net not in self.planes]
+            mine = [(pad, net) for pad, net in sorted(self.pins.get(ref, {}).items())
+                    if net not in self.planes and (ref, pad) not in self.tied_to]
             if not mine:
+                continue
+            if self.bulk(ref):
+                for pad, net in mine:                      # to the largest pad on its net
+                    power = [(self._pad_area(r, q), r, q) for r, q in self.nets[net]
+                             if r in self.at and not passive(r) and len(self.pins.get(r, ())) >= 2]
+                    if power:
+                        most = max(a for a, _, _ in power)
+                        to = min((t for t in power if t[0] >= 0.8 * most),
+                                 key=lambda t: (far((ref, pad), t[1:]), t[1:]))
+                        found.append((ref, pad, to[1], to[2], 3.0))
                 continue
             common = None
             for _pad, net in mine:
@@ -479,6 +503,40 @@ class Placer:
                     to = min(near, key=lambda t: (far((ref, pad), t), t))
                     found.append((ref, pad, to[0], to[1], 0.25))
         return found
+
+    def _pad_area(self, ref, pad):
+        return sum(pcbnew.ToMM(p.GetSize().x) * pcbnew.ToMM(p.GetSize().y)
+                   for p in self.b.fps[ref].Pads() if p.GetNumber() == str(pad))
+
+    def tie(self, ref, pad, to, to_pad, weight=3.0):
+        """Say where a pad belongs: pad `pad` of ref at pad `to_pad` of `to`. improve() pulls it
+        there with `weight` mm of cost per mm of distance, strays() lists it when it is far."""
+        self.tied_to[(ref, str(pad))] = (to, str(to_pad), weight)
+
+    def first(self, refs, sides=(False, True), reach=1.5):
+        """Place these now, in this order, each as near as it gets to the pins it belongs at
+        (see ties(); a part with none goes where its nets pull it), and keep them there:
+        improve() does not move them. For the few parts that must win the room next to a
+        fine-pitch part: with everything tied to its pins at the same weight, a controller's
+        supply capacitor ended 5 mm out behind a divider that could have been anywhere.
+        """
+        for ref in refs:
+            to = [self.pad(t[2], t[3]) for t in self.ties_of(ref)]
+            start = (sum(x for x, _ in to) / len(to), sum(y for _, y in to) / len(to)) if to else None
+            self.near(ref, start or (self.size[0] / 2, self.size[1] / 2), start=start, sides=sides, pull=0.0,
+                      step=0.25, reach=reach)
+            del self.auto[ref]
+
+    def ties_of(self, ref):
+        """ties() of one part that is not placed yet or placed: where its pads belong."""
+        placed = ref in self.at
+        if not placed:
+            self.at[ref] = (0.0, 0.0, 0, False)            # ties() asks for distances to choose the nearer pin
+        try:
+            return [t for t in self.ties() if t[0] == ref]
+        finally:
+            if not placed:
+                del self.at[ref]
 
     def strays(self, limit=3.0):
         """The resistors and capacitors further than `limit` mm from the pin they belong at

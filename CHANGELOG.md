@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.17.0
+
+A second review of the same board, placed with 0.16.0: 8 of 27 findings gone, 8 better,
+6 worse. What was worse had two causes, and these changes are for them.
+
+Added
+- `Placer.first(refs)`: place these now, in this order, each at the pins it belongs at, and
+  keep them there. With every small part tied to its pins at the same weight, a
+  controller's supply capacitor lay 5 mm out and its compensation 10 mm, behind parts that
+  could have been anywhere. Placed first in the order of what must be nearest: supply
+  capacitor 2.6 mm, feedback node 11 mm long instead of 22 to 42.
+- `Placer.tie(ref, pad, to, to_pad)`: say where a pad belongs; replaces what `ties()` would
+  find for it.
+- `negotiate(edge_clear=)`: what tracks keep from the board's edge (0.6 mm tracks had been
+  laid 0.3 mm from it).
+
+Changed
+- `ties()`: a large capacitor (`bulk()`) belongs at the largest pad on its net, a
+  transistor's drain or an inductor, not at the nearest pin of an integrated circuit. The
+  100 uF capacitor of a converter's output had been tied to the controller's sense pin
+  and lay 32 mm from the transistor.
+
 ## 0.16.0
 
 A review of a board placed by `improve()` found 15 things worth changing that no check had
