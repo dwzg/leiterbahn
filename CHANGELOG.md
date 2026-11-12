@@ -11,10 +11,11 @@ Added
   near by where its connections are shortest (`router/src/place/spread.rs`). On a board of
   287 parts, eight seeds each: cost 2974 mm on average without and 2705 mm with, nets and
   tethers 15 % shorter, every seed better than the best without; 2.6 s without, 3.7 s
-  with. Routed, the tracks came to about 2900 mm against about 3150 mm, and 7 of 8 seeds
-  left nothing open, once two things in the board's script were put right that the
-  forces had brought out (see the skill: two blocks on one anchor, and the side opposite a
-  fine-pitch part). Before that, 1 of 8.
+  with. Routed, the tracks came to about 2750 mm against about 3150 mm, and 8 of 8 seeds
+  left nothing open, once three things in the board's script were put right that the
+  forces had brought out (see the skill: two blocks on one anchor, an anchor where the
+  block's largest part has no room, and the side opposite a fine-pitch part). Before
+  that, 1 of 8.
 - `improve()` also returns `started`: the cost the annealing began from.
 - `leiterbahn-route place`: `spread`, `spill` (how much overlap the forces leave to the
   steps after; 0.2) and `reach` (how far the annealing shifts a part at first) in the

@@ -191,8 +191,12 @@ domains taught:
   its converter (a switch node of 30 mm that nobody had noticed, since it routed). The
   forces put the inductor on its anchor, opposite a QFN on the other side, and 7 of 8
   seeds left pins of the QFN open: their vias had nowhere to come out. So before
-  `spread=True`: no two blocks on one anchor, and `keep()` the side opposite a fine-pitch
-  part free by about 1 mm round its courtyard. With both, 7 of 8 seeds routed.
+  `spread=True`: no two blocks on one anchor; a block's anchor where its largest part has
+  room (the inductor found none within 13 mm of its second anchor either); and `keep()`
+  the side opposite a fine-pitch part free by about 1 mm round its courtyard. With all
+  three, 8 of 8 seeds routed, the tracks 12 % shorter than without the forces and the
+  switch node 5 mm long. Print the length of such a net in the script: it had routed at
+  30 mm without a complaint.
 - Where one part sits can matter more than any router setting. A buck-boost controller
   6 mm nearer its power stage: its 13 sensitive nets 22 % shorter, the board routed in 22
   rounds instead of 96. The half perimeter estimate follows what a net would cost alone on
