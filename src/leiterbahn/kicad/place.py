@@ -346,6 +346,10 @@ class Placer:
         """A capacitor too large to be a part's own (see ties())."""
         return ref[0] == "C" and self.big(ref)
 
+    def decouples(self, ref):
+        """A capacitor that can be a supply pin's own."""
+        return ref[0] == "C" and not self.bulk(ref)
+
     def linked(self, ref):
         """How many of ref's signal pads have a placed counterpart."""
         return sum(1 for net in self.pins.get(ref, {}).values()
@@ -448,7 +452,8 @@ class Placer:
         from a pin to ground, a supply capacitor): each such pad is tied to that part's
         nearest pin on its net, a capacitor at 3, a resistor at 1.5. On a supply rail the
         part it belongs to is the nearest that uses the rail, of its own block if there is
-        one. A part with no such host is tied by its rail pad only, at a quarter. Test
+        one; of the capacitors between a rail and a plane each supply pin gets one before any
+        gets a second. A part with no such host is tied by its rail pad only, at a quarter. Test
         points and other parts with fewer than three pads are no hosts: capacitors had
         gathered at the test point of their rail, 20 mm from the regulator.
 
@@ -469,10 +474,35 @@ class Placer:
                               if r in self.at and not passive(r) and len(self.pins.get(r, ())) >= self.hosts_from]
         found = [(ref, pad, to, to_pad, w) for (ref, pad), (to, to_pad, w) in sorted(self.tied_to.items())
                  if ref in self.at and to in self.at]
+        # Capacitors between one rail and a plane: every supply pin gets one before any gets a second, the
+        # nearest pairs first. (Each to its nearest pin, two shared a pin and the next pin had none within 10 mm.)
+        own, waiting = {}, {}
+        for ref in sorted(r for r in self.at if passive(r)):
+            mine = [(pad, net) for pad, net in sorted(self.pins.get(ref, {}).items()) if net not in self.planes]
+            if (len(mine) == 1 and self.decouples(ref) and len(self.nets[mine[0][1]]) > RAIL
+                    and (ref, mine[0][0]) not in self.tied_to):
+                waiting.setdefault(mine[0][1], []).append((ref, mine[0][0]))
+        for net, caps in sorted(waiting.items()):
+            pairs = []
+            for cap in caps:
+                users = hosts.get(net, ())
+                near = [t for t in users if self.block.get(t[0]) == self.block.get(cap[0])] or users
+                pairs += [(far(cap, t), cap, t) for t in near]
+            taken = set()
+            for _d, cap, t in sorted(pairs):
+                if cap not in own and t not in taken:
+                    own[cap] = t
+                    taken.add(t)
+            for _d, cap, t in sorted(pairs):               # more capacitors than pins: the rest to their nearest
+                own.setdefault(cap, t)
         for ref in sorted(r for r in self.at if passive(r)):
             mine = [(pad, net) for pad, net in sorted(self.pins.get(ref, {}).items())
                     if net not in self.planes and (ref, pad) not in self.tied_to]
             if not mine:
+                continue
+            if len(mine) == 1 and (ref, mine[0][0]) in own:
+                to = own[(ref, mine[0][0])]
+                found.append((ref, mine[0][0], to[0], to[1], 3.0))
                 continue
             if self.bulk(ref):
                 for pad, net in mine:                      # to the largest pad on its net

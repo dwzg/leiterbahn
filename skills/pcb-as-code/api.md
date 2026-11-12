@@ -125,6 +125,7 @@ Placement by connections, on both board sides.
   - `.near(ref, anchor, start=None, sides=(False, True), rots=(0, 90, 180, 270), pull=0.15, step=0.5, reach=3.0, max_r=45.0)`: Place ref at the cheapest free spot around `start` (default: where its nets pull it).
   - `.big(ref)`: Placed in the first pass: everything but small resistors, capacitors and test points.
   - `.bulk(ref)`: A capacitor too large to be a part's own (see ties()).
+  - `.decouples(ref)`: A capacitor that can be a supply pin's own.
   - `.linked(ref)`: How many of ref's signal pads have a placed counterpart.
   - `.large(refs, anchor, sides=(False,), pull=0.6)`: First pass: the unplaced large parts of refs around anchor, largest first.
   - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.

@@ -658,6 +658,19 @@ def test_a_large_capacitor_belongs_at_the_largest_pad_of_its_net(project):
     assert p.ties() == [("R4", "1", "J1", "1", 3.0)]      # it would belong at the pad where the current goes
 
 
+def test_every_supply_pin_is_given_a_capacitor_before_any_gets_two(project):
+    rail = [("J1", "1"), ("J2", "1"), ("R1", "1"), ("R2", "1"), ("R3", "1"), ("R4", "1")]
+    b, p = placer(project, nets={"VCC": rail, "GND": [(ref, "2") for ref, _ in rail]})
+    p.hosts_from = 2
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    for ref, at in (("R1", (8, 4)), ("R2", (8, 16)), ("R3", (10, 10))):     # all three next to J1
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    assert [t[2] for t in p.ties()] == ["J1", "J1", "J1"]                    # resistors: each to its nearest
+    p.decouples = lambda ref: True                                           # were they capacitors,
+    assert sorted(t[2] for t in p.ties()) == ["J1", "J1", "J2"]              # J2, 30 mm away, would get one
+
+
 def test_face_and_find(project):
     b, p = placer(project)
     rot = p.face("R1", "MID", "left")

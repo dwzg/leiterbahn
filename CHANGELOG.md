@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.0
+
+Changed
+- `ties()`: of the capacitors between one supply rail and a plane, every supply pin is
+  given one before any pin gets a second, the nearest pairs first. Each tied to its
+  nearest pin, two shared a pin and others had none within 10 mm; which pins went without
+  changed with the seed.
+
 ## 0.17.0
 
 A second review of the same board, placed with 0.16.0: 8 of 27 findings gone, 8 better,
