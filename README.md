@@ -22,7 +22,7 @@ housing side, which is now [gehaeuse](https://github.com/dwzg/gehaeuse).
 | `leiterbahn.kicad.verify` | ERC plus proof that KiCad's netlist equals the declared nets |
 | `leiterbahn.kicad.board` | Board builder for 2, 4 or 6 copper layers: placement, outline with slots and notches, hand routes, keepouts, parallel cached Freerouting, cleanup passes (`remove_redundant`, `widen`, `straighten`, `chamfer_corners`, `prune_dangling`), pours per region and stitching, layout checks (`path_length`, `foreign_copper`, `min_gap`, `narrow_tracks`, `acute_angles`), DRC and renders |
 | `leiterbahn.kicad.place` | Placement by connections on both board sides: fixed parts by hand, the rest around anchors, with rules for domains and room reserved for hand routes |
-| `leiterbahn.kicad.negotiate` | Routing of all nets at once with `leiterbahn-route` (`router/`, Rust): negotiated congestion on a grid, net class widths and clearances |
+| `leiterbahn.kicad.negotiate` | Routing of all nets at once with `leiterbahn-route` (`router/`, Rust): negotiated congestion on a grid, net class widths and clearances, a shortening pass, and per net how far its tracks are from what they would cost alone on the board |
 | `leiterbahn-route board` | The same router on a `.kicad_pcb` file directly, without KiCad or Python: reads the board and its rules, writes the tracks into the file |
 | `leiterbahn.kicad.fab` | JLCPCB Gerbers for every copper layer, BOM and CPL with per-footprint rotation corrections |
 | `leiterbahn.kicad.planar` | Plane geometry without pcbnew: the gap between two groups of copper shapes, outline contours with notches |

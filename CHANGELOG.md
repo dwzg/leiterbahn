@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.12.0
+
+Added
+- The router shortens its result. Once all nets are laid without conflict, each net is laid
+  again across the others where that is shorter, and those it crosses take what is then
+  free; the exchange is kept if the sum of costs times weights got smaller and no connection
+  was lost. Every step makes the result better, so it ends. On a six-layer board with 158
+  nets the tracks of the nets with 2 to 12 pads went from 18 % to 9 % above the shortest
+  tree over their pads (2621 to 2419 mm, 238 to 217 vias); one net that the rounds had
+  pushed onto 82 mm came back to 16 mm (14 mm between its pads).
+- Weights: `negotiate(weights={net: 4})`, `--weight NET=4`. A heavier net wins a short way
+  from lighter ones in those exchanges: of two nets at a gap that holds one track, the
+  heavier gets it. On the crowded board above, weights on thirteen nets at one controller
+  gained nothing (315 mm without, 330 mm with; 260 mm with only those nets on the board),
+  and neither did three ways of letting weights act during the rounds. Routing the thirteen
+  first and keeping them left five other connections without a way: there the parts have
+  to move, and the next figures say so.
+- Per net, the router reports what its tracks cost and what they would cost with the net
+  alone on the board: `negotiate()` returns `cost`, `alone` and `by_net`; `--report file`.
+  Where the two are far apart the routing can still gain; where a net is long though they
+  agree, its pads are far apart and the placement has to change.
+- `leiterbahn-route board ... --only NET` routes the named nets and leaves the rest as it is
+  (as `negotiate(only=...)` does).
+
+Changed
+- A search stays within 4 mm of a net's pads and tracks unless there is no way there: the
+  rounds on that board took 106 s instead of 146 s. The shortening adds about 150 s; nearly
+  all of the router's time is the search itself.
+
 ## 0.11.0
 
 Added

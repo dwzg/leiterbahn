@@ -166,6 +166,6 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `binary()`: Path of the leiterbahn-route program; built with cargo when it is missing or older than its source.
 - `shape_of(it, index)`: An item of finish.copper_items() as leiterbahn-route's shape. index: {layer id: routing layer number}.
 - `touches(it, box)`: 
-- `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
+- `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
 - `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
-- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None)`: Route every net of the board that is in more than one piece, all at once.
+- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None)`: Route every net of the board that is in more than one piece, all at once.

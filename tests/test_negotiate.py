@@ -31,6 +31,8 @@ def test_a_net_in_pieces_is_routed_and_all_other_copper_is_in_the_way():
     assert len(prob["fixed"]) == 3                                 # HV's pad and the two pads of the joined net
     hv = next(s for s in prob["fixed"] if s["hole"])
     assert hv["clearance"] == 0.5 and hv["layers"] == [0, 1, 2]    # a drilled pad is on every routing layer
+    heavy = negotiate.problem(items, piece, RULES, weights={"PWR": 4})[0]["nets"]
+    assert nets["PWR"]["weight"] == 1.0 and {n["name"]: n["weight"] for n in heavy} == {"A": 1.0, "PWR": 4}
     assert negotiate.problem(items, piece, RULES, skip={"PWR"})[1].keys() == {"A"}
     assert negotiate.problem(items, piece, RULES, only={"PWR"})[1].keys() == {"PWR"}
 
@@ -54,5 +56,6 @@ def test_the_router_joins_two_nets_that_cross_on_two_layers(tmp_path):
     vias = sum(1 for n in answer["nets"] for p in n["paths"] for a, c in zip(p["cells"], p["cells"][1:], strict=False)
                if a[0] != c[0])
     assert vias == 2
+    assert all(0 < n["alone"] <= n["cost"] + 1e-6 for n in answer["nets"])      # none shorter than alone on the board
     ends = {(n["name"], tuple(p["from"]), tuple(p["to"])) for n in answer["nets"] for p in n["paths"]}
     assert ends == {("A", (0, 0), (1, 0)), ("B", (0, 0), (1, 0))}

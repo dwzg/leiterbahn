@@ -1053,6 +1053,7 @@ def test_negotiate_routes_all_nets_at_once(project, tmp_path):
     got = b.negotiate(str(tmp_path))
     b.fill_zones()
     assert before >= 3 and got["open"] == [] and got["routed"] == before and b.unrouted() == 0
+    assert got["alone"] <= got["cost"] and b.resolve("SIG") in got["by_net"]
     pcb = str(tmp_path / "neg.kicad_pcb")
     b.save(pcb)
     report = drc(pcb, str(tmp_path / "drc.rpt"))

@@ -2,10 +2,11 @@
 //!     Routes a problem (see `problem.rs`) and writes the tracks as grid paths.
 //!
 //! leiterbahn-route board in.kicad_pcb out.kicad_pcb [--step 0.05] [--via-cost 3] [--max-iter 200]
-//!                        [--hole-clear mm] [--problem file.json]
+//!                        [--hole-clear mm] [--weight NET=4]... [--only NET]... [--problem file.json] [--report file.tsv]
 //!     Routes every net of a KiCad board that is in more than one piece and writes the board with
 //!     the new tracks. The rules come from the .kicad_pro beside the board. --problem also writes
-//!     the problem as it was read from the board.
+//!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
+//!     in mm, their cost with the net alone on the board, pieces left apart.
 use leiterbahn_route::{kicad, problem::Problem, route};
 use std::{env, fs, process};
 
@@ -26,8 +27,11 @@ fn main() {
             via_cost: 3.0,
             max_iter: 200,
             hole_clear: None,
+            weights: Default::default(),
+            only: Vec::new(),
         };
         let mut dump = None;
+        let mut report = None;
         let mut rest = args[4..].iter();
         while let Some(flag) = rest.next() {
             let value = rest.next().unwrap_or_else(|| fail(format!("{} needs a value", flag)));
@@ -38,6 +42,12 @@ fn main() {
                 "--max-iter" => options.max_iter = number() as u32,
                 "--hole-clear" => options.hole_clear = Some(number()),
                 "--problem" => dump = Some(value.clone()),
+                "--report" => report = Some(value.clone()),
+                "--only" => options.only.push(value.clone()),
+                "--weight" => match value.rsplit_once('=').and_then(|(net, w)| Some((net, w.parse::<f64>().ok()?))) {
+                    Some((net, w)) => drop(options.weights.insert(net.to_string(), w)),
+                    None => fail(format!("--weight {}: write NET=number", value)),
+                },
                 _ => fail(format!("unknown option {}", flag)),
             }
         }
@@ -52,6 +62,16 @@ fn main() {
         let pieces: usize = problem.nets.iter().map(|n| n.pieces.len() - 1).sum();
         eprintln!("{} nets in pieces, {} connections to make", problem.nets.len(), pieces);
         let solution = route(&problem, &mut |line| eprintln!("{}", line));
+        let (cost, alone): (f64, f64) = solution.nets.iter().fold((0.0, 0.0), |t, n| (t.0 + n.cost, t.1 + n.alone));
+        eprintln!("tracks and vias cost {:.0} mm; each net alone on the board: {:.0} mm", cost, alone);
+        if let Some(path) = &report {
+            let rows: Vec<String> = solution
+                .nets
+                .iter()
+                .map(|n| format!("{}\t{:.2}\t{:.2}\t{}", n.name, n.cost, n.alone, n.open.len()))
+                .collect();
+            fs::write(path, rows.join("\n") + "\n").unwrap_or_else(|e| fail(format!("{}: {}", path, e)));
+        }
         for net in solution.nets.iter().filter(|n| !n.open.is_empty()) {
             eprintln!("open: {} ({} pieces apart)", net.name, net.open.len());
         }

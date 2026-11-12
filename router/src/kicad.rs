@@ -469,6 +469,10 @@ pub struct Options {
     pub max_iter: u32,
     /// Copper to a foreign hole; None: the project's limit.
     pub hole_clear: Option<f64>,
+    /// Nets for which a short way matters more (see `problem::Net::weight`).
+    pub weights: HashMap<String, f64>,
+    /// Route these nets only (empty: all); the others' copper is in the way as it is.
+    pub only: Vec<String>,
 }
 
 /// The board as a routing problem: every net that is in more than one piece is to be joined,
@@ -572,7 +576,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         for &m in members {
             pieces.entry(root(&mut parent, m)).or_default().push(m);
         }
-        if pieces.len() < 2 {
+        if pieces.len() < 2 || !(options.only.is_empty() || options.only.iter().any(|o| o == name)) {
             continue;
         }
         let mut pieces: Vec<Vec<usize>> = pieces.into_values().collect();
@@ -586,6 +590,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             width: rules.width.get(*name).copied().unwrap_or(rules.track),
             narrow: Some(rules.track),
             clearance: rules.keep(name),
+            weight: options.weights.get(*name).copied().unwrap_or(1.0),
             pieces: pieces.iter().map(|piece| piece.iter().map(|&m| copper[m].shape(&routing)).collect()).collect(),
         });
     }
@@ -626,6 +631,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         fixed,
         nets,
         max_iter: options.max_iter,
+        relax: 12,
         limit: 50_000_000,
     })
 }

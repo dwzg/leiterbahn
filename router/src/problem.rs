@@ -8,6 +8,12 @@ fn d_true() -> bool {
 fn d_iter() -> u32 {
     200
 }
+fn d_one() -> f64 {
+    1.0
+}
+fn d_relax() -> u32 {
+    12
+}
 fn d_limit() -> u64 {
     50_000_000
 }
@@ -39,6 +45,10 @@ pub struct Problem {
     pub nets: Vec<Net>,
     #[serde(default = "d_iter")]
     pub max_iter: u32,
+    /// Passes over the finished result in which nets are laid again, pushing others aside, where
+    /// that makes the weighted sum of lengths smaller.
+    #[serde(default = "d_relax")]
+    pub relax: u32,
     /// Cells one search may open before it gives up.
     #[serde(default = "d_limit")]
     pub limit: u64,
@@ -89,6 +99,10 @@ pub struct Net {
     /// A connection that finds no way at `width`, even across other nets, is laid this wide.
     pub narrow: Option<f64>,
     pub clearance: f64,
+    /// How much a short way matters for this net: once all nets are laid, a net is given a
+    /// shorter way at the cost of others if the sum of lengths times weights gets smaller.
+    #[serde(default = "d_one")]
+    pub weight: f64,
     /// What is to be joined: each piece is copper that is one already (a pad, or pads with
     /// the tracks between them).
     pub pieces: Vec<Vec<Shape>>,
@@ -100,6 +114,8 @@ pub struct Solution {
     pub iterations: u32,
     /// Cells shared by two nets after each iteration.
     pub conflicts: Vec<u64>,
+    /// Nets that got shorter in each pass over the finished result.
+    pub shortened: Vec<u32>,
     pub expanded: u64,
 }
 
@@ -109,6 +125,10 @@ pub struct Routed {
     pub paths: Vec<Path>,
     /// Pieces that were not joined to the first one.
     pub open: Vec<usize>,
+    /// What its tracks cost, in millimetres of track (a via counts as its cost, a narrow track
+    /// half as much again), and what they would cost with the net alone on the board.
+    pub cost: f64,
+    pub alone: f64,
 }
 
 /// One track: the cells of its bends and layer changes, [layer, i, j]. `from` and `to` name the

@@ -228,6 +228,13 @@ domains taught:
   8 of 184 connections on a second board found no way at their class width. Call
   `route_open()` after it for what it reports open, then `improve()` and `widen()`.
   `autoroute()` stays for comparison.
+- Before moving parts to shorten a net, look at `negotiate()`'s `by_net`: (cost, alone) per
+  net. Long and equally long alone on the board (gate drives of 14 to 23 mm on one board):
+  the pads are far apart, move the parts. Much longer than alone (a slope-compensation net
+  of 29 mm against 14): other nets are in its way. Then `weights={net: 4}` helps if one or
+  two nets are concerned; where thirteen nets at one controller were all longer than alone,
+  weights gained nothing and routing them first left five other connections open: the area
+  is too full, and the parts around it have to make room.
 - Start a board script with `repeatable()` (from `leiterbahn.kicad.board`). Without it two runs
   of one script differ: the finishing pass left other connections open (VIN and a slope pin
   in one run, a switch node in the next), and hand rework written for the first result did

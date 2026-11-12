@@ -48,6 +48,8 @@ fn options() -> Options {
         via_cost: 3.0,
         max_iter: 50,
         hole_clear: None,
+        weights: Default::default(),
+        only: Vec::new(),
     }
 }
 
@@ -95,6 +97,19 @@ fn copper_on_a_pour_of_its_net_is_joined_already() {
     assert_eq!((p.nets[0].width, p.nets[0].narrow, sig.width), (0.5, Some(0.2), 0.2));
     assert_eq!(p.keepouts.len(), 1);
     assert_eq!(p.fixed.len(), 2, "the two ground pads");
+    // routing one net only: the other one's pads are in the way like any copper
+    let all: usize = p.nets[0].pieces.iter().map(|piece| piece.len()).sum();
+    let one = problem(
+        &board,
+        &rules,
+        &Options {
+            only: vec!["SIG".into()],
+            ..options()
+        },
+    )
+    .unwrap();
+    assert_eq!(one.nets.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), vec!["SIG"]);
+    assert_eq!(one.fixed.len(), 2 + all);
 }
 
 #[test]

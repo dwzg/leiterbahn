@@ -142,3 +142,47 @@ fn a_shut_in_pad_is_reported_open() {
     }));
     assert_eq!(s.nets[0].open, vec![1]);
 }
+
+/// A wall with one gap, a single track wide; both nets are shortest through the gap and either can
+/// go round the wall's end instead (2.4 mm to the side: a way round is looked for within 3 mm of
+/// a net). The one whose weight is larger gets the gap.
+#[test]
+fn the_heavier_net_gets_the_short_way() {
+    let wall = |x0: f64, x1: f64| json!({"box": [x0, 4.9, x1, 5.1], "layers": [0]});
+    for heavy in ["A", "B"] {
+        let net = |name: &str, x: f64| {
+            json!({"name": name, "width": 0.2, "clearance": 0.2, "weight": if name == heavy { 5.0 } else { 1.0 },
+                   "pieces": [[pad(x, 4.0, 0)], [pad(x, 6.0, 0)]]})
+        };
+        let s = solve(json!({
+            "box": [0, 0, 12, 10], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+            "edge": [0, 0, 12, 10], "edge_clear": 0.2,
+            "fixed": [wall(3.0, 5.6), wall(6.4, 9.0)],
+            "nets": [net("A", 5.0), net("B", 7.0)]
+        }));
+        assert!(s.nets.iter().all(|n| n.open.is_empty()));
+        let (short, long) = if heavy == "A" { (&s.nets[0], &s.nets[1]) } else { (&s.nets[1], &s.nets[0]) };
+        assert!(short.cost <= short.alone + 0.3, "{}: {} mm, alone {} mm", short.name, short.cost, short.alone);
+        assert!(long.cost > long.alone + 2.0, "{}: {} mm, alone {} mm", long.name, long.cost, long.alone);
+        assert!(s.nets.iter().all(|n| n.cost + 1e-6 >= n.alone));
+    }
+}
+
+/// A net that the rounds pushed onto a long way keeps it only as long as the short one is taken.
+#[test]
+fn no_net_costs_less_than_alone_on_the_board() {
+    let s = solve(json!({
+        "box": [0, 0, 10, 10], "step": 0.1, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        "nets": [
+            {"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(1.0, 5.0, 0)], [pad(9.0, 5.0, 0)]]},
+            {"name": "B", "width": 0.2, "clearance": 0.2, "pieces": [[pad(5.0, 1.0, 0)], [pad(5.0, 9.0, 0)]]},
+            {"name": "C", "width": 0.2, "clearance": 0.2, "pieces": [[pad(1.0, 1.0, 0)], [pad(2.0, 1.0, 0)]]}
+        ]
+    }));
+    assert!(s.nets.iter().all(|n| n.open.is_empty() && n.cost + 1e-6 >= n.alone && n.alone > 0.0));
+    assert!(
+        (s.nets[2].cost - s.nets[2].alone).abs() < 1e-6,
+        "a net with nothing in its way is as short as alone"
+    );
+    assert!(!s.shortened.is_empty());
+}
