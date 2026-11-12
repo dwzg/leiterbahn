@@ -12,7 +12,7 @@ fn d_limit() -> u64 {
     50_000_000
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Problem {
     /// The rectangle to route in: [x0, y0, x1, y1]. Cell (0, 0) is at (x0, y0).
     #[serde(rename = "box")]
@@ -44,7 +44,7 @@ pub struct Problem {
     pub limit: u64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Via {
     pub d: f64,
     pub hole: f64,
@@ -52,7 +52,7 @@ pub struct Via {
     pub cost: f64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Keepout {
     #[serde(rename = "box")]
     pub area: [f64; 4],
@@ -65,7 +65,7 @@ pub struct Keepout {
 
 /// A piece of copper: a rectangle (`box`, a pad) or a line with round ends (`seg` and `r`;
 /// a via is a line of no length).
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Shape {
     #[serde(rename = "box")]
     pub rect: Option<[f64; 4]>,
@@ -82,7 +82,7 @@ pub struct Shape {
     pub clearance: f64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Net {
     pub name: String,
     pub width: f64,

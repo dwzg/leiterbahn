@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.11.0
+
+Added
+- `leiterbahn-route board in.kicad_pcb out.kicad_pcb`: the router reads a KiCad board file
+  itself (footprints, pads, tracks, vias, zones with their fills, rule areas, outline; rules
+  and net classes from the `.kicad_pro` beside it), routes it and writes the tracks into the
+  file. No KiCad and no Python are involved. What is joined already is found by the router:
+  copper of a net that overlaps, and copper on the same island of a pour.
+  Checked on two boards (91 and 287 parts, four and six layers): the problem read from the
+  file is the same, shape for shape and piece for piece, as the one `Board.negotiate()`
+  builds through KiCad; KiCad's DRC finds no open connection and no copper violation in the
+  written files; reading them again leaves no net in pieces. `--problem file.json` writes
+  the problem as read. The pours of the written file are as they were before routing;
+  `kicad-cli pcb drc --refill-zones --save-board` refills them.
+
 ## 0.10.0
 
 Changed

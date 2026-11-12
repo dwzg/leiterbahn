@@ -9,7 +9,9 @@
 //! Tracks run on a square grid in eight directions; a via joins all routing layers. Widths and
 //! clearances are kept by counting, for every kind of track (width, clearance), how much copper
 //! lies too near each cell for the centre of such a track.
+pub mod kicad;
 pub mod problem;
+pub mod sexp;
 
 use problem::{Path, Problem, Routed, Shape, Solution};
 use std::cmp::Reverse;
