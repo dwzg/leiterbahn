@@ -1425,6 +1425,11 @@ class Board:
         from .finish import route_open
         return route_open(self, tmp_dir, **kw)
 
+    def negotiate(self, tmp_dir, **kw):
+        """Route all nets that are in pieces at once, by negotiated congestion: see negotiate.negotiate()."""
+        from .negotiate import negotiate
+        return negotiate(self, tmp_dir, **kw)
+
     def improve(self, **kw):
         """Route again what is routed, run by run, and keep what is shorter, has fewer vias or
         reaches its net class's width: dict(runs, better, mm, vias, widened). After route_open();

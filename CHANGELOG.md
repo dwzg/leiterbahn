@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.0
+
+Added
+- `hwroute` (`router/`, Rust) and `Board.negotiate()`: a router of its own. All nets are
+  routed at once and may at first lie on top of each other; a cell two nets want gets dearer
+  round by round until one of them takes another way (negotiated congestion, PathFinder).
+  No net is laid first, so the order of the nets no longer decides who gets the last via
+  site. Tracks at their net class's width and clearance, a narrow track only where the
+  class width has no way at all; vias keep hole distances; pieces of a net that are joined
+  already (pours included) are left as they are. `negotiate(box=...)` routes a region only.
+  Measured on two six- and four-layer boards of 65 x 56 mm, 0.05 mm grid: 287 parts, 451
+  connections, nothing open after 92 s (Freerouting and `route_open()`: 5 open after 25
+  minutes, closed by hand-written rework); 91 parts, 184 connections, nothing open after
+  28 s. KiCad's DRC found no clearance, hole or edge violation on either. Track length 15 %
+  and 12 % below the earlier result after `improve()`.
+- `hwdesign.kicad.negotiate`: `problem()` (a board as hwroute's problem, plain data),
+  `solve()`, `binary()` (builds hwroute with cargo when needed; `HWROUTE` names another).
+
+Fixed
+- The finishing passes took the board's edge from the outline's bounding box, which includes
+  half the outline's line width: a via could sit 0.05 mm too near the edge.
+
 ## 0.8.3
 
 Fixed

@@ -1042,3 +1042,20 @@ def test_pieces_of_a_net_that_a_pour_joins_count_as_one():
     assert finish.cluster_of(items, "a", {"a": 0, "b": 0}) == {"a", "b", "c"}       # c hangs on b by its shape
     assert finish.cluster_of(items, "d", {"a": 0, "b": 0}) == {"d"}
 
+
+@pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build hwroute")
+def test_negotiate_routes_all_nets_at_once(project, tmp_path):
+    """Nothing is routed yet: hwroute lays every net, and KiCad finds nothing open and nothing too near."""
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    b.fill_zones()
+    before = b.unrouted()
+    got = b.negotiate(str(tmp_path))
+    b.fill_zones()
+    assert before >= 3 and got["open"] == [] and got["routed"] == before and b.unrouted() == 0
+    pcb = str(tmp_path / "neg.kicad_pcb")
+    b.save(pcb)
+    report = drc(pcb, str(tmp_path / "drc.rpt"))
+    assert "Found 0 unconnected" in report
+    assert not re.search(r"\[(clearance|shorting_items|tracks_crossing|hole_clearance|copper_edge_clearance)\]", report)
+

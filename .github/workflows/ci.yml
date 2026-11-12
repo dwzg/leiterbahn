@@ -31,3 +31,15 @@ jobs:
         run: pytest -q
       - name: API reference is up to date
         run: python scripts/gen_api.py && git diff --exit-code skills/pcb-as-code/api.md
+
+  router:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: router
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --release

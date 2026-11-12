@@ -552,7 +552,10 @@ class _Router:
         self.clearance = board.rules["clearance"]
         bb = self.pb.GetBoardEdgesBoundingBox()
         mm = pcbnew.ToMM
-        self.edge = (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom()))
+        cuts = [d for d in self.pb.GetDrawings() if d.GetLayer() == pcbnew.Edge_Cuts]
+        line = max((mm(d.GetWidth()) for d in cuts), default=0.0) / 2
+        self.edge = (mm(bb.GetLeft()) + line, mm(bb.GetTop()) + line,       # the box includes the outline's line
+                     mm(bb.GetRight()) - line, mm(bb.GetBottom()) - line)   # width; the edge is its middle
         self.step, self.via_cost, self.limit = step, via_cost, limit
         self.fine, self.hug, self.locked = fine, hug, locked
         self.grid = Grid(self.edge, step)

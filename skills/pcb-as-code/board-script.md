@@ -88,6 +88,16 @@ render(PCB, os.path.join(BUILD, "back.png"), layers="B.Cu,Edge.Cuts", width=2000
 sys.exit(1 if bad else 0)
 ```
 
+Routing with hwroute instead of Freerouting (this ran on two 65 x 56 mm boards of four and six
+layers, not on the board above): replace the `autoroute` line and the two tidy-up lines after
+it. The rest stays.
+
+```python
+got = b.negotiate(BUILD, step=0.05)                   # all nets at once; needs cargo to build router/
+print("routed %(routed)d connections in %(rounds)d rounds, %(seconds).0f s; open: %(open)s" % got)
+b.fill_zones()
+```
+
 Notes:
 - `track()` points are `(x, y)` in mm or `(ref, pad)`. A point inside a pad connects; it does
   not have to be the pad centre. That lets a route enter a pad straight instead of jogging to

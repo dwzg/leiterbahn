@@ -9,6 +9,7 @@ skills/<skill>/      SKILL.md plus reference files, loaded on demand
 agents/<agent>.md    subagents
 .claude-plugin/      plugin manifest and its one-entry marketplace
 scripts/gen_api.py   regenerates skills/pcb-as-code/api.md from the source
+router/              hwroute, the router (Rust); kicad/negotiate.py builds and runs it
 ```
 
 The repository root is the plugin, so an installed plugin carries the library with it.
@@ -42,6 +43,7 @@ their builds until they update it.
 
 ```bash
 ruff check . && pytest -q && claude plugin validate .
+(cd router && cargo clippy --release --all-targets -- -D warnings && cargo test --release)   # if router/ changed
 ```
 
 CI runs the same checks on every push and pull request.

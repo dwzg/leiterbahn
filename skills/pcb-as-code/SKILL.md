@@ -220,6 +220,14 @@ domains taught:
   out. Find the via sites before drawing: pads of the parts on the other side and wide
   tracks on inner layers left one row of sites 0.45 mm high above that pin row. Three vias
   there for three pins, the other two pins leave on tracks above them.
+- Route with `b.negotiate(BUILD, step=0.05)` (hwroute, needs `cargo`) rather than with
+  Freerouting. On a 65 x 56 mm six-layer board with 287 parts Freerouting left about 40
+  connections open, `route_open()` closed all but 5, and which 5 depended on the order of
+  the nets: a QFN's pins were shut in by whichever track came first. hwroute routes all nets
+  at once and closed all 451 in 92 s. Use a 0.05 mm grid with 0.5 mm pitch parts: at 0.1 mm
+  8 of 184 connections on a second board found no way at their class width. Call
+  `route_open()` after it for what it reports open, then `improve()` and `widen()`.
+  `autoroute()` stays for comparison.
 - Start a board script with `repeatable()` (from `hwdesign.kicad.board`). Without it two runs
   of one script differ: the finishing pass left other connections open (VIN and a slope pin
   in one run, a switch node in the next), and hand rework written for the first result did
