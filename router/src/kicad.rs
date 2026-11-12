@@ -639,6 +639,8 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         apart: 0.0,
         shy: 3.0,
         straight: true,
+        glance: false,
+        untangle: true,
         stall: 20,
         limit: 50_000_000,
     })

@@ -38,3 +38,26 @@ def read_netlist(path):
         name = str(find1(n, "name")[1])
         nets[name] = [(str(find1(x, "ref")[1]), str(find1(x, "pin")[1])) for x in find(n, "node")]
     return comps, nets
+
+
+def read_pins(path):
+    """What the schematic's symbols say of each pin: {(ref, pin): (name, kind)}.
+
+    name is the pin's name in its symbol ("FB", "BOOT1", "V+"; "" where it has none), kind
+    its electrical type as KiCad writes it ("power_in", "input", "passive", ...). A netlist
+    says which pads are joined; this says what they are for, and that is what tells a supply
+    pin from an enable input on the same rail.
+    """
+    with open(path) as f:
+        t = parse(f.read())
+    pins = {}
+    for n in find(find1(t, "nets"), "net"):
+        for x in find(n, "node"):
+            ref, pin = str(find1(x, "ref")[1]), str(find1(x, "pin")[1])
+            name = find1(x, "pinfunction")
+            name = str(name[1]) if name is not None else ""
+            if name.endswith("_" + pin):                   # KiCad writes the name with the number after it
+                name = name[:-len(pin) - 1]
+            kind = find1(x, "pintype")
+            pins[(ref, pin)] = (name, str(kind[1]) if kind is not None else "")
+    return pins

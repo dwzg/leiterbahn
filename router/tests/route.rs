@@ -350,3 +350,49 @@ fn a_track_is_straightened_without_growing_longer() {
         assert!(got[1].1 <= got[0].1 + 1e-6, "cost {:?}", got);
     }
 }
+
+/// The net's first pad is shut in by copper that stays; its three other pads are free. They are
+/// joined to each other, and one connection is said to be open, not three.
+#[test]
+fn a_pad_that_is_shut_in_leaves_one_connection_open_not_all() {
+    let wall = |a: [f64; 4]| json!({"seg": a, "r": 0.075, "layers": [0], "clearance": 0.15});
+    let s = solve(json!({
+        "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        "fixed": [wall([1.0, 2.0, 3.0, 2.0]), wall([3.0, 2.0, 3.0, 4.0]), wall([3.0, 4.0, 1.0, 4.0]), wall([1.0, 4.0, 1.0, 2.0])],
+        "nets": [{"name": "A", "width": 0.15, "clearance": 0.15,
+                  "pieces": [[pad(2.0, 3.0, 0)], [pad(5.0, 1.0, 0)], [pad(8.0, 3.0, 0)], [pad(5.0, 5.0, 0)]]}]
+    }));
+    assert_eq!(s.nets[0].open.len(), 1, "open: {:?}", s.nets[0].open);
+    assert_eq!(s.nets[0].paths.len(), 2);
+}
+
+/// Four nets through a gap 1.2 mm wide in a wall, their pads in opposite order on its two sides,
+/// and two rounds, which is too few for them to agree. Taking out the net most in the way and
+/// laying it in the room left leaves a connection open; one of the 24 orders leaves none.
+#[test]
+fn nets_that_do_not_agree_are_settled_by_an_order() {
+    let mut open = Vec::new();
+    for untangle in [false, true] {
+        let nets: Vec<_> = (0..4)
+            .map(|n| {
+                json!({"name": format!("N{}", n), "width": 0.15, "clearance": 0.15,
+                       "pieces": [[pad(1.0, 1.0 + n as f64 * 0.8, 0)], [pad(9.0, 1.0 + (3 - n) as f64 * 0.8, 0)]]})
+            })
+            .collect();
+        let s = solve(json!({
+            "box": [0, 0, 10, 6], "step": 0.05, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+            "max_iter": 2, "untangle": untangle, "relax": 0,
+            "fixed": [{"seg": [5.0, 0.0, 5.0, 2.0], "r": 0.075, "layers": [0, 1], "clearance": 0.15},
+                      {"seg": [5.0, 3.2, 5.0, 6.0], "r": 0.075, "layers": [0, 1], "clearance": 0.15}],
+            "nets": nets
+        }));
+        let tracks = lines(&s);
+        for a in &tracks {
+            for b in &tracks {
+                assert!(a.0 == b.0 || a.1 != b.1 || gap(a, b) * 0.05 >= 0.3 - 1e-6, "two nets too near");
+            }
+        }
+        open.push(s.nets.iter().map(|n| n.open.len()).sum::<usize>());
+    }
+    assert_eq!(open, [1, 0]);
+}

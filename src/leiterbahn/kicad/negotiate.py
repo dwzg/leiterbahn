@@ -156,6 +156,31 @@ def shut_in(board, tmp_dir, step=0.1, skip=(), say=None):
     return found
 
 
+def glance(board, tmp_dir, rounds=8, say=None, **kw):
+    """Look at how the board will route without routing it: `rounds` rounds of negotiate() and what
+    is still in conflict then. Takes a fifth to a fiftieth of the time and draws nothing.
+
+    Returns dict(conflicts: cells in conflict after the last round, by_round, seconds, where:
+    [(net, cells, (x0, y0, x1, y1) in board mm, layers)] with the most cells first). Of ten
+    placements of one board with 158 nets, the four that then routed clean within 130 rounds
+    had 88 to 132 cells in conflict after 8 rounds, the five that ended with connections open
+    186 to 323: so this tells placements apart, and `where` says which pins are in trouble.
+    Other arguments as negotiate().
+    """
+    r, _items, prob, _routed = _board_problem(board, kw.pop("only", None), kw.pop("skip", ()), kw.pop("box", None),
+                                              kw.pop("step", 0.1), kw.pop("via_cost", 3.0), rounds,
+                                              kw.pop("locked", False), kw.pop("weights", None), **kw)
+    prob["glance"] = True
+    started = time.time()
+    answer = solve(prob, tmp_dir, say)
+    ox, oy = board.box[0], board.box[1]
+    where = sorted(((t["name"], t["cells"],
+                     tuple(round(v - o, 2) for v, o in zip(t["area"], (ox, oy, ox, oy), strict=True)), t["layers"])
+                    for t in answer["stuck"]), key=lambda t: (-t[1], t[0]))
+    return dict(conflicts=answer["conflicts"][-1] if answer["conflicts"] else 0, by_round=answer["conflicts"],
+                seconds=round(time.time() - started, 1), where=where)
+
+
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
               say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True):
     """Route every net of the board that is in more than one piece, all at once.

@@ -67,6 +67,16 @@ pub struct Problem {
     /// where they find a way that is not more than `shy` times longer for it. 0: no such wish.
     #[serde(default)]
     pub apart: f64,
+    /// Only look: end after `max_iter` rounds and say what is still in conflict and where
+    /// (`Solution::conflicts`, `Solution::stuck`), without a result that could be drawn. What is
+    /// left after 8 rounds tells how the board will end: of ten placements of one board, those
+    /// that came clean had 88 to 132 cells in conflict then, those that kept connections open
+    /// 186 to 323.
+    #[serde(default)]
+    pub glance: bool,
+    /// Settle nets that go on changing places by trying their orders: see untangle.rs.
+    #[serde(default = "d_true")]
+    pub untangle: bool,
     /// Straighten the finished tracks: see smooth.rs.
     #[serde(default = "d_true")]
     pub straight: bool,
@@ -157,6 +167,18 @@ pub struct Solution {
     /// Nets that got shorter in each pass over the finished result.
     pub shortened: Vec<u32>,
     pub expanded: u64,
+    /// With `Problem::glance`: the nets that lie in another's way when the rounds end.
+    pub stuck: Vec<Stuck>,
+}
+
+#[derive(Serialize, Debug, Default, Clone)]
+pub struct Stuck {
+    pub name: String,
+    /// Cells of its tracks that are too near another net's.
+    pub cells: u64,
+    /// The box round those cells, in mm.
+    pub area: [f64; 4],
+    pub layers: Vec<usize>,
 }
 
 #[derive(Serialize, Debug, Default, Clone)]

@@ -14,11 +14,12 @@ pub mod place;
 pub mod problem;
 pub mod sexp;
 
-use problem::{Path, Problem, Role, Routed, Shape, Solution};
+use problem::{Path, Problem, Role, Routed, Shape, Solution, Stuck};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
 mod smooth;
+mod untangle;
 
 const NONE: u32 = u32::MAX;
 const DIAG: f32 = std::f32::consts::SQRT_2;
@@ -770,6 +771,7 @@ impl Router<'_> {
             }
         }
         let mut joined = vec![false; job.cells.len()];
+        let mut apart_from: Vec<usize> = Vec::new(); // pieces a new group of joined pieces began with
         joined[0] = true;
         let mut sources: Vec<u32> = job.cells[0].iter().map(|c| c.0).collect();
         while joined.iter().any(|j| !j) {
@@ -891,7 +893,17 @@ impl Router<'_> {
             }
             let Some(path) = found else {
                 laid.stuck = press.is_some();
-                break;
+                // What is joined so far has no way on. The pieces left may still have ways to each
+                // other: go on from the next of them, so that one pad shut in costs one connection
+                // and not all of the net's (a net of six pieces came out with five apart).
+                let left: Vec<usize> = (0..joined.len()).filter(|&p| !joined[p]).collect();
+                if left.len() < 2 {
+                    break;
+                }
+                apart_from.push(left[0]);
+                joined[left[0]] = true;
+                sources = job.cells[left[0]].iter().map(|c| c.0).collect();
+                continue;
             };
             let piece = piece.unwrap();
             joined[piece] = true;
@@ -941,7 +953,7 @@ impl Router<'_> {
                 -1,
             );
         }
-        laid.open = (0..joined.len()).filter(|&p| !joined[p]).collect();
+        laid.open = (0..joined.len()).filter(|&p| !joined[p] || apart_from.contains(&p)).collect();
         self.laid[n] = laid;
         self.own(n, -1);
     }
@@ -1209,6 +1221,14 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                     }
                     router.soft(n, 1);
                 }
+                if problem.untangle {
+                    let (knots, settled) = router.untangle(&order, near, restarts == 0, false);
+                    say(format!("   {} of {} knots settled by an order of their nets", settled, knots));
+                    if settled == knots {
+                        (fewest, since) = (u64::MAX, 0);
+                        continue; // the next round finds nothing in conflict, or goes on from here
+                    }
+                }
                 if restarts >= 3 {
                     break;
                 }
@@ -1221,9 +1241,34 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         }
         press = (press * 1.6).min(1e5);
     }
+    if problem.glance {
+        for &n in &order {
+            router.soft(n, -1);
+            if let Some((cells, b, layers)) = router.where_stuck(n) {
+                solution.stuck.push(Stuck {
+                    name: problem.nets[n].name.clone(),
+                    cells,
+                    area: [
+                        x0 + b[0] as f64 * step,
+                        y0 + b[1] as f64 * step,
+                        x0 + b[2] as f64 * step,
+                        y0 + b[3] as f64 * step,
+                    ],
+                    layers,
+                });
+            }
+            router.soft(n, 1);
+        }
+        solution.expanded = router.search.expanded;
+        return solution;
+    }
     if !clean {
         // out of rounds: take out the net with the most conflicts until none is left, then give
         // each of those the room that remains
+        if problem.untangle {
+            let (knots, settled) = router.untangle(&order, near, true, true);
+            say(format!("out of rounds: {} of {} knots settled by an order of their nets", settled, knots));
+        }
         let mut out: Vec<usize> = Vec::new();
         loop {
             let mut worst = (0u64, 0usize);

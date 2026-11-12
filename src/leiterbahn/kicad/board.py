@@ -24,7 +24,7 @@ import zlib
 import pcbnew
 
 from . import planar
-from .netlist import read_netlist  # noqa: F401  (re-exported)
+from .netlist import read_netlist, read_pins  # noqa: F401  (re-exported)
 
 FP_DIR = os.environ.get("KICAD_FOOTPRINT_DIR", "/usr/share/kicad/footprints")
 MM = pcbnew.FromMM
@@ -65,6 +65,7 @@ class Board:
         pcbnew.KIID.SeedGenerator(seed)                     # the same ids for the same script: see repeatable()
         self.fp_dirs = list(fp_dirs)
         self.comps, self.nets = read_netlist(netlist_path)
+        self.pin_info = read_pins(netlist_path)             # (ref, pin) -> (name, kind): see intent.py
         self.declared = {}
         if declared:
             with open(declared) as f:
@@ -1474,6 +1475,11 @@ class Board:
         """Route all nets that are in pieces at once, by negotiated congestion: see negotiate.negotiate()."""
         from .negotiate import negotiate
         return negotiate(self, tmp_dir, **kw)
+
+    def glance(self, tmp_dir, **kw):
+        """How the board will route, from a few rounds and without drawing anything: see negotiate.glance()."""
+        from .negotiate import glance
+        return glance(self, tmp_dir, **kw)
 
     def shut_in(self, tmp_dir, **kw):
         """The nets that have no way even alone on the board, with where: see negotiate.shut_in()."""

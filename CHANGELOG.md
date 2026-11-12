@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.22.0
+
+Added
+- What a circuit needs of its layout, read from the netlist (`leiterbahn.kicad.intent`).
+  The symbols say which pin is a supply input and which is called FB, BOOT or SW;
+  `read_pins()` reads that, `Board.pin_info` holds it. From it:
+  - `Placer.unmet()` / `intent.findings()`: supply pins with no capacitor within 4 mm,
+    feedback and amplifier-input nodes that reach further than 10 mm, boot capacitors far
+    from their pin. On a board of 287 parts it listed 14, among them three a reviewer had
+    found by measuring.
+  - `intent.roles()`: the quiet and the noisy nets as far as pin names tell, for
+    `negotiate(quiet=, noisy=)`.
+  - `Placer.ties()` uses it: capacitors of a rail are shared out over the pins that are
+    supply inputs (an enable input tied to the rail had taken a converter's capacitor), and
+    a part on the net of a quiet pin belongs at that pin whatever its other end is on. The
+    same board: 10 unmet instead of 14, 122 mm too far in sum instead of 197, routed in 20
+    rounds instead of 36, 3 % more track.
+  - `Placer.mend()`: after improve(), moves what unmet() lists to its pin where there is
+    room nearer, and keeps a move only if the sum of all that is unmet fell (8 unmet, 110 mm).
+- `Board.glance()` / `negotiate.glance()`: how a board will route, from 8 rounds and without
+  drawing anything. Of ten placements of one board, those that routed clean had 88 to 132
+  cells in conflict after 8 rounds, those that kept connections open 186 to 323.
+- The router settles nets that go on changing places by trying the orders of laying them
+  (`untangle.rs`), small knots while the rounds go on and all of them when they run out.
+
+Fixed
+- A net whose first pad was shut in came out with all its other pads apart as well: the
+  router gave up at the first connection without a way. It now goes on from the next pad,
+  so one pad shut in costs one connection.
+
+Ten placements of a board with 158 nets, five of which had ended with 18 connections open
+between them: 10 open now, and six of the ten clean.
+
 ## 0.21.0
 
 Added

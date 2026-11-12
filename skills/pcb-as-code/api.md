@@ -88,6 +88,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
   - `.prune_dangling(rounds=10)`: Remove unlocked vias and track stubs that lead nowhere (autorouter leftovers).
   - `.route_open(tmp_dir, **kw)`: Connect what the autorouter left open, one connection at a time, with a grid search: (routed, failed). Run it after autoroute() and before the outer pours; see finish.route_open.
   - `.negotiate(tmp_dir, **kw)`: Route all nets that are in pieces at once, by negotiated congestion: see negotiate.negotiate().
+  - `.glance(tmp_dir, **kw)`: How the board will route, from a few rounds and without drawing anything: see negotiate.glance().
   - `.shut_in(tmp_dir, **kw)`: The nets that have no way even alone on the board, with where: see negotiate.shut_in().
   - `.improve(**kw)`: Route again what is routed, run by run, and keep what is shorter, has fewer vias or reaches its net class's width: dict(runs, better, mm, vias, widened). After route_open(); see finish.improve.
   - `.fill_zones()`: 
@@ -137,6 +138,8 @@ Placement by connections, on both board sides.
   - `.tie(ref, pad, to, to_pad, weight=3.0)`: Say where a pad belongs: pad `pad` of ref at pad `to_pad` of `to`. improve() pulls it there with `weight` mm of cost per mm of distance, strays() lists it when it is far.
   - `.first(refs, sides=(False, True), reach=1.5)`: Place these now, in this order, each as near as it gets to the pins it belongs at (see ties(); a part with none goes where its nets pull it), and keep them there: improve() does not move them. For the few parts that must win the room next to a fine-pitch part: with everything tied to its pins at the same weight, a controller's supply capacitor ended 5 mm out behind a divider that could have been anywhere.
   - `.ties_of(ref)`: ties() of one part that is not placed yet or placed: where its pads belong.
+  - `.unmet(**limits)`: What the placement does not give the circuit, from what the symbols say of the pins: a supply pin without a capacitor near, a feedback or input node that reaches far, a boot capacitor far from its pin. [(kind, ref, pad, net, mm, part, text)], worst first: see intent.findings().
+  - `.mend(sides=(False, True), **limits)`: Move what unmet() lists to the pin it belongs at, as far as there is room nearer than where it lies: after improve(), which weighs all wishes against each other and leaves a few unmet that a free spot beside the pin would settle. Only parts that near() or improve() placed are moved, and a move is kept only if all that is unmet, summed in mm, got less by it: a resistor between the inputs of two parts 28 mm apart was moved to the one and the other then reached 29 mm. Returns [(part, ref, pad, mm before, mm after)]. limits as intent.findings().
   - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() or first() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
   - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
@@ -162,6 +165,7 @@ Plane geometry without pcbnew: the smallest gap between two groups of copper sha
 Read KiCad netlists without pcbnew (usable for checks on machines without KiCad's Python).
 
 - `read_netlist(path)`: Parse a KiCad netlist (kicad-cli sch export netlist --format kicadsexpr).
+- `read_pins(path)`: What the schematic's symbols say of each pin: {(ref, pin): (name, kind)}.
 
 ## `leiterbahn.kicad.fab`
 
@@ -186,4 +190,15 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
 - `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
 - `shut_in(board, tmp_dir, step=0.1, skip=(), say=None)`: The nets that have no way even alone on the board: [(net, [(x, y)])].
+- `glance(board, tmp_dir, rounds=8, say=None, **kw)`: Look at how the board will route without routing it: `rounds` rounds of negotiate() and what is still in conflict then. Takes a fifth to a fiftieth of the time and draws nothing.
 - `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True)`: Route every net of the board that is in more than one piece, all at once.
+
+## `leiterbahn.kicad.intent`
+
+What a circuit needs of its layout, read from the netlist.
+
+- `passive(ref)`: 
+- `grounds(pins, nets)`: The nets that are a ground: those named so, and those whose supply pins are all called GND, AGND, VSS ... (A negative rail that one part uses as its ground is a rail.)
+- `supply_pins(pins, nets, ground=None)`: [(ref, pad, net)]: the pins a symbol calls a supply input, on a net that is no ground.
+- `roles(pins, nets)`: (quiet, noisy): the nets with a pin whose name says it takes up what is near it (FB, COMP, a sense or amplifier input, a reference) and those with a pin that swings (SW, BOOT, a gate drive, a clock). Supply rails and grounds are neither. For negotiate(quiet=, noisy=).
+- `findings(pins, nets, at, near=4.0, node=10.0, boot=4.0)`: What the placement does not give the circuit: [(kind, ref, pad, net, mm, part, text)], worst first; part is the capacitor or resistor that is too far (None: there is none).

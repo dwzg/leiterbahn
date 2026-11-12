@@ -24,6 +24,8 @@ import subprocess
 
 import pcbnew
 
+from . import intent
+
 CELL = 5.0                                # bucket size of the collision index, mm
 RAIL = 5                                  # a net with more pads than this is a supply rail
 
@@ -94,6 +96,7 @@ class Placer:
         self.sides = {}                   # ref -> "F" or "B"
         self.auto = {}                    # ref -> (anchor, pull, sides, rots) of the parts near() placed
         self.block = {}
+        self.pin_info = getattr(board, "pin_info", {})     # (ref, pad) -> (name, kind): what the symbols say
         self._shape = {}
 
     # ---- geometry of one part ------------------------------------------------
@@ -487,6 +490,9 @@ class Placer:
             pairs = []
             for cap in caps:
                 users = hosts.get(net, ())
+                # the pins the symbols call supply inputs, if they say: an enable input tied to the rail
+                # had taken the capacitor of a converter's supply pin, which then had none within 5 mm
+                users = [t for t in users if self.pin_info.get(t, ("", ""))[1].startswith("power_in")] or users
                 near = [t for t in users if self.block.get(t[0]) == self.block.get(cap[0])] or users
                 pairs += [(far(cap, t), cap, t) for t in near]
             taken = set()
@@ -514,6 +520,15 @@ class Placer:
                         to = min((t for t in power if t[0] >= 0.8 * most),
                                  key=lambda t: (far((ref, pad), t[1:]), t[1:]))
                         found.append((ref, pad, to[1], to[2], 3.0))
+                continue
+            # A part on the net of a pin that takes up what is near it (FB, COMP, an amplifier's input: see
+            # intent.QUIET) belongs at that pin, whatever its other end is on: such a node was 30 mm long
+            # with its resistor at the far end's part.
+            quiet = [(pad, t) for pad, net in mine if len(self.nets[net]) <= 8
+                     for t in hosts.get(net, ()) if intent.QUIET.match(self.pin_info.get(t, ("", ""))[0])]
+            if quiet and len({pad for pad, _t in quiet}) == 1:
+                pad, to = min(quiet, key=lambda q: (far((ref, q[0]), q[1]), q[1]))
+                found.append((ref, pad, to[0], to[1], 3.0))
                 continue
             common = None
             for _pad, net in mine:
@@ -569,6 +584,50 @@ class Placer:
         finally:
             if not placed:
                 del self.at[ref]
+
+    def unmet(self, **limits):
+        """What the placement does not give the circuit, from what the symbols say of the pins: a supply
+        pin without a capacitor near, a feedback or input node that reaches far, a boot capacitor far
+        from its pin. [(kind, ref, pad, net, mm, part, text)], worst first: see intent.findings()."""
+        return intent.findings(self.pin_info, self.nets, lambda r, q: self.pad(r, q) if r in self.at else None,
+                               **limits)
+
+    def mend(self, sides=(False, True), **limits):
+        """Move what unmet() lists to the pin it belongs at, as far as there is room nearer than where
+        it lies: after improve(), which weighs all wishes against each other and leaves a few unmet
+        that a free spot beside the pin would settle. Only parts that near() or improve() placed are
+        moved, and a move is kept only if all that is unmet, summed in mm, got less by it: a
+        resistor between the inputs of two parts 28 mm apart was moved to the one and the other
+        then reached 29 mm. Returns [(part, ref, pad, mm before, mm after)]. limits as
+        intent.findings()."""
+        def lack():
+            return sum(min(f[4], 50.0) for f in self.unmet(**limits))
+        moved, tried = [], set()
+        while True:
+            todo = [f for f in self.unmet(**limits) if f[5] in self.auto and (f[1], f[2], f[5]) not in tried]
+            if not todo:
+                return moved
+            _kind, ref, pad, net, was, part, _text = todo[0]
+            tried.add((ref, pad, part))
+            mine = [q for q, n in self.pins.get(part, {}).items() if n == net]
+            pin, before = self.pad(ref, pad), lack()
+            old, auto, served = self.at[part], self.auto[part], dict(self.served)
+            self._lift(part)
+            try:
+                self.near(part, pin, start=pin, sides=sides, pull=0.0, step=0.25, reach=1.0, max_r=was)
+                x, y = self.pad(part, mine[0])
+                now = math.hypot(x - pin[0], y - pin[1])
+                better = lack() < before - 0.5
+            except RuntimeError:
+                better = False
+            if not better:                                 # no better place: back where it was
+                if part in self.at:
+                    self._lift(part)
+                self.fix(part, *old)
+                self.served = served
+            else:
+                moved.append((part, ref, pad, round(was, 1), round(now, 1)))
+            self.auto[part] = auto
 
     def strays(self, limit=3.0):
         """The resistors and capacitors further than `limit` mm from the pin they belong at

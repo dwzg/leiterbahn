@@ -672,6 +672,33 @@ def test_every_supply_pin_is_given_a_capacitor_before_any_gets_two(project):
     assert sorted(t[2] for t in p.ties()) == ["J1", "J1", "J2"]              # J2, 30 mm away, would get one
 
 
+def test_what_the_symbols_say_of_the_pins_decides_where_parts_belong(project, monkeypatch):
+    """An enable input tied to the rail is no supply pin: with the pins' kinds known, the capacitors beside
+    it go to the pin that is one. And a resistor between a pin called FB and another part belongs at FB."""
+    from leiterbahn.kicad import place
+    monkeypatch.setattr(place, "RAIL", 4)                                    # five pads make a rail here
+    rail = [("J1", "1"), ("J2", "1"), ("R1", "1"), ("R2", "1"), ("R3", "1")]
+    b, p = placer(project, nets={"VCC": rail, "GND": [(ref, "2") for ref, _ in rail],
+                                 "FB": [("J1", "2"), ("R4", "1")], "OUT": [("J2", "2"), ("R4", "2")]})
+    p.hosts_from = 2
+    p.decouples = lambda ref: ref != "R4"
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    for ref, at in (("R1", (8, 4)), ("R2", (8, 16)), ("R3", (10, 10)), ("R4", (30, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    assert sorted(t[2] for t in p.ties() if t[0] != "R4") == ["J1", "J1", "J2"]
+    assert not [t for t in p.ties() if t[0] == "R4"]                         # between two parts: nobody's
+    p.pin_info = {("J1", "1"): ("EN", "input"), ("J2", "1"): ("VCC", "power_in"), ("J1", "2"): ("FB", "input")}
+    assert sorted(t[2] for t in p.ties() if t[0] != "R4") == ["J2", "J2", "J2"]
+    assert [t for t in p.ties() if t[0] == "R4"] == [("R4", "1", "J1", "2", 3.0)]
+    found = p.unmet()                                                        # R4 is 26 mm from the FB pin
+    assert [f[:4] + f[5:6] for f in found if f[0] == "node"] == [("node", "J1", "2", "FB", "R4")]
+    moved = p.mend()                                                         # ... and there is room beside it
+    assert [m[:3] for m in moved] == [("R4", "J1", "2")] and moved[0][3] > 20 and moved[0][4] < 4
+    assert not [f for f in p.unmet() if f[0] == "node"]
+    assert p.mend() == []
+
+
 def test_face_and_find(project):
     b, p = placer(project)
     rot = p.face("R1", "MID", "left")
@@ -1133,6 +1160,18 @@ def test_coupling_says_where_a_quiet_track_runs_beside_a_noisy_one():
     found = coupling(pb, ["FB"], ["SW", "CLK"], apart=0.5)
     assert [t[:2] for t in found] == [("FB", "SW")] and abs(found[0][2] - 5.0) < 0.11 and found[0][3] == 0.3
     assert coupling(pb, ["FB"], ["SW", "CLK"], apart=0.25) == []
+
+
+def test_glance_says_what_is_in_conflict_and_draws_nothing(project, tmp_path):
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    b.fill_zones()
+    before = len(list(b.board.GetTracks()))
+    got = b.glance(str(tmp_path), rounds=3)
+    assert len(list(b.board.GetTracks())) == before
+    assert 1 <= len(got["by_round"]) <= 2 and got["conflicts"] == got["by_round"][-1]  # round 0 only lays
+    assert all(len(t) == 4 and t[1] > 0 for t in got["where"])
+    assert (got["conflicts"] == 0) == (got["where"] == [])
 
 
 def test_negotiate_keeps_a_quiet_net_away_from_a_noisy_one(project, tmp_path):

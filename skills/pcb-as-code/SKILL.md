@@ -93,6 +93,19 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
   is near them (feedback, compensation, sense, reference, amplifier inputs) once, give both
   lists to `negotiate(quiet=, noisy=)` and to `coupling()`: DRC passes with a sense line
   0.11 mm beside a switch node, and the router only keeps apart what it was told to.
+  `intent.roles(b.pin_info, b.nets)` gives both lists as far as pin names tell (FB, COMP,
+  amplifier inputs; SW, BOOT, gate drives, clocks); add what only you know (a transformer's
+  nets, a clock behind an isolator).
+- `Placer.unmet()` right after placement: supply pins with no capacitor within 4 mm,
+  feedback and input nodes that reach further than 10 mm, boot capacitors far from their
+  pin, all from what the symbols say of the pins. It found on its own what a reviewer had
+  found by measuring (a regulator's input 20 mm from its capacitor). `Placer.mend()` moves
+  what has room nearer its pin; fix the rest (`first()`, `tie()`, or the schematic: a part
+  between the inputs of two distant parts cannot be near both) before routing, which does
+  not move parts.
+- `b.glance()` before a long routing run, and to choose between placements: 8 rounds, a
+  fifth of the time or less. Under about 150 cells in conflict the board came clean, over
+  about 180 it kept connections open (one board, ten placements); `where` names the pins.
 
 Then render front and back, with and without the pour, and look before showing anyone. The
 `layout-reviewer` agent does an independent pass.
