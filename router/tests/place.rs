@@ -36,7 +36,7 @@ fn a_part_moves_to_what_it_is_connected_to_and_keeps_its_distance() {
     // its pad 1 beside J1's pad 2 at (5.7, 10): as near as two courtyards 0.2 mm apart allow
     assert!(placed.after.nets < 1.2, "{:?}", placed.after);
     assert!(placed.before.nets > 25.0 && placed.moved == 1 && !r.4, "on the front: the back costs");
-    let (w, h) = if r.3 % 180 == 0 { (1.0, 0.5) } else { (0.5, 1.0) };
+    let (w, h) = if r.3.is_multiple_of(180) { (1.0, 0.5) } else { (0.5, 1.0) };
     let apart = ((r.1 - 5.0).abs() - w - 1.0).max((r.2 - 10.0).abs() - h - 0.5);
     assert!(apart >= 0.2 - 1e-6, "{:?}", r);
 }
@@ -52,7 +52,7 @@ fn the_rules_hold() {
         "nets": [{"name": "A", "pins": [[0, "2"], [1, "1"]]}, {"name": "B", "pins": [[0, "1"], [2, "1"]]}]
     }));
     let (r1, r2) = (at(&placed, "R1"), at(&placed, "R2"));
-    let half = |r: &(String, f64, f64, u32, bool)| if r.3 % 180 == 0 { 1.0 } else { 0.5 };
+    let half = |r: &(String, f64, f64, u32, bool)| if r.3.is_multiple_of(180) { 1.0 } else { 0.5 };
     assert!(r1.1 - half(r1) >= 20.0 - 1e-6 && r1.1 < 22.0, "as far left as its area lets it: {:?}", r1);
     // R2 may not be on the front where the keep-out is: on the back under J1, or at the keep-out's edge
     assert!(r2.4 || r2.1 - half(r2) >= 12.0 - 1e-6, "{:?}", r2);
