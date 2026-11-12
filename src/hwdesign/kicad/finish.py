@@ -396,18 +396,18 @@ def in_the_way(items, placed, net, keep, wider=None):
     return hit
 
 
-def joined_only_at_ends(items, chain, ends):
-    """May this run (keys `chain` in `items`, between `ends`) be taken out and laid another way?
-    Not if it is all that joins some other copper of its net to the rest: a track that ends on
-    the middle of one of its tracks or beside one of its vias, a pad it passes over. That copper
-    would be cut off, and nothing would know to join it again. Copper that also hangs on what
-    stays at the run's ends is no hindrance."""
+def cut_off(items, chain, ends):
+    """What would hang loose if this run (keys `chain` in `items`, between `ends`) were taken out:
+    other copper of its net that only the run joins to the rest. A track that ends on the middle
+    of one of its tracks or beside one of its vias, a pad it passes over. Copper that also hangs
+    on what stays at the run's ends does not count. Returns one end per loose piece, to join it
+    again: the pad, or a point on the piece where it met the run."""
     members = [items[u] for u in chain]
     net = members[0]["net"]
     rest = {u: o for u, o in items.items() if o["net"] == net and u not in chain}
-    joined = {u for u, o in rest.items() if not any(o is e for e in ends) and any(overlapping(m, o) for m in members)}
+    joined = [u for u, o in rest.items() if not any(o is e for e in ends) and any(overlapping(m, o) for m in members)]
     if not joined:
-        return True
+        return []
 
     def at_end(o):
         if any(o is e for e in ends):
@@ -424,16 +424,39 @@ def joined_only_at_ends(items, chain, ends):
                     for x, y in (shape[:2], shape[2:])):
                 return True
         return False
-    reached = {u for u, o in rest.items() if at_end(o)}    # what stays at the ends, and all that hangs on it
-    todo = list(reached)
-    left = set(rest) - reached
-    while todo and not joined <= reached:
-        cur = rest[todo.pop()]
-        near = [u for u in left if overlapping(cur, rest[u])]
-        left.difference_update(near)
-        reached.update(near)
-        todo += near
-    return joined <= reached
+
+    def spread(seeds, pool):
+        """Everything in `pool` that hangs on the seeds; the pool loses it."""
+        found, todo = set(seeds), list(seeds)
+        pool.difference_update(found)
+        while todo and pool:
+            cur = rest[todo.pop()]
+            near = [u for u in pool if overlapping(cur, rest[u])]
+            pool.difference_update(near)
+            found.update(near)
+            todo += near
+        return found
+    pool = set(rest)
+    held = spread([u for u, o in rest.items() if at_end(o)], pool)     # what stays at the ends, and all on it
+    loose = []
+    for u in joined:
+        if u in held or u not in pool:
+            continue
+        spread([u], pool)                                  # one end for the whole piece
+        o = rest[u]
+        if o["kind"] == "pad":
+            loose.append(o)
+            continue
+        spots = [o["seg"][:2], o["seg"][2:]] if o["kind"] == "seg" else [o["at"]]
+        shapes_ = [m["seg"] if m["kind"] == "seg" else m["at"] * 2 for m in members]
+        at = min(spots, key=lambda q: min(seg_dist(q * 2, m) for m in shapes_))
+        loose.append(dict(kind="point", net=net, at=tuple(at), hole=0.0, layers=set(o["layers"])))
+    return loose
+
+
+def joined_only_at_ends(items, chain, ends):
+    """May this run be taken out and laid another way without leaving copper loose? See cut_off()."""
+    return not cut_off(items, chain, ends)
 
 
 def runs_in_the_way(items, placed, net, keep, wider=None):
@@ -611,6 +634,42 @@ def _box_of(it):
     return it["box"] if it["kind"] == "pad" else it["at"] * 2
 
 
+def _same_every_time(items, pairs, poured):
+    """KiCad names an open connection by two of its items, and which two changes from run to
+    run. Name it by the two nearest items of the two pieces instead, and put the list in an
+    order that depends on the copper only: shortest first."""
+    def spot(it):
+        return it["seg"][:2] if it["kind"] == "seg" else it["at"]
+
+    def name(it):
+        return (round(spot(it)[0], 3), round(spot(it)[1], 3), min(it["layers"], default=-1), it["kind"])
+
+    out, seen = [], set()
+    for (ua, _ax, _ay), (ub, _bx, _by) in pairs:
+        if ua not in items or ub not in items:
+            continue
+        net = items[ua]["net"]
+        if net in poured:
+            ka, kb = sorted((ua, ub), key=lambda u: name(items[u]))
+        else:
+            one = cluster_of(items, ua)
+            if ub in one:
+                continue
+            two = cluster_of(items, ub)
+            if (len(two), min(name(items[u]) for u in two)) < (len(one), min(name(items[u]) for u in one)):
+                one, two = two, one                        # start from the smaller piece
+            _d, _na, _nb, ka, kb = min(
+                (math.hypot(spot(items[p])[0] - spot(items[q])[0], spot(items[p])[1] - spot(items[q])[1]),
+                 name(items[p]), name(items[q]), p, q) for p in one for q in two)
+        a, b = items[ka], items[kb]
+        key = (net, name(a), name(b))
+        if key not in seen:
+            seen.add(key)
+            (ax, ay), (bx, by) = spot(a), spot(b)
+            out.append((round(math.hypot(ax - bx, ay - by), 3), key, ((ka, ax, ay), (kb, bx, by))))
+    return [p for _d, _k, p in sorted(out, key=lambda t: t[:2])]
+
+
 def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000, skip=(), only=None, locked=False,
                rip=2.0, rounds=4, fine=True, depth=2, hug=0.0):
     """Connect what is unconnected on `board` (a hwdesign Board). Returns (routed, failed):
@@ -629,10 +688,9 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     of detour per 0.1 mm crossed (rip=0: never). Each crossed track is taken out up to the
     next pad or junction and has to find another way, which may in turn cross tracks, `depth`
     levels deep; the last level needs free paths. If one track finds no way, nothing is
-    changed and the connection is reported. A track with other copper of its net joined to it
-    along the way (a track ending on its middle) is not taken out, nor is the track that ends
-    there: nothing would know to join them again. So a call never leaves more open than it
-    found.
+    changed and the connection is reported. Copper that hangs on such a track along its way
+    (another track ending on its middle) is joined again with it, or nothing is changed. So a
+    call never leaves more open than it found.
     Locked copper is never touched. `limit` bounds one search (grid cells visited).
 
     With `hug` > 0 a step away from all copper costs that much more than one along a pad or
@@ -665,8 +723,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
             return through
         runs = runs_in_the_way(items, through[2], net, max(clearance, wider.get(net, 0.0)) + through[4],
                                dict(wider, **{"": max(clearance, wider.get(net, 0.0))}))
-        if not all(joined_only_at_ends(items, chain, ends) for _n, chain, ends in runs):
-            return got + ", and a track in the way has others joined to it"       # it would cut those off
+        # copper that only hangs on a track in the way is joined again like the track's own ends
+        runs = [(n, chain, ends + cut_off(items, chain, ends)) for n, chain, ends in runs]
         taken.update({u: items.pop(u) for _n, chain, _e in runs for u in chain if u in items})
         added += note(items, net, through[2])
         plans.append((net,) + through)
@@ -681,9 +739,14 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
     for _round in range(rounds):
         board.fill_zones()
         pcbnew.SaveBoard(pcb, pb)
-        pairs = open_pairs(pcb)
         items = copper_items(pb, board.copper_layers, fixed=mine)
-        pairs.sort(key=lambda p: math.hypot(p[0][1] - p[1][1], p[0][2] - p[1][2]))
+        pairs = _same_every_time(items, open_pairs(pcb), poured)
+        if only is not None or skip:
+            pairs = [p for p in pairs if items[p[0][0]]["net"] not in skip
+                     and (only is None or items[p[0][0]]["net"] in only)]
+        if not pairs:
+            failed = []
+            break
         failed, progress = [], 0
         before = {t.m_Uuid.AsString() for t in pb.GetTracks()}
         for (ua, ax, ay), (ub, bx, by) in pairs:
@@ -712,8 +775,8 @@ def route_open(board, tmp_dir, width=None, step=0.1, via_cost=3.0, limit=400000,
                 draw(n, tracks, vias, w)
             routed, progress = routed + 1, progress + 1
         mine |= {t.m_Uuid.AsString() for t in pb.GetTracks()} - before
-        if not progress or not failed:
-            break
+        if not progress:                                   # (a track from one piece may have ended on a third:
+            break                                          # the next round sees what is still apart)
     return routed, failed
 
 
@@ -886,8 +949,10 @@ def improve(board, step=0.1, via_cost=3.0, limit=100000, gain=0.3, margin=3.0, s
             run["narrow"] = run["w"] < router.class_width.get(net, 0.0) - 1e-6
             runs.append(run)
             owner.update({u: run for u in chain})
+        for r in runs:
+            r["where"] = sorted((round(e["at"][0], 3), round(e["at"][1], 3)) for e in r["ends"])
         todo = sorted((r for r in runs if r["spare"] >= gain or r["narrow"]),
-                      key=lambda r: (-r["spare"] * r["f"], r["net"], r["chain"]))
+                      key=lambda r: (-round(r["spare"] * r["f"], 3), r["net"], r["where"]))
         better = 0
         for run in todo:
             if any(u not in items for u in run["chain"]):
@@ -916,7 +981,7 @@ def improve(board, step=0.1, via_cost=3.0, limit=100000, gain=0.3, margin=3.0, s
                         out = {u: items.pop(u) for o in others.values() for u in o["chain"]}
                         added = router.note(items, run["net"], through[2])
                         changes, balance = [(run, through)], t_saved * run["f"]
-                        for o in sorted(others.values(), key=lambda o: (-o["cost"], o["chain"])):
+                        for o in sorted(others.values(), key=lambda o: (-round(o["cost"], 3), o["net"], o["where"])):
                             new = again(items, o)
                             if isinstance(new, str) or not no_thinner(o, new) or not (new[0] or new[1]):
                                 balance = None

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2
+
+Fixed
+- `route_open()`: copper that hangs on a track it takes out of the way (a track ending on
+  its middle or beside its via) is joined again with the track's own ends, in the same
+  all-or-nothing step (`finish.cut_off`). 0.8.1 refused such tracks, which left 6
+  connections open on a board where 2 had been.
+- `route_open()` named an open connection by the two items KiCad reports, and those change
+  from run to run. It now names it by the two nearest items of the two pieces, starts from
+  the smaller piece and orders the list by the copper alone; a round follows as long as the
+  last one routed something (a track from one piece may end on a third).
+- `improve()` orders its runs by their position, not by item ids.
+
 ## 0.8.1
 
 Added

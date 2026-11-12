@@ -1005,25 +1005,27 @@ def test_the_same_script_gives_the_same_item_ids(project, tmp_path):
     assert new[0] == new[1] and new[0] not in ids[0]
 
 
-def test_route_open_leaves_a_track_in_the_way_that_another_is_joined_to(project, tmp_path):
-    """MID shuts R1.1 in, and a second MID track ends on the middle of the first. Taking the first
-    out to let SIG through would cut the second off: the connection is reported instead."""
+def test_route_open_joins_again_what_hung_on_a_track_it_takes_out(project, tmp_path):
+    """MID shuts R1.1 in, and R2.1 hangs on it by a track that ends on the middle of one of its
+    tracks. Taking MID's track out to let SIG through cuts R2.1 off: it is joined again."""
     from hwdesign.kicad import finish
     b = planes_board(project)
     b.keepout(107.6, 111.2, 7.0, 0.8, name="wall")
     b.keepout(100.5, 100.5, 39.0, 29.0, layers=[pcbnew.B_Cu, pcbnew.In2_Cu], name="one layer", fills=False)
     b.track("MID", [("R1", 2), (110.91, 108.6), (107.2, 108.6), (107.2, 112.6), (107.5, 112.9), (109.09, 112.9),
-                    ("R2", 1)], locked=False)
+                    (109.09, 114.0)], locked=False)
     items = finish.copper_items(b.board, b.copper_layers)
-    (net, chain, ends), = finish.runs_of(items, [pcbnew.F_Cu])
-    assert finish.joined_only_at_ends(items, chain, ends)
-    b.track("MID", [(107.2, 110.5), (105.5, 110.5), (105.5, 115.0)], locked=False)     # ends on the middle
-    items = finish.copper_items(b.board, b.copper_layers)
-    assert finish.runs_of(items, [pcbnew.F_Cu]) == []
+    assert finish.runs_of(items, [pcbnew.F_Cu]) == []      # a loose end at (109.09, 114): no run
+    b.track("MID", [(108.3, 112.9), (108.3, 115.0), ("R2", 1)], locked=False)      # R2.1 hangs on its middle
     b.fill_zones()
     before = b.unrouted()
+    items = finish.copper_items(b.board, b.copper_layers)
+    bar = {u for u, it in items.items() if it["kind"] == "seg" and it["net"] == b.resolve("MID")
+           and it["seg"][1] < 114.5 and it["seg"][3] < 114.5}
+    stem = finish.cut_off(items, bar, [next(it for it in items.values() if it["kind"] == "pad"
+                                            and it["net"] == b.resolve("MID") and it["at"][1] < 111)])
+    assert [(e["kind"], e["at"]) for e in stem] == [("point", (108.3, 112.9))]
     routed, failed = b.route_open(str(tmp_path), only=["SIG"])
-    assert routed == 0 and "joined to it" in failed[0][1]
     b.fill_zones()
-    assert b.unrouted() == before
+    assert routed == 1 and failed == [] and b.unrouted() == before - 1
 
