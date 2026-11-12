@@ -53,6 +53,10 @@ pub struct Part {
     /// Its courtyard must lie within one rectangle of each group.
     #[serde(default)]
     pub inside: Vec<Vec<[f64; 4]>>,
+    /// Pads that must lie within one of the rectangles given with them: (pad, rectangles). For a
+    /// pad on a plane that covers only part of the board.
+    #[serde(default)]
+    pub over: Vec<(String, Vec<[f64; 4]>)>,
     #[serde(default)]
     pub anchor: Option<[f64; 2]>,
     #[serde(default)]
@@ -217,6 +221,8 @@ struct State<'a> {
     of_part: Vec<Vec<usize>>,
     tethers: Vec<(Pin, Pin, f64)>,
     tied: Vec<Vec<usize>>,
+    /// Per part: (pad number, the rectangles of which one must hold it).
+    over: Vec<Vec<(usize, Vec<[f64; 4]>)>>,
     /// Which parts' courtyards reach into a cell, per side.
     cells: Vec<Vec<u32>>,
     nx: usize,
@@ -324,6 +330,12 @@ impl State<'_> {
         let within = |b: &[f64; 4]| r[0] >= b[0] - 1e-9 && r[1] >= b[1] - 1e-9 && r[2] <= b[2] + 1e-9 && r[3] <= b[3] + 1e-9;
         if !problem.parts[p].inside.iter().all(|group| group.iter().any(within)) {
             return false;
+        }
+        for (pad, rects) in &self.over[p] {
+            let q = self.pad(p, *pad);
+            if !rects.iter().any(|b| q[0] >= b[0] && q[1] >= b[1] && q[0] <= b[2] && q[1] <= b[3]) {
+                return false;
+            }
         }
         for keep in &problem.keeps {
             let b = &keep.rect;
@@ -486,6 +498,13 @@ pub fn place(problem: &Problem, say: &mut dyn FnMut(String)) -> Result<Placed, S
         }
         pins.push(mine);
     }
+    let mut over = vec![Vec::new(); n];
+    for (p, part) in problem.parts.iter().enumerate() {
+        for (pad, rects) in &part.over {
+            let id = *pad_ids[p].get(pad.as_str()).ok_or(format!("{} has no pad {}", part.name, pad))?;
+            over[p].push((id, rects.clone()));
+        }
+    }
     let mut tethers = Vec::new();
     let mut tied = vec![Vec::new(); n];
     for (k, t) in problem.tethers.iter().enumerate() {
@@ -508,6 +527,7 @@ pub fn place(problem: &Problem, say: &mut dyn FnMut(String)) -> Result<Placed, S
         of_part,
         tethers,
         tied,
+        over,
         cells,
         nx,
         ny,

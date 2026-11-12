@@ -114,6 +114,7 @@ Placement by connections, on both board sides.
   - `.free(ref, x, y, rot=0, back=False)`: True if ref fits at (x, y): on the board, allowed by the rules, clear of placed parts.
   - `.keep(x0, y0, x1, y1, sides='F')`: Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route.
   - `.inside(refs, *rects)`: Each of refs must lie with its whole courtyard inside one of the rectangles (x0, y0, x1, y1); None for a side that is open. Called again for a part, both hold.
+  - `.over(net, *rects)`: Every pad on `net` lies within one of the rectangles (x0, y0, x1, y1; None: open).
   - `.only(refs, side)`: refs go on the front ("F") or on the back ("B") only.
   - `.fix(ref, x, y, rot=0, back=False)`: Put ref's footprint origin at (x, y). Rules, gap and edge do not apply: you decided.
   - `.centre(ref, cx, cy, rot=0, back=False)`: Put the middle of ref's courtyard at (cx, cy): handy for connectors, whose origin is pin 1.
@@ -128,6 +129,8 @@ Placement by connections, on both board sides.
   - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.
   - `.length()`: Half-perimeter wire length of all nets off the planes, mm: a figure to compare placements by.
   - `.problem(moves=20000, seed=1, weights=None, spread=False)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
+  - `.ties()`: Which pad of a resistor or capacitor belongs at which pin: [(ref, pad, to, to_pad, weight)].
+  - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
   - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
 ## `leiterbahn.kicad.planar`

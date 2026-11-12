@@ -18,6 +18,7 @@ It places; it does not judge a layout. Look at the render: a switching loop or a
 resistor belongs where the circuit needs it, not where the wire length is shortest.
 """
 import json
+import math
 import os
 import subprocess
 
@@ -86,6 +87,8 @@ class Placer:
         self.rules = []
         self.keeps = []                   # (x0, y0, x1, y1, sides)
         self.areas = {}                   # ref -> [[(x0, y0, x1, y1)]]: inside one rectangle of each list
+        self.planes_at = {}               # net -> [(x0, y0, x1, y1)]: where a pad on that net may lie
+        self.hosts_from = 3               # a part with this many pads can be what a resistor or capacitor belongs to
         self.sides = {}                   # ref -> "F" or "B"
         self.auto = {}                    # ref -> (anchor, pull, sides, rots) of the parts near() placed
         self.block = {}
@@ -139,6 +142,11 @@ class Placer:
         for group in self.areas.get(ref, ()):
             if not any(r[0] <= box[0] and r[1] <= box[1] and box[2] <= r[2] and box[3] <= r[3] for r in group):
                 return False
+        for pad, net in self.pins.get(ref, {}).items() if self.planes_at else ():
+            rects = self.planes_at.get(net)
+            if rects and not all(any(r[0] <= x + dx <= r[2] and r[1] <= y + dy <= r[3] for r in rects)
+                                 for dx, dy in _pads.get(pad, ())):
+                return False
         mine = "FB" if through else "B" if back else "F"
         for x0, y0, x1, y1, sides in self.keeps:
             if any(c in sides for c in mine) and box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3]:
@@ -165,6 +173,19 @@ class Placer:
         group = [tuple(v if v is not None else (-far if k < 2 else far) for k, v in enumerate(r)) for r in rects]
         for ref in refs:
             self.areas.setdefault(ref, []).append(group)
+
+    def over(self, net, *rects):
+        """Every pad on `net` lies within one of the rectangles (x0, y0, x1, y1; None: open).
+
+        For a plane that covers only part of the board: a pad over another net's plane
+        gets no via into its own, and the router joins it with a thin track (a 100 uF
+        capacitor hung on 10 mm of 0.127 mm track that way). A part with pads on two such
+        nets then sits across the border between them. Holds for near() and improve();
+        parts set with fix() are yours.
+        """
+        big = 1e9
+        self.planes_at[net] = [tuple(v if v is not None else s * big for v, s in zip(r, (-1, -1, 1, 1), strict=True))
+                               for r in rects]
 
     def only(self, refs, side):
         """refs go on the front ("F") or on the back ("B") only."""
@@ -368,9 +389,8 @@ class Placer:
 
         The parts near() placed may move, to the sides and rotations it was allowed; what was
         fixed by hand stays. A net with up to 5 pads counts with the half perimeter of the box
-        around its pads, times its weight. On a supply rail a resistor or capacitor is tied to
-        the nearest pin of a part that uses the rail (of its own block, if there is one): a
-        capacitor with nothing but supply on its pads firmly, others at a quarter.
+        around its pads, times its weight. Resistors and capacitors are tied to the pins they
+        belong at (see ties()), and pads on a net given to over() stay within its rectangles.
         """
         weights = weights or {}
         refs = sorted(self.at)
@@ -397,32 +417,80 @@ class Placer:
 
         def pin(ref, pad):
             return ref in index and pad in next(iter(parts[index[ref]]["shapes"].values()))["pads"]
-        nets, tethers = [], []
+        nets = []
         for net in sorted(self.nets):
             pins = [(ref, pad) for ref, pad in self.nets[net] if pin(ref, pad)]
             if net in self.planes or len(pins) < 2:
                 continue
-            users = [t for t in pins if not passive(t[0])]
-            if len(self.nets[net]) <= RAIL or not users:
+            if len(self.nets[net]) <= RAIL or not any(not passive(r) for r, _ in pins):
                 nets.append(dict(name=net, pins=[[index[r], p] for r, p in pins],
                                  weight=weights.get(net, 1.0) * (1.0 if len(self.nets[net]) <= RAIL else 0.25)))
-                continue
-            for ref, pad in pins:
-                if not passive(ref) or ref not in self.auto:
-                    continue
-                same = [t for t in users if self.block.get(t[0]) == self.block.get(ref)]
-                here = self.pad(ref, pad)
-
-                def far(t, here=here):
-                    there = self.pad(*t)
-                    return abs(there[0] - here[0]) + abs(there[1] - here[1])
-                to = min(same or users, key=far)
-                signal = any(n not in self.planes and len(self.nets[n]) <= RAIL for n in self.pins[ref].values())
-                tethers.append({"from": [index[ref], pad], "to": [index[to[0]], to[1]],
-                                "weight": 0.25 if signal else 1.0})
+        tethers = [{"from": [index[ref], pad], "to": [index[to], to_pad], "weight": w}
+                   for ref, pad, to, to_pad, w in self.ties() if ref in self.auto and pin(ref, pad) and pin(to, to_pad)]
+        for part in parts:
+            mine = self.pins.get(part["name"], {})
+            part["over"] = [[pad, [list(r) for r in self.planes_at[mine[pad]]]] for pad in sorted(mine)
+                            if mine[pad] in self.planes_at and pad in next(iter(part["shapes"].values()))["pads"]]
         return dict(size=list(self.size), edge=self.edge, gap=self.gap, back_cost=self.back_cost, moves=moves,
                     seed=seed, keeps=[dict(box=list(k[:4]), sides=k[4]) for k in self.keeps], parts=parts, nets=nets,
                     tethers=tethers, spread=bool(spread))
+
+    def ties(self):
+        """Which pad of a resistor or capacitor belongs at which pin: [(ref, pad, to, to_pad, weight)].
+
+        A part whose nets off the planes all end at one part with three or more pads belongs
+        to that part (a boot capacitor between two pins of a controller, a timing resistor
+        from a pin to ground, a supply capacitor): each such pad is tied to that part's
+        nearest pin on its net, a capacitor at 3, a resistor at 1.5. On a supply rail the
+        part it belongs to is the nearest that uses the rail, of its own block if there is
+        one. A part with no such host is tied by its rail pad only, at a quarter. Test
+        points and other parts with fewer than three pads are no hosts: capacitors had
+        gathered at the test point of their rail, 20 mm from the regulator.
+        """
+        def far(a, b):
+            (ax, ay), (bx, by) = self.pad(*a), self.pad(*b)
+            return abs(ax - bx) + abs(ay - by)
+        hosts = {}                                         # net -> [(ref, pad)] of parts that can be a host
+        for net, pads in self.nets.items():
+            if net not in self.planes:
+                hosts[net] = [(r, p) for r, p in pads
+                              if r in self.at and not passive(r) and len(self.pins.get(r, ())) >= self.hosts_from]
+        found = []
+        for ref in sorted(r for r in self.at if passive(r)):
+            mine = [(pad, net) for pad, net in sorted(self.pins.get(ref, {}).items()) if net not in self.planes]
+            if not mine:
+                continue
+            common = None
+            for _pad, net in mine:
+                here = {r for r, _ in hosts.get(net, ())}
+                common = here if common is None else common & here
+            same = {r for r in common if self.block.get(r) == self.block.get(ref)} or common
+            if same:
+                host = min(same, key=lambda r: (min(far((ref, pad), t) for pad, net in mine
+                                                    for t in hosts[net] if t[0] == r), r))
+                for pad, net in mine:
+                    to = min((t for t in hosts[net] if t[0] == host), key=lambda t: (far((ref, pad), t), t))
+                    found.append((ref, pad, to[0], to[1], 3.0 if ref[0] == "C" else 1.5))
+                continue
+            for pad, net in mine:                          # no host: the rail it is on holds it a little
+                users = hosts.get(net, ())
+                if len(self.nets[net]) > RAIL and users:
+                    near = [t for t in users if self.block.get(t[0]) == self.block.get(ref)] or users
+                    to = min(near, key=lambda t: (far((ref, pad), t), t))
+                    found.append((ref, pad, to[0], to[1], 0.25))
+        return found
+
+    def strays(self, limit=3.0):
+        """The resistors and capacitors further than `limit` mm from the pin they belong at
+        (see ties()), of those near() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing:
+        a board routes just as well with a boot capacitor 8 mm from its pins."""
+        out = []
+        for ref, pad, to, to_pad, weight in self.ties():
+            (ax, ay), (bx, by) = self.pad(ref, pad), self.pad(to, to_pad)
+            d = math.hypot(ax - bx, ay - by)
+            if weight >= 1.0 and d > limit and ref in self.auto:   # where a part set with fix() lies was decided
+                out.append((round(d, 2), ref, pad, to, to_pad))
+        return sorted(out, reverse=True)
 
     def improve(self, tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False):
         """Move, turn and exchange the parts near() placed where that shortens the connections.

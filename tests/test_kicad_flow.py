@@ -592,6 +592,41 @@ def test_room_in_front_of_the_pins_of_a_fine_pitch_part():
     assert with_lanes((-3, -3, 3, 3), pads, 0.5) == (-3, -3, 3, 3)                      # a courtyard that has the room
 
 
+def test_a_pad_stays_over_its_plane(project, tmp_path):
+    b, p = placer(project)
+    p.over("GND", (20, None, None, None))                 # the plane of GND covers the board right of x = 20
+    p.fix("J2", 36, 10)
+    p.fix("R1", 10, 10)
+    p.near("R2", anchor=(10, 10))                         # R2: MID (as R1.2, on the left) and GND
+    assert p.pad("R2", 2)[0] >= 20 and p.pad("R2", 1)[0] < p.pad("R2", 2)[0]      # as far left as its GND pad may
+    x, y, rot, back = p.at["R2"]
+    assert not p.free("R2", x - 2, y, rot, back) and p.free("R2", x + 5, y, rot, back)
+    assert not p.free("J1", 4, 10)                        # J1 has a pad on GND too: asked, the answer is no,
+    p.fix("J1", 4, 10)                                    # but fix() does not ask
+    p.improve(str(tmp_path), moves=2000, spread=True)
+    assert p.pad("R2", 2)[0] >= 20 and p.at["J1"][:2] == (4, 10)
+
+
+def test_small_parts_are_tied_to_the_pins_they_belong_at(project, tmp_path):
+    nets = {"A": [("J1", "1"), ("R1", "1")], "B": [("J1", "2"), ("R1", "2")],          # R1 across J1's two pins
+            "C": [("J1", "1"), ("R2", "1")], "GND": [("R2", "2"), ("R3", "2")],        # R2 from a pin to the plane
+            "D": [("R3", "1"), ("R4", "1")]}                                            # R3, R4: no part to belong to
+    b, p = placer(project, nets=nets)
+    p.hosts_from = 2                                      # the test board has no part with three pads
+    p.fix("J1", 4, 10)
+    for ref, at in (("R1", (30, 4)), ("R2", (30, 26)), ("R3", (22, 26)), ("R4", (22, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    ties = p.ties()
+    assert [(t[0], t[1], t[2], t[3]) for t in ties] == [("R1", "1", "J1", "1"), ("R1", "2", "J1", "2"),
+                                                       ("R2", "1", "J1", "1")]
+    assert all(t[4] == 1.5 for t in ties)                 # resistors; a capacitor is tied at 3
+    far = p.strays(3.0)
+    assert sorted((t[1], t[3]) for t in far) == [("R1", "J1"), ("R1", "J1"), ("R2", "J1")]
+    assert far[0][0] > 20 and far[0][0] >= far[-1][0]     # the furthest first
+    p.improve(str(tmp_path), moves=3000)
+    assert p.strays(4.0) == [] and b.courtyard_overlaps()[0] == []      # as near as the courtyards allow
+
+
 def test_face_and_find(project):
     b, p = placer(project)
     rot = p.face("R1", "MID", "left")

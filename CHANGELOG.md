@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.16.0
+
+A review of a board placed by `improve()` found 15 things worth changing that no check had
+seen: it routed, and DRC was clean. Nearly all had one cause: the placer shortens
+connections and does not know which part belongs at which pin.
+
+Added
+- `Placer.ties()`: which pad of a resistor or capacitor belongs at which pin. A part whose
+  nets off the planes all end at one part with three or more pads belongs to it (a boot
+  capacitor across two pins of a controller, a timing resistor from a pin to ground, a
+  supply capacitor); `improve()` ties it there, a capacitor at 3, a resistor at 1.5. Before,
+  only parts on a supply rail were tied, at 1 or a quarter, and to any part on the rail: a
+  regulator's output capacitors had gathered at the rail's test point, 13 and 21 mm from
+  the regulator. Test points and other parts with fewer than three pads are no hosts now.
+  On that board the boot capacitors came from 8 mm to 3 to 5 mm, with the routed length as
+  before (eight seeds, all routed).
+- `Placer.strays(limit)`: the parts further than `limit` mm from the pin they belong at.
+  Print it after placing.
+- `Placer.over(net, *rects)`: every pad on `net` lies within one of the rectangles, for a
+  plane that covers part of the board. A pad over another net's plane gets no via into its
+  own; three bulk capacitors hung on 10 mm of 0.127 mm track that way, and a 3 A diode
+  between two grounds sat 20 mm inside the wrong one. Holds in `near()` and `improve()`.
+- The router says, when its rounds stall, which nets are in each other's way and where:
+  that is where the board is too full. (Ten placements of one board: every such place was
+  at the pin rows of one QFN.)
+
 ## 0.15.0
 
 Added

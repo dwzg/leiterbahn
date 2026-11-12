@@ -197,6 +197,19 @@ domains taught:
   three, 8 of 8 seeds routed, the tracks 12 % shorter than without the forces and the
   switch node 5 mm long. Print the length of such a net in the script: it had routed at
   30 mm without a complaint.
+- A board that routes and passes DRC can still be placed badly, and nothing says so. On
+  the same board a review by eye found the boot capacitors 8 mm from their pins and on
+  the other side, a feedback resistor 34 mm from the controller, regulator output
+  capacitors at a test point 20 mm away, and bulk capacitors grounded through 10 mm of
+  0.127 mm track because their ground pad lay over the other ground's plane. So: give
+  every plane that covers part of the board to `over()`; put ground nets in a net class,
+  so that a pad the planes do not reach gets a track of some width; print `strays()` and
+  the length of each switch node and feedback node after placing; and have the
+  `layout-reviewer` agent look at every placement that is to be kept.
+- A block's anchor is where its most sensitive net ends, not where there happened to be
+  room: the network that feeds a controller's feedback pin had its anchor 25 mm from the
+  controller, and no weight on the net could shorten it, since the net was as long as
+  the way between the two blocks.
 - Where one part sits can matter more than any router setting. A buck-boost controller
   6 mm nearer its power stage: its 13 sensitive nets 22 % shorter, the board routed in 22
   rounds instead of 96. The half perimeter estimate follows what a net would cost alone on

@@ -635,6 +635,26 @@ impl Router<'_> {
         count
     }
 
+    /// Where the net's tracks lie too near another's (the net itself taken out of the count
+    /// before): how many cells, the box round them in cells, and the layers.
+    fn where_stuck(&self, n: usize) -> Option<(u64, [usize; 4], Vec<usize>)> {
+        let (mut count, mut b, mut layers) = (0, [usize::MAX, usize::MAX, 0, 0], Vec::new());
+        for (path, &kind) in self.laid[n].nodes.iter().zip(&self.laid[n].kinds) {
+            for &node in path {
+                if self.grids.track[kind][node as usize].soft > 0 {
+                    let (l, i, j) = self.grids.split(node);
+                    count += 1;
+                    b = [b[0].min(i), b[1].min(j), b[2].max(i), b[3].max(j)];
+                    if !layers.contains(&l) {
+                        layers.push(l);
+                    }
+                }
+            }
+        }
+        layers.sort_unstable();
+        (count > 0).then_some((count, b, layers))
+    }
+
     /// The cells around the net's pads and tracks, `margin` cells wide.
     fn around(&self, n: usize, margin: i32) -> [i32; 4] {
         let mut b = self.jobs[n].boxes.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |u, b| {
@@ -1033,6 +1053,23 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                     "round {}: the conflicts have not got fewer than {} cells for {} rounds",
                     round, fewest, since
                 ));
+                // which nets, and where: this is where the board is too full
+                for &n in &order {
+                    router.soft(n, -1);
+                    if let Some((cells, b, layers)) = router.where_stuck(n) {
+                        say(format!(
+                            "   {} is in another's way on {} cells, x {:.2} to {:.2}, y {:.2} to {:.2}, layer {}",
+                            problem.nets[n].name,
+                            cells,
+                            x0 + b[0] as f64 * step,
+                            x0 + b[2] as f64 * step,
+                            y0 + b[1] as f64 * step,
+                            y0 + b[3] as f64 * step,
+                            layers.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(" and ")
+                        ));
+                    }
+                    router.soft(n, 1);
+                }
                 if restarts >= 3 {
                     break;
                 }

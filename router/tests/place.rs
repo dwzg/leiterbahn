@@ -193,3 +193,20 @@ fn a_placement_the_forces_cannot_set_down_stays_as_it_came() {
     assert_eq!(placed.moved, 0);
     assert_eq!(placed.before, placed.after);
 }
+
+#[test]
+fn a_pad_stays_over_the_area_given_for_it() {
+    // R1's pad 2 must lie right of x = 20, its pad 1 left of it: the part straddles the line, however its
+    // connection to J1 on the left pulls
+    let over = json!({"over": [["2", [[20.0, 0.0, 40.0, 20.0]]], ["1", [[0.0, 0.0, 20.0, 20.0]]]]});
+    for spread in [false, true] {
+        let (_, placed) = run(json!({
+            "size": [40, 20], "edge": 0.5, "gap": 0.2, "moves": 4000, "spread": spread,
+            "parts": [part("J1", 5.0, 10.0, json!({"fixed": true})), part("R1", 20.0, 4.0, over.clone())],
+            "nets": [{"name": "A", "pins": [[0, "2"], [1, "1"]]}]
+        }));
+        let r = at(&placed, "R1");
+        assert!((r.1 - 20.0).abs() <= 0.7 + 1e-6 && r.3.is_multiple_of(180), "{:?}", r);
+        assert!((r.2 - 10.0).abs() < 1.0, "level with J1's pad: {:?}", r);
+    }
+}
