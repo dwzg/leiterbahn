@@ -257,6 +257,50 @@ fn a_pad_at_an_angle_keeps_its_shape() {
     assert_eq!(turned.len(), 2);
 }
 
+/// Two pads of one net side by side on a part at 45 degrees do not touch because the boxes round
+/// them do: they are two pieces, with a connection to make.
+#[test]
+fn turned_pads_side_by_side_are_two_pieces() {
+    let pad = |n: &str, y: f64| {
+        format!("(pad \"{n}\" smd roundrect (at 0 {y} 45) (size 1 0.3) (layers \"F.Cu\") (roundrect_rratio 0.25) (net \"SIG\") (uuid \"u\"))")
+    };
+    let part = format!(
+        "(footprint \"U\" (layer \"F.Cu\") (at 12 7 45) (property \"Reference\" \"U1\" (at 0 0 0)) {} {})\n  (gr_line (start 0 0)",
+        pad("1", -0.3),
+        pad("2", 0.3)
+    );
+    let text = board_text().replacen("(gr_line (start 0 0)", &part, 1);
+    let board = Board::parse(&text).unwrap();
+    let (a, b) = (
+        board.pads.iter().find(|p| p.reference == "U1" && p.number == "1").unwrap(),
+        board.pads.iter().find(|p| p.reference == "U1" && p.number == "2").unwrap(),
+    );
+    // 0.6 mm from middle to middle and 0.3 mm broad: 0.3 mm of room between them, and the boxes overlap
+    assert!(a.turned.is_some() && a.rect[0] < b.rect[2] && b.rect[0] < a.rect[2] && a.rect[1] < b.rect[3] && b.rect[1] < a.rect[3]);
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    let sig = p.nets.iter().find(|n| n.name == "SIG").unwrap();
+    let alone = sig.pieces.iter().filter(|piece| piece.len() == 1 && piece[0].angle != 0.0).count();
+    assert_eq!(alone, 2, "{} pieces", sig.pieces.len());
+}
+
+/// A pad drawn as an L is its two bars, not the box round them: the corner between them is free.
+#[test]
+fn a_pad_drawn_as_a_polygon_is_the_boxes_it_is_made_of() {
+    let part = "(footprint \"U\" (layer \"F.Cu\") (at 12 7 90) (property \"Reference\" \"U1\" (at 0 0 0))
+    (pad \"1\" smd custom (at 0 0 90) (size 0.01 0.01) (layers \"F.Cu\") (net \"SIG\") (options (clearance outline) (anchor circle))
+      (primitives (gr_poly (pts (xy 0.6 0.5) (xy -0.1 0.5) (xy -0.1 -0.5) (xy 0.1 -0.5) (xy 0.1 0.3) (xy 0.6 0.3)) (width 0.1) (fill yes))) (uuid \"u\")))
+  (gr_line (start 0 0)";
+    let text = board_text().replacen("(gr_line (start 0 0)", part, 1);
+    let board = Board::parse(&text).unwrap();
+    let pads: Vec<_> = board.pads.iter().filter(|p| p.reference == "U1").collect();
+    let covers = |x: f64, y: f64| pads.iter().any(|p| p.rect[0] <= x && x <= p.rect[2] && p.rect[1] <= y && y <= p.rect[3]);
+    // turned by 90 degrees (anticlockwise, y down), a point (x, y) of the pad lies at (12 + y, 7 - x)
+    assert_eq!(pads.len(), 3, "the anchor and two bars");
+    assert!(covers(12.0 - 0.4, 7.0) && covers(12.0 + 0.4, 7.0 - 0.5), "the long bar and the foot");
+    assert!(!covers(12.0 - 0.2, 7.0 - 0.45), "the corner between them");
+}
+
 /// The outline as it is drawn: a corner cut off by an arc, and a slot. Copper keeps the edge
 /// clearance from those lines, not only from the box round the board.
 #[test]

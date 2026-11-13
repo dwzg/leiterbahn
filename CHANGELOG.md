@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.35.1
+
+Fixed
+- `leiterbahn-route board`: two pads of a net touch where their copper does, not where the
+  boxes round them do. Pads of one net side by side on a part at 45 degrees, 0.25 mm apart,
+  were taken for one piece, and the connection between them was never made nor reported
+  open: a board with 39 of its 94 parts at 45 degrees was "routed, nothing open" with 5
+  connections missing in KiCad's DRC. Now 226 connections are made there instead of 197,
+  and DRC finds none missing. The same for a track that ends beside a turned pad, and for
+  a turned pad on a pour.
+- `leiterbahn-route board`: a pad drawn as a polygon along its own axes (the L of a corner
+  pin) is read as the boxes it is made of, not as the box round them all. A track of its net
+  ended in the empty corner of the L and counted as joined: 3 connections missing on a
+  board with 12 such pads, none now.
+
+Ten demo boards, KiCad's DRC: 8 with nothing unconnected (6 before), no error added by the
+routing but starved thermals and islands of pours.
+
 ## 0.35.0
 
 Changed

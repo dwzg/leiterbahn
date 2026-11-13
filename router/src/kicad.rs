@@ -120,6 +120,36 @@ fn points(s: &Sexp) -> Vec<[f64; 2]> {
     s.find("pts").map(|p| p.all("xy").map(xy).collect()).unwrap_or_default()
 }
 
+/// A pad's polygon with all its sides along the pad's own axes, as the boxes it is made of (in
+/// the pad's own frame, grown by half the line it is drawn with). None for any other shape.
+fn boxes(shape: &Sexp) -> Option<Vec<[f64; 4]>> {
+    let pts = points(shape);
+    let n = pts.len();
+    let along = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        (a[0] - b[0]).abs() < 1e-6 || (a[1] - b[1]).abs() < 1e-6
+    };
+    if shape.head() != Some("gr_poly") || n < 4 || !(0..n).all(along) {
+        return None;
+    }
+    let half = shape.find("width").and_then(|w| w.num(1)).unwrap_or(0.0) / 2.0;
+    let mut ys: Vec<f64> = pts.iter().map(|p| p[1]).collect();
+    ys.sort_by(f64::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let mut out = Vec::new();
+    for w in ys.windows(2) {
+        // the sides that cross the middle of this strip, left to right: in at one, out at the next
+        let mid = (w[0] + w[1]) / 2.0;
+        let mut xs: Vec<f64> = (0..n)
+            .filter(|&i| (pts[i][1] > mid) != (pts[(i + 1) % n][1] > mid))
+            .map(|i| pts[i][0])
+            .collect();
+        xs.sort_by(f64::total_cmp);
+        out.extend(xs.as_chunks::<2>().0.iter().map(|x| [x[0] - half, w[0] - half, x[1] + half, w[1] + half]));
+    }
+    Some(out)
+}
+
 /// What a drawing or a text on a copper layer covers, as boxes and lines. `origin` and `angle`:
 /// where the footprint it belongs to lies (the board's own drawings: the origin, unturned).
 /// A text is taken as the box round it, generously: its glyphs are not known here.
@@ -355,7 +385,21 @@ impl Board {
                                 own,
                             )
                         });
-                        for shape in pad.find("primitives").map(|p| p.items()).unwrap_or(&[]) {
+                        // A pad drawn as a polygon along its own axes is the boxes it is made of, each a
+                        // pad of its own here, not the box round them all: the L of a corner pin has
+                        // an empty corner, where a track of its net ended on nothing and counted as
+                        // joined, and where the pin beside it may lie.
+                        let drawn: Vec<&Sexp> = pad
+                            .find("primitives")
+                            .map(|p| p.items().iter().filter(|s| s.head().is_some_and(|h| h.starts_with("gr_"))).collect())
+                            .unwrap_or_default();
+                        let parts: Vec<[f64; 4]> = drawn
+                            .iter()
+                            .map(|shape| boxes(shape))
+                            .collect::<Option<Vec<_>>>()
+                            .map(|b| b.concat())
+                            .unwrap_or_default();
+                        for shape in pad.find("primitives").map(|p| p.items()).unwrap_or(&[]).iter().filter(|_| parts.is_empty()) {
                             let mut pts = points(shape);
                             pts.extend(["start", "end", "mid", "center"].iter().filter_map(|k| shape.find(k)).map(xy));
                             let half = shape.find("width").and_then(|w| w.num(1)).unwrap_or(0.0) / 2.0;
@@ -375,6 +419,33 @@ impl Board {
                         let layers = on(pad.find("layers").map(|l| l.words()).unwrap_or_default());
                         if layers.is_empty() && hole.unwrap_or(0.0) == 0.0 {
                             continue;
+                        }
+                        for b in &parts {
+                            let (half, at) = (
+                                [(b[2] - b[0]) / 2.0, (b[3] - b[1]) / 2.0],
+                                turn([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0], own),
+                            );
+                            let at = [centre[0] + at[0], centre[1] + at[1]];
+                            let mut round = EMPTY;
+                            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                                let corner = turn([sx * half[0], sy * half[1]], own);
+                                grow(&mut round, [at[0] + corner[0], at[1] + corner[1]]);
+                            }
+                            board.pads.push(Pad {
+                                reference: reference.clone(),
+                                number: pad.text(1).unwrap_or("").to_string(),
+                                net: net(pad),
+                                at: centre,
+                                rect: round,
+                                turned: (slant > 0.01 && slant < 89.99).then_some(([at[0] - half[0], at[1] - half[1], at[0] + half[0], at[1] + half[1]], own)),
+                                clearance: pad
+                                    .find("clearance")
+                                    .or_else(|| item.find("clearance"))
+                                    .and_then(|c| c.num(1))
+                                    .filter(|c| *c > 0.0),
+                                layers: layers.clone(),
+                                hole: 0.0,
+                            });
                         }
                         board.pads.push(Pad {
                             reference: reference.clone(),
@@ -674,30 +745,42 @@ impl Copper {
         }
     }
 
+    /// The four corners of a box, turned if the pad is.
+    fn corners(&self) -> Option<[[f64; 2]; 4]> {
+        let rect = self.rect?;
+        let (b, degrees) = self.turned.unwrap_or((rect, 0.0));
+        let (cx, cy) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+        Some([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].map(|c| {
+            let t = turn([c[0] - cx, c[1] - cy], degrees);
+            [cx + t[0], cy + t[1]]
+        }))
+    }
+
+    /// Do the two lie on one another? A turned pad as it lies, not as the box round it: two pads
+    /// of one net side by side on a part at 45 degrees, 0.25 mm apart, were taken for one piece
+    /// of copper, and the connection between them was never made.
     fn touches(&self, other: &Copper) -> bool {
         if !self.layers.iter().any(|l| other.layers.contains(l)) {
             return false;
         }
-        let to_rect = |rect: [f64; 4], it: &Copper| -> bool {
+        let sides = |c: &[[f64; 2]; 4]| [0, 1, 2, 3].map(|k| [c[k][0], c[k][1], c[(k + 1) % 4][0], c[(k + 1) % 4][1]]);
+        let to_box = |corners: &[[f64; 2]; 4], it: &Copper| -> bool {
             let s = it.seg;
-            if [[s[0], s[1]], [s[2], s[3]]]
-                .iter()
-                .any(|p| rect[0] <= p[0] && p[0] <= rect[2] && rect[1] <= p[1] && p[1] <= rect[3])
-            {
-                return true;
-            }
-            let sides = [
-                [rect[0], rect[1], rect[2], rect[1]],
-                [rect[2], rect[1], rect[2], rect[3]],
-                [rect[2], rect[3], rect[0], rect[3]],
-                [rect[0], rect[3], rect[0], rect[1]],
-            ];
-            sides.iter().any(|side| seg_seg(s, *side) <= it.r)
+            inside([s[0], s[1]], corners) || inside([s[2], s[3]], corners) || sides(corners).iter().any(|side| seg_seg(s, *side) <= it.r)
         };
-        match (self.rect, other.rect) {
-            (Some(a), Some(b)) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3],
-            (Some(a), None) => to_rect(a, other),
-            (None, Some(b)) => to_rect(b, self),
+        match (self.corners(), other.corners()) {
+            (Some(a), Some(b)) => {
+                let (ra, rb) = (self.rect.unwrap(), other.rect.unwrap());
+                if !(ra[0] <= rb[2] && rb[0] <= ra[2] && ra[1] <= rb[3] && rb[1] <= ra[3]) {
+                    return false; // not even the boxes round them
+                }
+                if self.turned.is_none() && other.turned.is_none() {
+                    return true;
+                }
+                inside(a[0], &b) || inside(b[0], &a) || sides(&a).iter().any(|p| sides(&b).iter().any(|q| seg_seg(*p, *q) <= 1e-9))
+            }
+            (Some(a), None) => to_box(&a, other),
+            (None, Some(b)) => to_box(&b, self),
             (None, None) => seg_seg(self.seg, other.seg) <= self.r + other.r,
         }
     }
@@ -717,21 +800,16 @@ impl Copper {
         if own[0] > bounds[2] || bounds[0] > own[2] || own[1] > bounds[3] || bounds[1] > own[3] {
             return false;
         }
-        let marks: Vec<[f64; 2]> = match self.rect {
-            Some(r) => vec![
-                [(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0],
-                [r[0], r[1]],
-                [r[2], r[1]],
-                [r[2], r[3]],
-                [r[0], r[3]],
-            ],
-            None => vec![[self.seg[0], self.seg[1]], [self.seg[2], self.seg[3]]],
+        let corners = self.corners();
+        let marks: Vec<[f64; 2]> = match (corners, self.rect) {
+            (Some(c), Some(r)) => vec![[(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0], c[0], c[1], c[2], c[3]],
+            _ => vec![[self.seg[0], self.seg[1]], [self.seg[2], self.seg[3]]],
         };
         if marks.iter().any(|&m| inside(m, island)) {
             return true;
         }
-        island.iter().any(|&v| match self.rect {
-            Some(r) => r[0] <= v[0] && v[0] <= r[2] && r[1] <= v[1] && v[1] <= r[3],
+        island.iter().any(|&v| match corners {
+            Some(c) => inside(v, &c),
             None => point_seg(v, [self.seg[0], self.seg[1]], [self.seg[2], self.seg[3]]) <= self.r,
         })
     }
