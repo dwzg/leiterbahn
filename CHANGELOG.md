@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.26.1
+
+Fixed
+- `Board.reopen()` reads the net classes back from the project file beside the board. They
+  were the rework script's to repeat; one that had not heard of a class added later took
+  its nets for ordinary ones, and `improve()` replaced 17 mm of gate drive at 0.25 mm by
+  10 mm at 0.127 mm (shorter, so better).
+
+Changed
+- Constructive placement is faster: the keep-outs are sorted by side once, and a part that
+  takes the same room turned by 180 degrees is tested once per place. A board of 287
+  parts: placement and a look at the routing in 19.5 s instead of 26.6 s, the same result.
+
 ## 0.26.0
 
 Added

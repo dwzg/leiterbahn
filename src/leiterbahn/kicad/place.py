@@ -127,6 +127,7 @@ class Placer:
         self.served = {}                  # (ref, pad) -> number of capacitors placed for it
         self.rules = []
         self.keeps = []                   # (x0, y0, x1, y1, sides)
+        self._kept = (-1, {})             # (how many keeps this was made from, {(front, back): rectangles})
         self.areas = {}                   # ref -> [[(x0, y0, x1, y1)]]: inside one rectangle of each list
         self.bans = {}                    # ref -> [(x0, y0, x1, y1, sides)]: not in any of these
         self.planes_at = {}               # net -> [(x0, y0, x1, y1)]: where a pad on that net may lie
@@ -192,9 +193,19 @@ class Placer:
             if rects and not all(any(r[0] <= x + dx <= r[2] and r[1] <= y + dy <= r[3] for r in rects)
                                  for dx, dy in _pads.get(pad, ())):
                 return False
-        mine = "FB" if through else "B" if back else "F"
-        for x0, y0, x1, y1, sides in self.keeps + self.bans.get(ref, []):
-            if any(c in sides for c in mine) and box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3]:
+        # (the rectangle first, the side only where it is touched: this is asked 9000 times per part, and the
+        # sides of thirty rectangles each time were a third of the placement's time)
+        front, behind = through or not back, through or back
+        if self._kept[0] != (len(self.keeps), self.keeps[-1:]):         # the keeps of each side, sorted out once
+            self._kept = ((len(self.keeps), self.keeps[-1:]),
+                          {(f, b): [k[:4] for k in self.keeps if (f and "F" in k[4]) or (b and "B" in k[4])]
+                           for f in (False, True) for b in (False, True)})
+        for x0, y0, x1, y1 in self._kept[1][front, behind]:
+            if box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3]:
+                return False
+        for x0, y0, x1, y1, sides in self.bans.get(ref, ()):
+            if box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3] \
+                    and ((front and "F" in sides) or (behind and "B" in sides)):
                 return False
         if any(rule(ref, box, back, through) for rule in self.rules):
             return False
@@ -363,6 +374,7 @@ class Placer:
             start = self._start(ref, anchor)
         sx, sy = round(start[0] / step) * step, round(start[1] / step) * step
         best, first = None, None
+        plain = not any(net in self.planes_at for net in self.pins.get(ref, {}).values())  # no pad with a place
         for ring in range(int(max_r / step) + 1):
             if first is not None and ring * step > first + reach:
                 break
@@ -372,8 +384,12 @@ class Placer:
             for i, j in spots:
                 x, y = sx + i * step, sy + j * step
                 for back in sides:
+                    fits = {}                              # turned by 180 degrees most parts take the same room
                     for rot in rots:
-                        if not self.free(ref, x, y, rot, back):
+                        room = self.shape(ref, rot, back)[0] if plain else rot
+                        if room not in fits:
+                            fits[room] = self.free(ref, x, y, rot, back)
+                        if not fits[room]:
                             continue
                         if first is None:
                             first = ring * step

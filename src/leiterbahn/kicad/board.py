@@ -102,8 +102,12 @@ class Board:
         """A saved board, for rework after routing: rip_up(), track(), via(), route_open(),
         prune_dangling(), fill_zones(), unrouted(), save().
 
-        Give the rules the board was built with, and call netclass() again for its net
-        classes: neither is read back from the file. What belongs to building a board
+        Give the rules the board was built with: they are not read back. The net classes are,
+        from the project file beside the board if write_project() made one (netclass() again
+        changes or adds one). They used to be the script's to repeat, and a rework script that
+        had not heard of a class added later took its nets for ordinary ones: improve() then
+        replaced 17 mm of gate drive at 0.25 mm by 10 mm at 0.127 mm, shorter and so better.
+        What belongs to building a board
         (outline, placement, autoroute) is not for a reopened one.
         Rework on the saved file starts from the same board every time, and takes minutes
         where the run that built the board takes its autorouter's time again.
@@ -139,6 +143,16 @@ class Board:
         self._contour, self._slots, self._edge_shapes, self._corner = [], [], [], 0.0
         bb = self.board.GetBoardEdgesBoundingBox()
         self.box = tuple(pcbnew.ToMM(v) for v in (bb.GetLeft(), bb.GetTop(), bb.GetWidth(), bb.GetHeight()))
+        pro = os.path.splitext(pcb_path)[0] + ".kicad_pro"
+        if os.path.exists(pro):
+            with open(pro) as f:
+                settings = json.load(f).get("net_settings", {})
+            for c in settings.get("classes", ()):
+                nets = [p["pattern"] for p in settings.get("netclass_patterns", ()) if p["netclass"] == c["name"]]
+                if c["name"] != "Default" and nets:
+                    wider = c.get("clearance", clearance) > clearance + 1e-9
+                    self.netclass(c["name"], [n for n in nets if n in self.nets], c["track_width"],
+                                  c["clearance"] if wider else None)
         return self
 
     # ---- setup ------------------------------------------------------------

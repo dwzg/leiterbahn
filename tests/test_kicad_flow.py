@@ -1117,11 +1117,12 @@ def test_rip_up_takes_the_unlocked_tracks_out_of_a_rectangle(project, tmp_path):
 
 
 def test_a_saved_board_can_be_reopened_for_rework(project, tmp_path):
-    """Rework works on the saved file: the reopened board knows its nets, takes a net class,
-    and the finisher closes on it what was open when it was saved."""
+    """Rework works on the saved file: the reopened board knows its nets and its net classes (from the
+    project file), and the finisher closes on it what was open when it was saved, at the class's width."""
     b = planes_board(project)
     assert b.fan_to_planes() == []
     b.track("MID", [("R1", 2), (110.9125, 113), (109.0875, 113), ("R2", 1)])
+    b.netclass("Wide", ["SIG"], track=0.5)
     b.fill_zones()
     pcb = str(tmp_path / "saved.kicad_pcb")
     b.save(pcb)
@@ -1131,7 +1132,7 @@ def test_a_saved_board_can_be_reopened_for_rework(project, tmp_path):
                      planes=[pcbnew.In1_Cu])
     assert set(c.fps) == set(b.fps) and c.copper_layers == b.copper_layers
     assert c.resolve("SIG") == b.resolve("SIG") and c.pad_xy("R1", 1) == b.pad_xy("R1", 1)
-    c.netclass("Wide", ["SIG"], track=0.5)
+    assert c.classes == b.classes and c.classes["Wide"]["nets"] == [c.resolve("SIG")]
     c.fill_zones()
     assert c.unrouted() == open_before > 0
     routed, failed = c.route_open(str(tmp_path))
