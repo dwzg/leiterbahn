@@ -329,7 +329,8 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     and about 0.6 GB per run. Returns dict(nets,
     routed, open [(net, pieces left apart)], rounds, seconds, cost, alone, by_net): cost is
     all tracks in mm with a via as
-    `via_cost` and narrow track half as much again; alone is the same with each net alone on
+    `via_cost` and narrow track by as much more as it is narrower (1.5 to 4 times); alone is the
+    same with each net alone on
     the board (no result is below that); by_net is {net: (cost, alone)}. seed: which run of a
     race this is (0 without). Tracks are laid at
     their net class's width; a connection that has no way at that width, even with all other

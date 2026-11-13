@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.27.0
+
+Changed
+- A track is narrow only through each tight place on its way. When a net's width had no way
+  out of a pin, the track was laid narrow and then searched again at full width between its
+  first and last cell with room; where a second tight place lay further on, that search
+  found nothing and the track stayed narrow all along (a gate drive: 8 mm at 0.127 mm for
+  two places of 0.5 mm). Now it then keeps its way and takes the full width wherever that
+  fits for 0.8 mm or more.
+- What is narrow counts by as much as it is narrower (a quarter of the width, four times
+  the length; it was half as much again for all), so the passes that shorten work harder
+  to get a supply net out of a narrow way than a signal. Both together, 22 placements of a
+  board of 159 nets: 2.6 mm of narrow track per board instead of 4.3 mm, the worst 6.3 mm
+  instead of 14.5 mm; lengths and vias as before.
+- `kinks()`: two tracks that leave a via or a pad of their net in a V are a branch, not a
+  turn back (5 of 18 on one board).
+
 ## 0.26.1
 
 Fixed

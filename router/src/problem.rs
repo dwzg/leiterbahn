@@ -218,7 +218,8 @@ pub struct Routed {
     /// Pieces that were not joined to the first one.
     pub open: Vec<usize>,
     /// What its tracks cost, in millimetres of track (a via counts as its cost, a narrow track
-    /// half as much again), and what they would cost with the net alone on the board.
+    /// by as much more as it is narrower, 1.5 to 4 times), and what they would cost with the
+    /// net alone on the board.
     pub cost: f64,
     pub alone: f64,
     /// Millimetres of its tracks nearer than `Problem::apart` to copper it is to keep away from.

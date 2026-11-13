@@ -1199,6 +1199,14 @@ def test_kinks_counts_a_step_aside_and_a_turn_back():
     assert [h[2:] for h in got["hooks"]] == [(13.5, 20.5, 180)]
     assert kinks(made(jog, hook, locked=True)) == dict(jogs=[], hooks=[])
     assert len(kinks(made(jog, hook, locked=True), hand=True)["jogs"]) == 1
+    vee = [(10, 40), (13, 40), (11, 41)]                   # two tracks that leave a via in a V: a branch, no turn back
+    pb = made(vee)
+    assert [h[2:] for h in kinks(pb)["hooks"]] == [(13.0, 40.0, 153)]
+    via = pcbnew.PCB_VIA(pb)
+    via.SetPosition(pcbnew.VECTOR2I_MM(13, 40))
+    via.SetNet(pb.FindNet("N"))
+    pb.Add(via)
+    assert kinks(pb)["hooks"] == []
 
 
 def test_coupling_says_where_a_quiet_track_runs_beside_a_noisy_one():

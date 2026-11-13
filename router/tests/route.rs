@@ -552,3 +552,41 @@ fn another_seed_routes_the_same_board_clean() {
         assert!(s.nets.iter().all(|n| n.open.is_empty()), "seed {}", seed);
     }
 }
+
+/// Two tight places on the way: the pin's way out between its neighbours, and a slit in a wall
+/// further on, both too narrow for the net's width. No way at full width joins the two ends of
+/// the narrow track, and it stayed narrow all along (8 mm). Narrow only through the two places.
+#[test]
+fn a_track_is_narrow_only_through_each_tight_place() {
+    let pin = json!({"box": [0.6, 2.875, 1.4, 3.125], "layers": [0]});
+    let s = solve(json!({
+        "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        "fixed": [{"box": [0.6, 2.375, 1.4, 2.625], "layers": [0]}, {"box": [0.6, 3.375, 1.4, 3.625], "layers": [0]},
+                  {"box": [0.2, 2.375, 0.4, 3.625], "layers": [0]},
+                  {"box": [4.9, 0.0, 5.1, 2.6], "layers": [0]}, {"box": [4.9, 3.4, 5.1, 6.0], "layers": [0]}],
+        "nets": [{"name": "A", "width": 0.6, "narrow": 0.15, "clearance": 0.2, "pieces": [[pin], [pad(9.0, 3.0, 0)]]}]
+    }));
+    assert!(s.nets[0].open.is_empty());
+    let length = |narrow: bool| -> f64 {
+        let mut sum = 0.0;
+        for path in s.nets[0].paths.iter().filter(|p| (p.width < 0.3) == narrow) {
+            for w in path.cells.windows(2) {
+                sum += (((w[1][1] - w[0][1]).pow(2) + (w[1][2] - w[0][2]).pow(2)) as f64).sqrt() * 0.05;
+            }
+        }
+        sum
+    };
+    assert!(length(true) > 0.5 && length(true) < 3.0, "narrow for {} mm", length(true));
+    assert!(length(false) > 4.5, "wide for {} mm", length(false));
+    let narrow: Vec<_> = s.nets[0].paths.iter().filter(|p| p.width < 0.3).collect();
+    assert_eq!(narrow.len(), 2, "{:?}", s.nets[0].paths);
+    // and what is narrow counts by as much as it is narrower: a quarter of the width, four times its length
+    let cost = length(false) + 4.0 * length(true);
+    assert!(
+        (s.nets[0].cost - cost).abs() < 0.2,
+        "{} for {} wide and {} narrow",
+        s.nets[0].cost,
+        length(false),
+        length(true)
+    );
+}

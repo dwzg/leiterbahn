@@ -1765,10 +1765,20 @@ def kinks(board, hand=False):
     runs of more than 0.3 mm each, the offset a grid router leaves where it steps aside one
     cell at a time. hooks: [(net, layer name, x, y, degrees)]: a track that turns back by
     135 degrees or more within 2 mm of its length. Both are legal and neither is needed; a
-    reviewer counted 133 and 26 on a board of 158 nets. hand: count locked tracks too.
+    reviewer counted 133 and 26 on a board of 158 nets. A track ends at a via and at a pad of
+    its net: two tracks that leave one of those in a V are a branch of the net, no turn back
+    (5 of 18 counted on one board were that). hand: count locked tracks too.
     """
     mm = pcbnew.ToMM
-    by = {}
+    by, ends, pads = {}, {}, {}
+    for fp in board.GetFootprints():
+        for p in fp.Pads():
+            box = p.GetBoundingBox()
+            pads.setdefault(p.GetNetname(), []).append((box.GetLeft(), box.GetTop(), box.GetRight(), box.GetBottom(),
+                                                        p.GetLayerSet()))
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_VIA":
+            ends.setdefault(t.GetNetname(), set()).add((t.GetPosition().x, t.GetPosition().y))
     for t in board.GetTracks():
         if t.GetClass() == "PCB_VIA" or (t.IsLocked() and not hand):
             continue
@@ -1782,12 +1792,16 @@ def kinks(board, hand=False):
             at.setdefault(a, []).append((k, 0))
             at.setdefault(e, []).append((k, 1))
 
-        def walk(k, end, seen, segs=segs, at=at):          # on from segment k's other end, while the track is one line
-            out = []
+        stops = {pt for pt in at if pt in ends.get(net, ())
+                 or any(x0 <= pt[0] <= x1 and y0 <= pt[1] <= y1 and on.Contains(layer)
+                        for x0, y0, x1, y1, on in pads.get(net, ()))}
+
+        def walk(k, end, seen, segs=segs, at=at, stops=stops):         # on from segment k's other end, while the
+            out = []                                                   # track is one line
             while True:
                 here = segs[k][1 - end]
                 on = [(j, e) for j, e in at[here] if j != k]
-                if len(on) != 1 or on[0][0] in seen:
+                if len(on) != 1 or on[0][0] in seen or here in stops:
                     return out
                 k, end = on[0]
                 seen.add(k)

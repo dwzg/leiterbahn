@@ -833,7 +833,7 @@ impl Router<'_> {
             .collect()
     }
 
-    /// What the net's tracks cost: their length in cells, a via as `via_cost`, a narrow track half as much again.
+    /// What the net's tracks cost: their length in cells, a via as `via_cost`, a narrow track by as much more as it is narrower.
     fn cost(&self, n: usize) -> f32 {
         self.cost_of(n, &self.laid[n])
     }
@@ -842,7 +842,13 @@ impl Router<'_> {
         let plane = (self.grids.nx * self.grids.ny) as u32;
         let mut total = 0.0;
         for (path, &kind) in laid.nodes.iter().zip(&laid.kinds) {
-            let factor = if kind == self.jobs[n].kind { 1.0 } else { 1.5 };
+            // a narrow piece counts for more, by as much as it is narrower (a quarter of the width, four
+            // times the resistance): at half as much again for all, 8 mm of a 0.6 mm net stayed at 0.127 mm
+            let factor = if kind == self.jobs[n].kind {
+                1.0
+            } else {
+                (self.grids.kinds[self.jobs[n].kind].0 / self.grids.kinds[kind].0).clamp(1.5, 4.0) as f32
+            };
             for w in path.windows(2) {
                 let apart = w[0].abs_diff(w[1]);
                 total += if w[0] / plane != w[1] / plane {
@@ -1165,6 +1171,51 @@ impl Router<'_> {
                                 parts.push((thin[j..].to_vec(), kind));
                             }
                         }
+                    }
+                }
+                // No such way (a second narrow place further on, or the way round is too dear): then
+                // the narrow track's own way, at full width wherever that fits for 0.8 mm or more, and
+                // narrow only through the places that are too tight. A gate drive ran 8 mm at
+                // 0.127 mm for two such places 0.5 mm long.
+                if parts.is_empty() {
+                    let (nx, plane) = (self.grids.nx as u32, (self.grids.nx * self.grids.ny) as u32);
+                    let open = |c: u32| wide[c as usize].hard == 0;
+                    let step_fits = |a: u32, b: u32| {
+                        let (lo, hi) = (a.min(b), a.max(b));
+                        a / plane != b / plane
+                            || match hi - lo {
+                                d if d == nx + 1 => open(lo + 1) && open(lo + nx),
+                                d if d == nx - 1 => open(lo - 1) && open(lo + nx),
+                                _ => true,
+                            }
+                    };
+                    let least = (0.8 / self.grids.step) as usize;
+                    let mut runs: Vec<(usize, usize)> = Vec::new(); // stretches of the way that fit, first and last cell
+                    let mut a = 0;
+                    while a < thin.len() {
+                        if !fits(thin[a]) {
+                            a += 1;
+                            continue;
+                        }
+                        let mut b = a;
+                        while b + 1 < thin.len() && fits(thin[b + 1]) && step_fits(thin[b], thin[b + 1]) {
+                            b += 1;
+                        }
+                        if b - a >= least {
+                            runs.push((a, b));
+                        }
+                        a = b + 1;
+                    }
+                    let mut at = 0;
+                    for &(a, b) in &runs {
+                        if a > at {
+                            parts.push((thin[at..=a].to_vec(), kind));
+                        }
+                        parts.push((thin[a..=b].to_vec(), job.kind));
+                        at = b;
+                    }
+                    if !runs.is_empty() && at + 1 < thin.len() {
+                        parts.push((thin[at..].to_vec(), kind));
                     }
                 }
             }
