@@ -757,9 +757,22 @@ impl Router<'_> {
 
     /// Lay the net anew: from its first piece, always to the nearest piece not yet joined.
     fn lay(&mut self, n: usize, press: Option<f32>, memory: f32) {
+        self.lay_on(n, press, memory, false)
+    }
+
+    /// Lay only what must be laid anew: the net's tracks that no other net lies on stay (as far
+    /// as they still hang together), and the connections that went with the others are searched
+    /// again. A net of forty pads with one branch in another's way was laid again whole, forty
+    /// searches for one, and came out different all over each round.
+    fn relay(&mut self, n: usize, press: Option<f32>, memory: f32) {
+        self.lay_on(n, press, memory, true)
+    }
+
+    fn lay_on(&mut self, n: usize, press: Option<f32>, memory: f32, keep: bool) {
         self.search.shy = self.jobs[n].shy.filter(|_| self.grids.apart > 0.0);
         self.own(n, 1);
         self.search.laying += 1;
+        let before = if keep { std::mem::take(&mut self.laid[n]) } else { Laid::default() };
         let mut laid = Laid::default();
         let mut near: Vec<Item> = Vec::new();
         let apart = (self.problem.via.hole + self.problem.hole_to_hole) / self.grids.step;
@@ -770,10 +783,136 @@ impl Router<'_> {
                 origin.entry(node).or_insert([p, shape]);
             }
         }
-        let mut joined = vec![false; job.cells.len()];
+        // What stays: the tracks no other net is on, less those that then end on nothing. Pieces
+        // and tracks that hang together are a group; `group[p]` is that of piece p, `held[k]` that
+        // of the k-th track that stays.
+        let pieces = job.cells.len();
+        let mut group: Vec<usize> = (0..pieces).collect();
+        let mut held: Vec<usize> = Vec::new();
+        let mut held_box: Vec<[i32; 4]> = Vec::new();
+        if !before.nodes.is_empty() {
+            let plane = (self.grids.nx * self.grids.ny) as u32;
+            let via_grid = &self.grids.via[job.via_kind];
+            let mut stays: Vec<bool> = before
+                .nodes
+                .iter()
+                .zip(&before.kinds)
+                .map(|(path, &kind)| {
+                    let track = &self.grids.track[kind];
+                    path.iter().all(|&c| track[c as usize].soft == 0 && track[c as usize].hard == 0)
+                        && path
+                            .windows(2)
+                            .all(|w| w[0] / plane == w[1] / plane || via_grid[(w[0] % plane) as usize].soft == 0)
+                })
+                .collect();
+            let mut on: HashMap<u32, Vec<usize>> = HashMap::new(); // cell -> the tracks that stay on it
+            loop {
+                on.clear();
+                for (k, path) in before.nodes.iter().enumerate() {
+                    if stays[k] {
+                        for &c in path {
+                            on.entry(c).or_default().push(k);
+                        }
+                    }
+                }
+                let mut changed = false;
+                for (k, path) in before.nodes.iter().enumerate() {
+                    let ends = [path[0], *path.last().unwrap()];
+                    if stays[k] && ends.iter().any(|c| !origin.contains_key(c) && on[c].iter().all(|&j| j == k)) {
+                        stays[k] = false;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            // groups: pieces are 0..pieces, tracks follow
+            let mut root: Vec<usize> = (0..pieces + before.nodes.len()).collect();
+            fn find(root: &mut [usize], mut a: usize) -> usize {
+                while root[a] != a {
+                    root[a] = root[root[a]];
+                    a = root[a];
+                }
+                a
+            }
+            for (k, path) in before.nodes.iter().enumerate() {
+                if !stays[k] {
+                    continue;
+                }
+                for c in [path[0], *path.last().unwrap()] {
+                    let mut others: Vec<usize> = on[&c].iter().filter(|&&j| j != k).map(|&j| pieces + j).collect();
+                    if let Some(at) = origin.get(&c) {
+                        others.push(at[0]);
+                    }
+                    for o in others {
+                        let (a, b) = (find(&mut root, pieces + k), find(&mut root, o));
+                        root[a.max(b)] = a.min(b);
+                    }
+                }
+            }
+            for (p, g) in group.iter_mut().enumerate() {
+                *g = find(&mut root, p);
+            }
+            for k in 0..before.nodes.len() {
+                let g = find(&mut root, pieces + k);
+                if !stays[k] || g >= pieces {
+                    continue; // (a track that hangs on no piece cannot be, and would be of no use)
+                }
+                let path = &before.nodes[k];
+                let had = laid.vias.len();
+                copper(
+                    &self.grids,
+                    job,
+                    self.grids.kinds[before.kinds[k]].0,
+                    &before.paths[k].cells,
+                    &mut laid.items,
+                    &mut laid.vias,
+                );
+                for &flat in &laid.vias[had..] {
+                    let (x, y) = ((flat as usize % self.grids.nx) as f64, (flat as usize / self.grids.nx) as f64);
+                    let hole = Item {
+                        rect: false,
+                        a: [x, y, x, y],
+                        r: 0.0,
+                        layers: vec![],
+                        hole: 0.0,
+                        clearance: 0.0,
+                    };
+                    raster(&mut self.grids.via[job.via_kind], false, self.grids.nx, self.grids.ny, 0, &hole, apart, 1);
+                    near.push(hole);
+                    self.search.own_via[flat as usize] = self.search.laying;
+                }
+                let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+                for &c in path {
+                    let (_l, i, j) = self.grids.split(c);
+                    b = [b[0].min(i as i32), b[1].min(j as i32), b[2].max(i as i32), b[3].max(j as i32)];
+                }
+                held.push(g);
+                held_box.push(b);
+                laid.paths.push(before.paths[k].clone());
+                laid.kinds.push(before.kinds[k]);
+                laid.nodes.push(path.clone());
+            }
+        }
+        let kept = held.len(); // the first `kept` tracks of `laid` are those that stayed
+        let mut joined: Vec<bool> = group.iter().map(|&g| g == group[0]).collect();
         let mut apart_from: Vec<usize> = Vec::new(); // pieces a new group of joined pieces began with
-        joined[0] = true;
-        let mut sources: Vec<u32> = job.cells[0].iter().map(|c| c.0).collect();
+        let cells_of = |g: usize, laid: &Laid| -> Vec<u32> {
+            let mut cells: Vec<u32> = Vec::new();
+            for (p, own) in job.cells.iter().enumerate() {
+                if group[p] == g {
+                    cells.extend(own.iter().map(|c| c.0));
+                }
+            }
+            for k in 0..kept {
+                if held[k] == g {
+                    cells.extend(laid.nodes[k].iter().copied());
+                }
+            }
+            cells
+        };
+        let mut sources: Vec<u32> = cells_of(group[0], &laid);
         while joined.iter().any(|j| !j) {
             let mut marked = Vec::new();
             let mut goals = Vec::new();
@@ -783,6 +922,18 @@ impl Router<'_> {
                     for &(node, _s) in cells {
                         if self.search.target[node as usize] == 0 {
                             self.search.target[node as usize] = p as u32 + 1;
+                            marked.push(node);
+                        }
+                    }
+                }
+            }
+            for k in 0..kept {
+                // a track that stayed, of a group not yet joined: reaching it is reaching its group
+                if !joined[held[k]] {
+                    goals.push(held_box[k]);
+                    for &node in &laid.nodes[k] {
+                        if self.search.target[node as usize] == 0 {
+                            self.search.target[node as usize] = held[k] as u32 + 1;
                             marked.push(node);
                         }
                     }
@@ -897,20 +1048,22 @@ impl Router<'_> {
                 // other: go on from the next of them, so that one pad shut in costs one connection
                 // and not all of the net's (a net of six pieces came out with five apart).
                 let left: Vec<usize> = (0..joined.len()).filter(|&p| !joined[p]).collect();
-                if left.len() < 2 {
+                apart_from.push(left[0]);
+                let next = group[left[0]];
+                (0..pieces).filter(|&p| group[p] == next).for_each(|p| joined[p] = true);
+                if left.iter().all(|&p| group[p] == next) {
                     break;
                 }
-                apart_from.push(left[0]);
-                joined[left[0]] = true;
-                sources = job.cells[left[0]].iter().map(|c| c.0).collect();
+                sources = cells_of(next, &laid);
                 continue;
             };
             let piece = piece.unwrap();
-            joined[piece] = true;
+            let next = group[piece];
+            (0..pieces).filter(|&p| group[p] == next).for_each(|p| joined[p] = true);
             if parts.is_empty() {
                 parts.push((path, kind));
             }
-            sources.extend(job.cells[piece].iter().map(|c| c.0));
+            sources.extend(cells_of(next, &laid));
             for (path, kind) in parts {
                 sources.extend(path.iter().copied());
                 let bends = corners(&self.grids, &path);
@@ -953,7 +1106,7 @@ impl Router<'_> {
                 -1,
             );
         }
-        laid.open = (0..joined.len()).filter(|&p| !joined[p] || apart_from.contains(&p)).collect();
+        laid.open = apart_from;
         self.laid[n] = laid;
         self.own(n, -1);
     }
@@ -1175,7 +1328,15 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             // a search stays within 4 mm of the net's pads and tracks, unless there is no way there:
             // without this bound the supply board's 158 nets took 146 s, nearly all of it searching
             router.search.window = router.around(n, near);
-            router.lay(n, Some(press), 1.0);
+            // Only what is in another's way, until the rounds stall for the first time; from then on
+            // whole nets. The first is two to three times as fast on boards that come clean; a board
+            // that stalls is helped by nets that take wholly new ways (one of ten boards came clean
+            // only so, another kept one connection open instead of two).
+            if problem.relay && restarts == 0 {
+                router.relay(n, Some(press), 1.0);
+            } else {
+                router.lay(n, Some(press), 1.0);
+            }
             router.soft(n, 1);
             again += 1;
         }
@@ -1346,6 +1507,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             // them push in turn, two levels deep, took four times as long on a board of 158 nets and
             // saved no more.)
             let mut moved: Vec<(usize, Laid)> = Vec::new();
+            let mut futile = false;
             let mut queue: std::collections::VecDeque<(usize, u32)> = [(n, 0)].into();
             while let Some((m, depth)) = queue.pop_front() {
                 if moved.iter().any(|t| t.0 == m) {
@@ -1357,6 +1519,15 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 let mut crossed: Vec<usize> = Vec::new();
                 if depth < 1 {
                     router.lay(m, Some(1.5 / weight(m).max(0.1)), 0.0); // a heavier net crosses others more readily
+                                                                        // Even across others it is no shorter than it lies and joins no more: then there is
+                                                                        // nothing to be had, by pushing or without. (Most tries end here: 63 of 67 in the
+                                                                        // third pass on a board of 158 nets, each of which went on to two more searches.)
+                    if router.laid[m].open.len() >= old.open.len() && router.cost(m) >= router.cost_of(m, &old) - 0.5 {
+                        router.laid[m] = old;
+                        router.soft(m, 1);
+                        futile = true;
+                        break;
+                    }
                     let fresh = &router.laid[m];
                     crossed = order
                         .iter()
@@ -1364,13 +1535,19 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                         .filter(|&o| o != m && fresh.items.iter().any(|a| router.laid[o].items.iter().any(|b| clash(a, b, step))))
                         .collect();
                 }
-                if depth >= 1 || moved.len() + queue.len() + crossed.len() > 6 {
+                if depth >= 1 && problem.relay {
+                    router.relay(m, None, 0.0); // only what the net that pushes lies on
+                } else if depth >= 1 || moved.len() + queue.len() + crossed.len() > 6 {
                     router.lay(m, None, 0.0);
                     crossed.clear();
                 }
                 router.soft(m, 1);
                 moved.push((m, old));
                 queue.extend(crossed.into_iter().map(|c| (c, depth + 1)));
+            }
+            if futile {
+                stale[n] = false;
+                continue;
             }
             let was: f32 = moved.iter().map(|(m, old)| weight(*m) * router.cost_of(*m, old)).sum();
             let now: f32 = moved.iter().map(|(m, _)| weight(*m) * router.cost(*m)).sum();

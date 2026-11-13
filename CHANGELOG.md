@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.23.0
+
+Changed
+- The router lays a net again only where another net lies on it: the tracks nobody else is
+  on stay, and the connections that went are searched again (connection-based negotiation;
+  until now a net of forty pads with one branch in the way was laid again whole, forty
+  searches for one). When the rounds stall for the first time it goes back to whole nets,
+  which helps a board that is stuck. The nets pushed aside while shortening are treated
+  the same way. A board of 159 nets: 50 s instead of 70 s, track 1 % shorter. Five older
+  placements of it that route clean: 40, 63, 70, 91 and 47 s instead of 53, 85, 179, 272
+  and 97 s (a sixth 542 s instead of 123 s); the four that do not still leave 10
+  connections open between them.
+- A try to shorten a net ends after its first search when even across other nets it is no
+  shorter than it lies (most tries: 63 of 67 in a third pass).
+
+Added
+- `glance()` names the parts that stand where nets are in each other's way (`where[i][4]`):
+  what could be moved.
+
 ## 0.22.0
 
 Added

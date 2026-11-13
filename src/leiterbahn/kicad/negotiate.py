@@ -161,7 +161,9 @@ def glance(board, tmp_dir, rounds=8, say=None, **kw):
     is still in conflict then. Takes a fifth to a fiftieth of the time and draws nothing.
 
     Returns dict(conflicts: cells in conflict after the last round, by_round, seconds, where:
-    [(net, cells, (x0, y0, x1, y1) in board mm, layers)] with the most cells first). Of ten
+    [(net, cells, (x0, y0, x1, y1) in board mm, layers, parts)] with the most cells first;
+    parts are the footprints with a pad within 1 mm of that place on one of those layers, the
+    net's own left out: what stands in the way and could be moved). Of ten
     placements of one board with 158 nets, the four that then routed clean within 130 rounds
     had 88 to 132 cells in conflict after 8 rounds, the five that ended with connections open
     186 to 323: so this tells placements apart, and `where` says which pins are in trouble.
@@ -174,9 +176,26 @@ def glance(board, tmp_dir, rounds=8, say=None, **kw):
     started = time.time()
     answer = solve(prob, tmp_dir, say)
     ox, oy = board.box[0], board.box[1]
+    import pcbnew
+    mm = pcbnew.ToMM
+    pads = []                                              # (x, y, half width, half height, layers, ref, net)
+    for fp in board.board.GetFootprints():
+        for p in fp.Pads():
+            b = p.GetBoundingBox()
+            c = b.GetCenter()
+            on = {layer for layer in board.copper_layers if p.IsOnLayer(layer)}
+            pads.append((mm(c.x), mm(c.y), mm(b.GetWidth()) / 2, mm(b.GetHeight()) / 2, on, fp.GetReference(),
+                         p.GetNetname()))
+
+    def beside(t):
+        x0, y0, x1, y1 = t["area"]
+        layers = {r.routing[k] for k in t["layers"]}
+        return sorted({ref for x, y, w, h, on, ref, net in pads
+                       if net != t["name"] and on & layers
+                       and x + w > x0 - 1.0 and x - w < x1 + 1.0 and y + h > y0 - 1.0 and y - h < y1 + 1.0})
     where = sorted(((t["name"], t["cells"],
-                     tuple(round(v - o, 2) for v, o in zip(t["area"], (ox, oy, ox, oy), strict=True)), t["layers"])
-                    for t in answer["stuck"]), key=lambda t: (-t[1], t[0]))
+                     tuple(round(v - o, 2) for v, o in zip(t["area"], (ox, oy, ox, oy), strict=True)), t["layers"],
+                     beside(t)) for t in answer["stuck"]), key=lambda t: (-t[1], t[0]))
     return dict(conflicts=answer["conflicts"][-1] if answer["conflicts"] else 0, by_round=answer["conflicts"],
                 seconds=round(time.time() - started, 1), where=where)
 

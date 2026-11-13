@@ -1170,7 +1170,7 @@ def test_glance_says_what_is_in_conflict_and_draws_nothing(project, tmp_path):
     got = b.glance(str(tmp_path), rounds=3)
     assert len(list(b.board.GetTracks())) == before
     assert 1 <= len(got["by_round"]) <= 2 and got["conflicts"] == got["by_round"][-1]  # round 0 only lays
-    assert all(len(t) == 4 and t[1] > 0 for t in got["where"])
+    assert all(len(t) == 5 and t[1] > 0 and isinstance(t[4], list) for t in got["where"])
     assert (got["conflicts"] == 0) == (got["where"] == [])
 
 

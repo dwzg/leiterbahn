@@ -640,6 +640,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         shy: 3.0,
         straight: true,
         glance: false,
+        relay: true,
         untangle: true,
         stall: 20,
         limit: 50_000_000,

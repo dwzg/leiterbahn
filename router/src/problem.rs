@@ -67,6 +67,9 @@ pub struct Problem {
     /// where they find a way that is not more than `shy` times longer for it. 0: no such wish.
     #[serde(default)]
     pub apart: f64,
+    /// A net that is in another's way is laid again only where it is, see `Router::relay`.
+    #[serde(default = "d_true")]
+    pub relay: bool,
     /// Only look: end after `max_iter` rounds and say what is still in conflict and where
     /// (`Solution::conflicts`, `Solution::stuck`), without a result that could be drawn. What is
     /// left after 8 rounds tells how the board will end: of ten placements of one board, those

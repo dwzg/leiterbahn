@@ -396,3 +396,40 @@ fn nets_that_do_not_agree_are_settled_by_an_order() {
     }
     assert_eq!(open, [1, 0]);
 }
+
+/// Six nets of four pads each, their pads interleaved on a small board with two layers: nets
+/// must give way to each other for several rounds. Laid again only where another net lies on
+/// them, or whole: both ways every net is joined and no two are nearer than they may be.
+#[test]
+fn laying_again_only_what_is_in_the_way_gives_a_clean_board_too() {
+    for relay in [true, false] {
+        let nets: Vec<_> = (0..6)
+            .map(|n| {
+                let f = n as f64;
+                json!({"name": format!("N{}", n), "width": 0.15, "clearance": 0.15,
+                       "pieces": [[pad(1.0 + f * 0.9, 1.0, 0)], [pad(6.0 - f * 0.9, 5.0, 0)], [pad(1.0, 1.9 + f * 0.6, 0)], [pad(7.0, 4.6 - f * 0.6, 0)]]})
+            })
+            .collect();
+        let s = solve(json!({
+            "box": [0, 0, 8, 6], "step": 0.05, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "relay": relay, "nets": nets
+        }));
+        assert!(
+            s.nets.iter().all(|n| n.open.is_empty()),
+            "relay {}: open {:?}",
+            relay,
+            s.nets.iter().map(|n| n.open.len()).collect::<Vec<_>>()
+        );
+        assert!(s.iterations > 2, "the nets were not in each other's way: {} rounds", s.iterations);
+        let tracks = lines(&s);
+        for a in &tracks {
+            for b in &tracks {
+                assert!(
+                    a.0 == b.0 || a.1 != b.1 || gap(a, b) * 0.05 >= 0.3 - 1e-6,
+                    "relay {}: two nets {} mm apart",
+                    relay,
+                    gap(a, b) * 0.05
+                );
+            }
+        }
+    }
+}
