@@ -217,17 +217,21 @@ impl Grids {
     /// grid, which tracks keep a little further from.
     ///
     /// How much further: a track runs from cell centre to cell centre, and between two centres
-    /// it can be nearer to a corner beside it than at either. For a distance r to keep and a
-    /// slanted step of s times root 2 that is root(r squared + s squared / 2) - r: 3 um at
-    /// r = 0.19 mm on a 0.05 mm grid. A tenth of a cell is added for the end of a track that is
-    /// moved onto the line of another. (It was half a cell for all, 25 um on that grid: at a
-    /// connector of 0.4 mm pitch with 0.2 mm between pads and 0.2 mm clearance no cell of a pad
-    /// was then free to start from unless it lay within 11 um of the pad's middle line.)
+    /// it can be nearer to a corner beside it than at either: for a distance r to keep and a step
+    /// of length L, by root(r squared + L squared / 4) less r. A slanted step is only made where
+    /// the two cells beside it are free as well (see `Search::run`), and those four cells
+    /// between them leave no corner nearer than r to the step: so only the straight step of one
+    /// cell counts, 1 um at r = 0.27 mm on a 0.05 mm grid, and a fiftieth of a cell is added.
+    /// (It was half a cell for all, 25 um on that grid, and then that for a slanted step plus a
+    /// tenth of a cell, 8 um: at a connector of 0.4 mm pitch with 0.2 mm between pads and 0.2 mm
+    /// clearance a pad has 26 um to either side of its middle line for a track of 0.147 mm,
+    /// and with 8 um gone a quarter of the pads had no cell there.) Laid copper is crossed at a
+    /// price, not closed, so nothing guards a slanted step past it: there the slanted step counts.
     fn stamp(&mut self, item: &Item, soft: bool, fixed: bool, delta: i32) {
         let (nx, ny, nl, step) = (self.nx, self.ny, self.nl, self.step);
         // (Laid copper lies on the grid, but the same holds between two cells of it: a track past a
         // via on a 0.1 mm grid came 2 um nearer than a clearance of 0.254 mm allows.)
-        let with = |r: f64| (r * r + step * step / 2.0).sqrt() + if fixed { 0.1 * step } else { 0.0 };
+        let with = |r: f64| if fixed { (r * r + step * step / 4.0).sqrt() + 0.02 * step } else { (r * r + step * step / 2.0).sqrt() };
         let centre = Item {
             rect: false,
             turn: (1.0, 0.0),
@@ -757,6 +761,9 @@ struct Router<'a> {
     /// The rounds are getting nowhere: a way that crosses another net is checked against the
     /// whole board (see `lay_on`).
     far: bool,
+    /// They are about to stall: a way at the net's width that crosses another net is checked
+    /// against a narrow one.
+    pinch: bool,
 }
 
 impl Router<'_> {
@@ -936,6 +943,42 @@ impl Router<'_> {
     /// Lay the net anew: from its first piece, always to the nearest piece not yet joined.
     fn lay(&mut self, n: usize, press: Option<f32>, memory: f32) {
         self.lay_on(n, press, memory, false, None)
+    }
+
+    /// Has piece p a way to any other piece of its net (or into its plane), with the net alone on
+    /// the board?
+    fn reaches(&mut self, n: usize, p: usize) -> bool {
+        self.search.shy = None;
+        self.own(n, 1);
+        self.search.laying += 1;
+        let job = &self.jobs[n];
+        let sources: Vec<u32> = job.cells[p].iter().map(|c| c.0).collect();
+        let (mut marked, mut goals) = (Vec::new(), Vec::new());
+        for (q, cells) in job.cells.iter().enumerate().filter(|c| c.0 != p) {
+            goals.push(job.boxes[q]);
+            for &(node, _s) in cells {
+                if self.search.target[node as usize] == 0 {
+                    self.search.target[node as usize] = q as u32 + 1;
+                    marked.push(node);
+                }
+            }
+        }
+        self.search.plane = job.plane;
+        self.search.window = self.whole;
+        let mut found = false;
+        for kind in [Some(job.kind), job.narrow].into_iter().flatten() {
+            found = found
+                || self
+                    .search
+                    .run(&self.grids, kind, job.via_kind, &sources, &goals, Some(0.0), 0.0, self.via_cost, self.problem.limit)
+                    .is_some();
+        }
+        self.search.plane = None;
+        for node in marked {
+            self.search.target[node as usize] = 0;
+        }
+        self.own(n, -1);
+        found
     }
 
     /// Lay only what must be laid anew: the net's tracks that no other net lies on stay (as far
@@ -1143,18 +1186,24 @@ impl Router<'_> {
             let mut kind = job.kind;
             self.search.plane = job.plane.filter(|_| !joined[pieces - 1]);
             self.search.bound = left.unwrap_or(f32::INFINITY);
-            let mut found = self.search.run(
-                &self.grids,
-                kind,
-                job.via_kind,
-                &sources,
-                &goals,
-                press,
-                memory,
-                self.via_cost,
-                self.problem.limit,
-            );
-            if found.is_none() && self.widen && self.search.window != self.whole {
+            // (what is left has no cell to be reached at: a piece shut in for good, see `route`)
+            let nowhere = marked.is_empty() && self.search.plane.is_none();
+            let mut found = if nowhere {
+                None
+            } else {
+                self.search.run(
+                    &self.grids,
+                    kind,
+                    job.via_kind,
+                    &sources,
+                    &goals,
+                    press,
+                    memory,
+                    self.via_cost,
+                    self.problem.limit,
+                )
+            };
+            if !nowhere && found.is_none() && self.widen && self.search.window != self.whole {
                 // no way near the net: the whole board, for the rest of this net
                 self.search.window = self.whole;
                 found = self.search.run(
@@ -1216,7 +1265,40 @@ impl Router<'_> {
                     }
                 }
             }
-            if let (None, Some(narrow)) = (&found, job.narrow) {
+            // The way found is at the net's width and across another net, and the rounds are about to
+            // stall: a narrow track may get by where the full width cannot. (Not sooner: tried from
+            // the second and from the sixth round without progress, it left twice as much narrow
+            // track on a board of 159 nets, 24 placements, as none at all.) (Two supply pins side
+            // by side at 0.5 mm pitch, each with a 0.4 mm track to its capacitor below: 0.1 mm
+            // between the two tracks where 0.15 mm is asked. A narrow track was only laid where the
+            // full width found no way at all, and across the other net there always is one.)
+            if let (Some(path), Some(narrow), true) = (&found, job.narrow, self.pinch && press.is_some()) {
+                let plane = (self.grids.nx * self.grids.ny) as u32;
+                let (track, via) = (&self.grids.track[kind], &self.grids.via[job.via_kind]);
+                let crosses = path.iter().any(|&c| track[c as usize].soft > 0)
+                    || path.windows(2).any(|w| w[0] / plane != w[1] / plane && via[(w[0] % plane) as usize].soft > 0);
+                if crosses {
+                    let cost = self.search.marks[*path.last().unwrap() as usize].g;
+                    let worth = (self.grids.kinds[job.kind].0 / self.grids.kinds[narrow].0).clamp(1.5, 4.0) as f32;
+                    self.search.bound = cost / worth;
+                    let thin = self.search.run(
+                        &self.grids,
+                        narrow,
+                        job.via_kind,
+                        &sources,
+                        &goals,
+                        press,
+                        memory,
+                        self.via_cost,
+                        self.problem.limit,
+                    );
+                    self.search.bound = left.unwrap_or(f32::INFINITY);
+                    if let Some(way) = thin {
+                        (kind, found) = (narrow, Some(way));
+                    }
+                }
+            }
+            if let (None, Some(narrow), false) = (&found, job.narrow, nowhere) {
                 kind = narrow;
                 found = self.search.run(
                     &self.grids,
@@ -1315,6 +1397,8 @@ impl Router<'_> {
                     };
                     let least = (0.8 / self.grids.step) as usize;
                     let mut runs: Vec<(usize, usize)> = Vec::new(); // stretches of the way that fit, first and last cell
+                    // (at full width only where no other net is in the way now, whatever crossing costs)
+                    let fits = |c: u32| wide[c as usize].hard == 0 && wide[c as usize].soft == 0;
                     let mut a = 0;
                     while a < thin.len() {
                         if !fits(thin[a]) {
@@ -1654,6 +1738,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         widen: true,
         budget: None,
         far: false,
+        pinch: false,
         grids,
     };
     let mut solution = Solution::default();
@@ -1676,6 +1761,23 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         }
         solution.expanded = router.search.expanded;
         return solution;
+    }
+    // A piece that has no way to the rest of its net even with the net alone on the board has
+    // none with the others on it. Left in, it is laid across another net round after round,
+    // since that is a way, and the rounds never come clean: a board of 479 connections spent
+    // 25 minutes on one ground pad and four cells. So it is found before the rounds and left
+    // out of them: its cells are no longer anything to reach, and it is reported open.
+    for &n in &order {
+        router.search.window = router.around(n, near);
+        router.lay(n, Some(0.0), 0.0);
+        let apart = !router.laid[n].open.is_empty();
+        router.laid[n] = Laid::default();
+        for p in (0..router.jobs[n].cells.len()).filter(|_| apart) {
+            if !router.jobs[n].cells[p].is_empty() && !router.reaches(n, p) {
+                router.jobs[n].cells[p].clear();
+                say(format!("{}: a piece of it has no way to the rest with the net alone on the board, and is left open", problem.nets[n].name));
+            }
+        }
     }
     // Weights play no part in these rounds. Three ways to let them were measured on a board with
     // 158 nets, 13 of them weighted (260 mm with only those on the board, 315 mm without weights):
@@ -1708,6 +1810,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             knot = new_knot(&router.grids);
         }
         router.far = since >= 2;
+        router.pinch = since + 4 >= problem.stall;
         let wide = (problem.relay && round > 0 && since >= 4).then(|| ((2.0 * 2f64.powi(((since - 4) / 4) as i32)).min(32.0) / step) as i32);
         for &n in &order {
             if round > 0 {
@@ -1794,6 +1897,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                         continue; // the next round finds nothing in conflict, or goes on from here
                     }
                 }
+                // (Ending the rounds here when only a dozen cells are left, to settle them by leaving a
+                // connection open, was tried: 3 of 24 placements of a board then kept a connection open
+                // that starting over had always closed.)
                 if restarts >= 3 {
                     break;
                 }

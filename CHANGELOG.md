@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.34.0
+
+Changed
+- Tracks keep from fixed copper only what a straight step between two cells can come nearer
+  than its ends: root(r squared + s squared / 4) less r, and a fiftieth of a cell (2 um on a
+  0.05 mm grid; 0.31.0 kept 8 um). A slanted step needs nothing more: the search makes one
+  only where the two cells beside it are free as well, and those four cells leave no corner
+  nearer than r to the step. At a connector of 0.4 mm pitch with 0.2 mm between pads and
+  0.2 mm clearance a track of 0.147 mm has 26 um to either side of a pad's middle line, and
+  with 8 um gone a quarter of the pads had no cell to start from. Demo boards, checked with
+  KiCad's DRC, no error added: one of fine pitch with 0 connections open of 208 (16 before),
+  one of 1458 connections with 0 open in 3 minutes (34 open after 17 minutes).
+- A net whose way at full width still crosses another when the rounds are about to stall
+  tries a narrow track there. A narrow track was only laid where the full width found no
+  way at all, and across the other net there always is one: two supply pins side by side at
+  0.5 mm pitch, each with a 0.4 mm track to its capacitor, 0.1 mm between the tracks where
+  0.15 mm is asked, held a board of 479 connections for 25 minutes; now 9. (Tried sooner,
+  from the second or the sixth round without progress, it left twice as much narrow track
+  on a board of 159 nets.)
+- A piece that has no way to the rest of its net even with the net alone on the board is
+  found before the rounds and left out of them, and reported open as before. Left in, it
+  was laid across another net round after round.
+- The orders of a knot's nets are no longer tried when one of them has more than 24 pieces:
+  every order lays its nets whole, and a ground net of some hundred pads took minutes each.
+
+All of it on a board of 159 nets, the same 24 placements routed before and after: all clean
+both times, 13 % less narrow track (less in 19 of 24), tracks 0.2 % longer, 23 % more rounds.
+
 ## 0.33.0
 
 Changed

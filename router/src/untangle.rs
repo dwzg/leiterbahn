@@ -133,6 +133,12 @@ impl Router<'_> {
             if !thorough && knot.len() > 4 {
                 continue;
             }
+            // Not a knot with a net of many pads in it: every order lays its nets whole, and a ground
+            // net of some hundred pads laid whole a hundred times took a board past 25 minutes over
+            // four cells. (Such a net is laid again only where it is in the way: see the rounds.)
+            if knot.iter().any(|&n| self.jobs[n].cells.len() > 24) {
+                continue;
+            }
             let before = self.take_out(knot);
             let none = (usize::MAX, f32::MAX, Vec::new());
             let first = if knot.len() <= 6 { self.orders(knot, near, 120) } else { none.clone() };
