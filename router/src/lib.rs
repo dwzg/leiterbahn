@@ -76,7 +76,7 @@ struct Grids {
     /// Nets that are to keep apart: how far, in mm (0: none are), and per cell how much copper
     /// of noisy nets (0) and of quiet nets (1) a track's centre there would be too near to.
     apart: f64,
-    near: [Vec<Cell>; 2],
+    near: [Vec<Cell>; 3],
 }
 
 /// What a track's centre (or a via's) finds at one place: how much copper that stays is too
@@ -201,10 +201,27 @@ impl Grids {
 }
 
 impl Grids {
+    /// Is there anything tracks keep away from where they can?
+    fn shy(&self) -> bool {
+        !self.near[0].is_empty()
+    }
+
+    /// Count the cells within `room` mm of the item as cells all tracks keep out of where they can.
+    fn room(&mut self, item: &Item, room: f64) {
+        let thin = self.kinds.iter().map(|k| k.0).fold(f64::MAX, f64::min);
+        let grow = item.r + (room + thin) / self.step;
+        for which in 0..3 {
+            for &l in &item.layers {
+                raster(&mut self.near[which], false, self.nx, self.ny, l, item, grow, 1);
+            }
+        }
+    }
+
     /// Count the item in (or out of) the cells that tracks of the other kind are to keep out of:
-    /// `which` is 0 for copper of a noisy net, 1 for copper of a quiet one.
+    /// `which` is 0 for copper of a noisy net, 1 for copper of a quiet one. (`near[2]` holds what
+    /// all nets keep away from, see room(), and so do the other two.)
     fn beside(&mut self, item: &Item, which: usize, delta: i32) {
-        if self.apart <= 0.0 {
+        if self.apart <= 0.0 || which > 1 || !self.shy() {
             return;
         }
         let thin = self.kinds.iter().map(|k| k.0).fold(f64::MAX, f64::min);
@@ -640,7 +657,7 @@ impl Router<'_> {
         for k in 0..self.laid[n].items.len() {
             let item = self.laid[n].items[k].clone();
             self.grids.stamp(&item, true, 0.0, delta);
-            if let Some(a) = self.jobs[n].shy {
+            if let Some(a) = self.jobs[n].shy.filter(|&a| a < 2) {
                 self.grids.beside(&item, 1 - a, delta);
             }
         }
@@ -649,7 +666,7 @@ impl Router<'_> {
     /// The cells (a diagonal step as its length) of the net's tracks that are nearer than they
     /// should be to copper the net is to keep away from.
     fn beside_of(&self, n: usize, laid: &Laid) -> f32 {
-        let Some(near) = self.jobs[n].shy.filter(|_| self.grids.apart > 0.0).map(|a| &self.grids.near[a]) else {
+        let Some(near) = self.jobs[n].shy.filter(|_| self.grids.shy()).map(|a| &self.grids.near[a]) else {
             return 0.0;
         };
         let plane = (self.grids.nx * self.grids.ny) as u32;
@@ -769,7 +786,7 @@ impl Router<'_> {
     }
 
     fn lay_on(&mut self, n: usize, press: Option<f32>, memory: f32, keep: bool) {
-        self.search.shy = self.jobs[n].shy.filter(|_| self.grids.apart > 0.0);
+        self.search.shy = self.jobs[n].shy.filter(|_| self.grids.shy());
         self.own(n, 1);
         self.search.laying += 1;
         let before = if keep { std::mem::take(&mut self.laid[n]) } else { Laid::default() };
@@ -1146,10 +1163,14 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         kinds,
         via_kinds,
         apart: problem.apart,
-        near: if problem.apart > 0.0 {
-            [vec![Cell::default(); nx * ny * nl], vec![Cell::default(); nx * ny * nl]]
+        near: if problem.apart > 0.0 || !problem.rooms.is_empty() {
+            [
+                vec![Cell::default(); nx * ny * nl],
+                vec![Cell::default(); nx * ny * nl],
+                vec![Cell::default(); nx * ny * nl],
+            ]
         } else {
-            [Vec::new(), Vec::new()]
+            [Vec::new(), Vec::new(), Vec::new()]
         },
     };
     let margin = step / 2.0;
@@ -1208,6 +1229,10 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             grids.beside(&item, w, 1);
         }
     }
+    for shape in &problem.rooms {
+        let item = item_of(shape, x0, y0, step, 0.0);
+        grids.room(&item, shape.room);
+    }
     let mut jobs = Vec::new();
     for net in &problem.nets {
         let kind = grids.kinds.iter().position(|k| *k == (net.width / 2.0, net.clearance)).unwrap();
@@ -1224,7 +1249,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             items: Vec::new(),
             cells: Vec::new(),
             boxes: Vec::new(),
-            shy: which(net.role).map(|w| 1 - w),
+            shy: Some(which(net.role).map_or(2, |w| 1 - w)),
         };
         for piece in &net.pieces {
             let items: Vec<Item> = piece.iter().map(|s| item_of(s, x0, y0, step, net.clearance)).collect();
@@ -1646,7 +1671,11 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             open,
             cost: (router.cost(n) - router.search.shy_cost * router.beside_of(n, laid)) as f64 * step,
             alone: alone[n] as f64 * step,
-            beside: router.beside_of(n, laid) as f64 * step,
+            beside: if router.jobs[n].shy.is_some_and(|a| a < 2) {
+                router.beside_of(n, laid) as f64 * step
+            } else {
+                0.0
+            },
         });
     }
     solution

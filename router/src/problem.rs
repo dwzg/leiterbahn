@@ -46,6 +46,11 @@ pub struct Problem {
     /// Copper that stays: of nets that are not routed here, and of no net.
     #[serde(default)]
     pub fixed: Vec<Shape>,
+    /// Places tracks keep `Shape::room` away from on these layers where they find a way that is
+    /// not more than `shy` times longer: a through-hole pad that hangs in a pour by its spokes
+    /// (a track led round it at clearance left it one spoke, and DRC calls that starved).
+    #[serde(default)]
+    pub rooms: Vec<Shape>,
     pub nets: Vec<Net>,
     #[serde(default = "d_iter")]
     pub max_iter: u32,
@@ -141,6 +146,9 @@ pub struct Shape {
     /// What its net is to others (fixed copper only; a routed net's is the net's).
     #[serde(default)]
     pub role: Role,
+    /// In `Problem::rooms`: the distance tracks keep from it, mm.
+    #[serde(default)]
+    pub room: f64,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

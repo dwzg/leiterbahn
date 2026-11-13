@@ -378,6 +378,7 @@ impl Copper {
                 hole: self.hole,
                 clearance: 0.0,
                 role: Role::None,
+                room: 0.0,
             },
             None => Shape {
                 rect: None,
@@ -387,6 +388,7 @@ impl Copper {
                 hole: self.hole,
                 clearance: 0.0,
                 role: Role::None,
+                room: 0.0,
             },
         }
     }
@@ -632,6 +634,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         edge_clear: rules.edge_clear,
         keepouts,
         fixed,
+        rooms: Vec::new(),
         nets,
         max_iter: options.max_iter,
         relax: 12,

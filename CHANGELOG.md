@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.24.0
+
+Added
+- Tracks leave room round a through-hole pad that hangs in a pour: `negotiate(room=0.8,
+  pours=)`. Such a pad is joined to the pour by spokes, and a track led past it at
+  clearance cuts them: a board came out with a ground pin on one spoke (DRC: starved
+  thermal) after a change that had nothing to do with it. Now tracks keep `room` mm from
+  such pads on the pour's layers where a way exists that is not more than `shy` times
+  longer. `pours={net: [layers]}` names pours that are only added after routing, as is
+  usual on outer layers; zones the board has already are seen without. The board in
+  question: 14 such pads, 3 mm more track in 1.6 m, clean.
+
 ## 0.23.0
 
 Changed

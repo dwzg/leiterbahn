@@ -1162,6 +1162,24 @@ def test_coupling_says_where_a_quiet_track_runs_beside_a_noisy_one():
     assert coupling(pb, ["FB"], ["SW", "CLK"], apart=0.25) == []
 
 
+def test_through_hole_pads_in_a_pour_are_given_room(project, tmp_path):
+    """The router is told of every through-hole pad whose net has a pour on a routing layer, also a pour that
+    is only added after routing; with room=0 of none. The board still routes clean."""
+    from leiterbahn.kicad import negotiate
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    assert negotiate._board_problem(b)[2]["rooms"] == []                     # ground is on an inner plane only
+    prob = negotiate._board_problem(b, pours={"GND": (pcbnew.F_Cu,)})[2]
+    holes = sum(1 for fp in b.board.GetFootprints() for p in fp.Pads()
+                if p.GetNetname() == b.resolve("GND") and p.HasHole())
+    assert holes > 0 and len(prob["rooms"]) == holes
+    assert all(t["room"] == 0.8 and t["layers"] == [0] for t in prob["rooms"])
+    assert negotiate._board_problem(b, pours={"GND": (pcbnew.F_Cu,)}, room=0.0)[2]["rooms"] == []
+    got = b.negotiate(str(tmp_path), pours={"GND": (pcbnew.F_Cu,)})
+    b.fill_zones()
+    assert got["open"] == [] and b.unrouted() == 0
+
+
 def test_glance_says_what_is_in_conflict_and_draws_nothing(project, tmp_path):
     b = planes_board(project)
     assert b.fan_to_planes() == []

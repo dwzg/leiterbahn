@@ -57,7 +57,8 @@ def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cos
     hole_clear, width {net: mm}, track, wider {net: clearance}, areas [(box, layers, no_tracks,
     no_vias)]). A net is routed if it has more than one piece (inside `box`, if given), is not in
     `skip` and is in `only` (if given); all other copper is in the way. weights: {net: number},
-    see negotiate(). rules may also hold quiet and noisy (sets of net names), apart and shy.
+    see negotiate(). rules may also hold quiet and noisy (sets of net names), apart and shy,
+    and pours {net: [layer ids]} with room (mm): see negotiate(room=).
     """
     weights = weights or {}
     role = {net: "quiet" for net in rules.get("quiet", ())}
@@ -79,6 +80,11 @@ def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cos
     near = [area[0] - reach, area[1] - reach, area[2] + reach, area[3] + reach]
     fixed = [dict(shape_of(it, index), clearance=keep(it["net"]), role=role.get(it["net"], "none"))
              for it in items.values() if it["net"] not in routed and touches(it, near)]
+    pours, room = rules.get("pours", {}), rules.get("room", 0.0)
+    rooms = [dict(box=list(it["box"]), layers=sorted(index[l] for l in pours[it["net"]] if l in index), room=room)
+             for it in items.values()
+             if room > 0 and it["kind"] == "pad" and it["hole"] and it["net"] in pours and touches(it, near)]
+    rooms = [t for t in rooms if t["layers"]]
     keepouts = [dict(box=list(b), layers=sorted(index[l] for l in on if l in index), tracks=bool(no_tracks),
                      vias=bool(no_vias)) for b, on, no_tracks, no_vias in rules["areas"]]
     via = dict(d=rules["via"][0], hole=rules["via"][1], cost=via_cost)
@@ -87,7 +93,7 @@ def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cos
                 edge=list(rules["edge"]), edge_clear=rules["edge_clear"],
                 apart=rules.get("apart", 0.0) if role else 0.0, shy=rules.get("shy", 3.0),
                 straight=rules.get("straight", True),
-                keepouts=keepouts, fixed=fixed, nets=nets, max_iter=max_iter), routed
+                keepouts=keepouts, fixed=fixed, rooms=rooms, nets=nets, max_iter=max_iter), routed
 
 
 def solve(prob, tmp_dir, say=None):
@@ -107,7 +113,8 @@ def solve(prob, tmp_dir, say=None):
 
 
 def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
-                   weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True):
+                   weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True, room=0.8,
+                   pours=None):
     """(the finisher's view of the board, its copper items, the problem, {net: [[item key]]})."""
     from . import finish
     r = finish._Router(board, None, step, via_cost, 0, False, 0.0, locked)
@@ -119,7 +126,13 @@ def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, 
             piece[key] = n
             for other in conn.GetConnectedItems(it["obj"], 0):
                 piece.setdefault(other.m_Uuid.AsString(), n)
-    rules = dict(routing=r.routing, edge=r.edge, edge_clear=edge_clear, clearance=r.clearance,
+    # net -> the layers it has a pour on, or will have (said by the caller)
+    pours = {board.resolve(net): set(layers) for net, layers in (pours or {}).items()}
+    for zone in board.board.Zones():
+        if not zone.GetIsRuleArea() and zone.GetNetname():
+            pours.setdefault(zone.GetNetname(), set()).update(
+                layer for layer in board.copper_layers if zone.IsOnLayer(layer))
+    rules = dict(routing=r.routing, edge=r.edge, edge_clear=edge_clear, clearance=r.clearance, pours=pours, room=room,
                  via=(r.via_d, r.via_hole), hole_clear=finish.HOLE, width=r.class_width, track=r.thin, wider=r.wider,
                  areas=r.areas, quiet={board.resolve(n) for n in quiet}, noisy={board.resolve(n) for n in noisy},
                  apart=apart, shy=shy, straight=straight)
@@ -201,7 +214,8 @@ def glance(board, tmp_dir, rounds=8, say=None, **kw):
 
 
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
-              say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True):
+              say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True,
+              room=0.8, pours=None):
     """Route every net of the board that is in more than one piece, all at once.
 
     box: (x0, y0, x1, y1) on the sheet: route only inside it (copper outside stays; a net is
@@ -216,7 +230,12 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     the result says what is left, {net: mm} (see also board.coupling()). straight: finished
     tracks are straightened: each stretch takes the way with one bend where that is free,
     no longer and no nearer to what it keeps away from (a grid search leaves a bend wherever
-    it stepped aside; board.kinks() counts what is left). Returns dict(nets,
+    it stepped aside; board.kinks() counts what is left). room: tracks keep this far from a
+    through-hole pad on the layers where its net has a pour, where a way exists that is not
+    more than `shy` times longer: such a pad hangs in the pour by its spokes, and a track led
+    past it at clearance left it one (DRC: starved thermal). 0: no such wish. pours: {net:
+    [layers]} for pours that are added only after routing (the usual order on outer layers);
+    the zones the board has are seen without. Returns dict(nets,
     routed, open [(net, pieces left apart)], rounds, seconds, cost, alone, by_net): cost is
     all tracks in mm with a via as
     `via_cost` and narrow track half as much again; alone is the same with each net alone on
@@ -227,7 +246,7 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     """
     from . import finish
     r, items, prob, routed = _board_problem(board, only, skip, box, step, via_cost, max_iter, locked, weights,
-                                            edge_clear, quiet, noisy, apart, shy, straight)
+                                            edge_clear, quiet, noisy, apart, shy, straight, room, pours)
     started = time.time()
     answer = solve(prob, tmp_dir, say)
     grid = finish.Grid(prob["box"], step)

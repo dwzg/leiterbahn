@@ -191,7 +191,7 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
 - `shut_in(board, tmp_dir, step=0.1, skip=(), say=None)`: The nets that have no way even alone on the board: [(net, [(x, y)])].
 - `glance(board, tmp_dir, rounds=8, say=None, **kw)`: Look at how the board will route without routing it: `rounds` rounds of negotiate() and what is still in conflict then. Takes a fifth to a fiftieth of the time and draws nothing.
-- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True)`: Route every net of the board that is in more than one piece, all at once.
+- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True, room=0.8, pours=None)`: Route every net of the board that is in more than one piece, all at once.
 
 ## `leiterbahn.kicad.intent`
 

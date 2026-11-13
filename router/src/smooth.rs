@@ -82,7 +82,7 @@ impl Router<'_> {
     /// What the search would have counted for these cells: their length, and more where they are
     /// near copper the net keeps away from.
     fn price(&self, n: usize, cells: &[u32]) -> f32 {
-        let near = self.jobs[n].shy.filter(|_| self.grids.apart > 0.0).map(|a| &self.grids.near[a]);
+        let near = self.jobs[n].shy.filter(|_| self.grids.shy()).map(|a| &self.grids.near[a]);
         let nx = self.grids.nx as u32;
         let mut total = 0.0;
         for w in cells.windows(2) {

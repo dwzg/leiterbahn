@@ -433,3 +433,33 @@ fn laying_again_only_what_is_in_the_way_gives_a_clean_board_too() {
         }
     }
 }
+
+/// A pad that is to have room round it lies 0.5 mm beside a net's straight way. Without the wish
+/// the track passes it at clearance; with it, it goes round at the distance asked, a little longer.
+#[test]
+fn a_track_gives_room_to_a_pad_that_asks_for_it() {
+    let mut nearest = Vec::new();
+    for room in [0.0, 0.8] {
+        let rooms = if room > 0.0 {
+            json!([{"box": [4.8, 3.3, 5.2, 3.7], "layers": [0], "room": room}])
+        } else {
+            json!([])
+        };
+        let s = solve(json!({
+            "box": [0, 0, 10, 6], "step": 0.05, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+            "fixed": [{"box": [4.8, 3.3, 5.2, 3.7], "layers": [0], "clearance": 0.15}], "rooms": rooms,
+            "nets": [{"name": "A", "width": 0.15, "clearance": 0.15, "pieces": [[pad(1.0, 3.0, 0)], [pad(9.0, 3.0, 0)]]}]
+        }));
+        assert!(s.nets[0].open.is_empty());
+        let mut d = f64::MAX;
+        for &(_, _, ax, ay, bx, by) in &lines(&s) {
+            for k in 0..=40 {
+                let (px, py) = ((ax + (bx - ax) * k as f64 / 40.0) * 0.05, (ay + (by - ay) * k as f64 / 40.0) * 0.05);
+                d = d.min((4.8 - px).max(px - 5.2).max(0.0).hypot((3.3 - py).max(py - 3.7).max(0.0)));
+            }
+        }
+        nearest.push((d, s.nets[0].cost));
+    }
+    assert!(nearest[0].0 < 0.35 && nearest[1].0 >= 0.8 + 0.075 - 0.06, "nearest to the pad: {:?}", nearest);
+    assert!(nearest[1].1 < nearest[0].1 + 1.5, "cost {:?}", nearest);
+}

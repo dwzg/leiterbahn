@@ -103,6 +103,9 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
   what has room nearer its pin; fix the rest (`first()`, `tie()`, or the schematic: a part
   between the inputs of two distant parts cannot be near both) before routing, which does
   not move parts.
+- Pours on outer layers that are added after routing: name them in `negotiate(pours={"GND":
+  (F_Cu, B_Cu)})`, or the router leads tracks past through-hole ground pins at clearance
+  and the pour then reaches them by one spoke (DRC: starved thermal).
 - `b.glance()` before a long routing run, and to choose between placements: 8 rounds, a
   fifth of the time or less. Under about 150 cells in conflict the board came clean, over
   about 180 it kept connections open (one board, ten placements); `where` names the pins.
