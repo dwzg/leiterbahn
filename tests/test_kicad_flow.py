@@ -672,6 +672,31 @@ def test_every_supply_pin_is_given_a_capacitor_before_any_gets_two(project):
     assert sorted(t[2] for t in p.ties()) == ["J1", "J1", "J2"]              # J2, 30 mm away, would get one
 
 
+def test_improve_with_placements_side_by_side_keeps_the_rules(project, tmp_path):
+    """improve(chains=4): four placements annealed at once that change places; the answer is one allowed placement."""
+    b, p = placer(project)
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    p.inside(["R3", "R4"], (20, None, None, None))
+    for ref, at in (("R1", (30, 4)), ("R2", (30, 26)), ("R3", (22, 26)), ("R4", (22, 4))):
+        p.near(ref, anchor=at, start=at, pull=0.0)
+    before = p.length()
+    got = p.improve(str(tmp_path), moves=1000, chains=4)
+    assert got["tried"] > 3 * 1000 and p.length() < 0.6 * before
+    assert b.courtyard_overlaps() == ([], []) and p.boxes["R3"][0] >= 20 and p.boxes["R4"][0] >= 20
+
+
+def test_the_way_of_a_hand_track_is_kept_free_along_its_slant(project):
+    """keep_track(): no part within the track's width and clearance of any piece of it, also a slanted one;
+    beside the slant there is room, which one rectangle round all of it would take."""
+    b, p = placer(project)
+    p.keep_track([(10, 10), (20, 20), (30, 20)], 1.0, "F", clear=0.2)
+    assert not p.free("R1", 15, 15) and not p.free("R1", 25, 20) and not p.free("R1", 16.2, 14.2)
+    assert p.free("R1", 18, 12) and p.free("R1", 12, 18)   # the corners of the slant's box
+    assert p.free("R1", 15, 15, 0, True)                   # the back is not kept
+    assert len(p.keeps) == 21                              # 20 along the slant, one for the straight piece
+
+
 def test_a_part_in_the_tracks_way_is_moved_out_and_stays_out(project, tmp_path):
     """evict(): out of the rectangle to the cheapest free place near by, and improve() leaves it out."""
     b, p = placer(project)

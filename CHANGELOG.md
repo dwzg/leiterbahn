@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.28.0
+
+Added
+- `Placer.improve(chains=16)`: that many placements are annealed side by side, each on a
+  processor of its own, the first as warm as the schedule says and the others warmer by
+  even steps up to 8 times, and neighbours change places every so often, readily when the
+  warmer one is the cheaper (replica exchange). One placement's cost falls by about 3 % for
+  every fourfold in moves and has not settled after a million (two minutes); 16 chains of
+  80000 moves reach that cost in 14 s on 16 cores. A board of 287 parts: 3500 mm instead of
+  3810 with one chain of 20000 moves. Routed, 24 placements each way and that twice: tracks
+  2 % shorter, a tenth less left unmet, all 24 clean where one was not; quiet track beside
+  noisy copper 0.6 mm per board instead of 0.4 mm. The same seed gives the same placement,
+  and `chains=1` is the annealing as it was.
+- `Placer.keep_track(points, width, sides)`: room for a track drawn by hand later, a slanted
+  piece covered by small rectangles along it.
+
 ## 0.27.0
 
 Changed

@@ -210,3 +210,28 @@ fn a_pad_stays_over_the_area_given_for_it() {
         assert!((r.2 - 10.0).abs() < 1.0, "level with J1's pad: {:?}", r);
     }
 }
+
+/// Six placements annealed side by side, warmer ones and cooler ones that change places: what
+/// comes out is allowed, the same every time, and here cheaper than one placement annealed alone
+/// with the same moves.
+#[test]
+fn placements_side_by_side_find_more_than_one_alone() {
+    let alone = run(chain(json!({"spread": false, "moves": 300}))).1;
+    let (_, together) = run(chain(json!({"spread": false, "moves": 300, "chains": 6})));
+    let again = run(chain(json!({"spread": false, "moves": 300, "chains": 6}))).1;
+    assert_eq!(together.parts, again.parts);
+    assert!(
+        together.after.total() < alone.after.total(),
+        "{} against {} alone",
+        together.after.total(),
+        alone.after.total()
+    );
+    assert!(together.tried > 5 * alone.tried / 2, "{} moves tried, {} alone", together.tried, alone.tried);
+    let boxes = yards(&together);
+    for (i, a) in boxes.iter().enumerate() {
+        for b in &boxes[i + 1..] {
+            let apart = (a.0[0] - b.0[2]).max(b.0[0] - a.0[2]).max(a.0[1] - b.0[3]).max(b.0[1] - a.0[3]);
+            assert!(a.1 != b.1 || apart > 0.2 - 1e-6, "two courtyards {} mm apart", apart);
+        }
+    }
+}

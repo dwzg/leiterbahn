@@ -222,6 +222,19 @@ class Placer:
         """Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route."""
         self.keeps.append((x0, y0, x1, y1, sides))
 
+    def keep_track(self, points, width, sides="F", clear=0.2):
+        """Reserve the way of a track drawn by hand later: [(x, y), ...] in board mm, its width,
+        and `clear` mm beside it. A slanted piece is covered by small rectangles along it, not
+        by one round all of it. (Rectangles written by hand had left the slanted end of a track
+        uncovered, and a resistor was placed 0.09 mm from where it was then drawn.)"""
+        grow = width / 2 + clear
+        for (x0, y0), (x1, y1) in zip(points, points[1:], strict=False):
+            steps = max(1, math.ceil(min(abs(x1 - x0), abs(y1 - y0)) / 0.5))    # one, unless it is slanted
+            for k in range(steps):
+                ax, ay = x0 + (x1 - x0) * k / steps, y0 + (y1 - y0) * k / steps
+                bx, by = x0 + (x1 - x0) * (k + 1) / steps, y0 + (y1 - y0) * (k + 1) / steps
+                self.keep(min(ax, bx) - grow, min(ay, by) - grow, max(ax, bx) + grow, max(ay, by) + grow, sides)
+
     def inside(self, refs, *rects):
         """Each of refs must lie with its whole courtyard inside one of the rectangles
         (x0, y0, x1, y1); None for a side that is open. Called again for a part, both hold."""
@@ -742,7 +755,7 @@ class Placer:
                 out.append((round(d, 2), ref, pad, to, to_pad))
         return sorted(out, reverse=True)
 
-    def improve(self, tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False, **more):
+    def improve(self, tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False, chains=1, **more):
         """Move, turn and exchange the parts near() placed where that shortens the connections.
 
         Simulated annealing in `leiterbahn-route place`: `moves` tries per part, the same
@@ -758,6 +771,17 @@ class Placer:
         near() chose them. On a board of 287 parts the cost ended 9 % lower than without and
         the nets 15 % shorter, with every one of eight seeds.
 
+        chains: that many placements annealed side by side, each on a processor of its own, the
+        first as warm as the schedule says and the others warmer, up to 8 times; neighbours
+        change places every so often, readily when the warmer one is the cheaper. 16 chains of
+        80000 moves took 14 s on 16 cores and came to the cost one chain reaches with a million
+        moves in two minutes (287 parts: 3500 mm; one chain of 20000 moves: 3810, of 80000:
+        3690). Routed, 24 placements each way and that twice, against one chain of 20000:
+        tracks 2 % shorter, a tenth less left unmet (see unmet()), all 24 clean where one was
+        not; but quiet track beside noisy copper 0.6 mm per board instead of 0.4 mm, and
+        routing rounds and narrow track went up in one sample and down in the other. The cost
+        knows wire length, not room: one chain of 80000 moves had most of the gain.
+
         more: other fields of the problem (router/src/place.rs), as warm=0.3, reach=3.0 for a
         run that starts cool and moves parts by 3 mm at most.
         """
@@ -767,7 +791,7 @@ class Placer:
         os.makedirs(tmp_dir, exist_ok=True)
         src, out = os.path.join(tmp_dir, "place-problem.json"), os.path.join(tmp_dir, "place-result.json")
         with open(src, "w") as f:
-            json.dump(self.problem(moves, seed, weights, spread, **more), f)
+            json.dump(self.problem(moves, seed, weights, spread, chains=chains, **more), f)
         done = subprocess.run([binary(), "place", src, out], capture_output=True, text=True)
         if done.returncode:
             raise RuntimeError("leiterbahn-route place failed: " + done.stderr[-2000:])

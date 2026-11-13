@@ -111,6 +111,10 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
   round swings by a third. One board, eight placements: five settled at 0 to 57 cells in
   conflict, three at 142 to 167, and those three took 136 to 172 rounds to route. `where` names the
   pins, `in_way` the parts beside them, `heat` every square the router fought over.
+- `p.improve(moves=80000, chains=16)` where processors are free: the placer's cost keeps
+  falling with more moves, and sixteen placements that change places get in 14 s where one
+  gets in two minutes. Then rank a few dozen seeds by their routed result, not by the
+  placer's cost: it knows wire length, not room.
 - `negotiate(race=8)` where processors are free: eight runs with the nets in other orders,
   and the one that is clean in the fewest rounds wins. A board that takes 100 rounds one
   way takes 18 another, and nothing tells beforehand which.

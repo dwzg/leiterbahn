@@ -117,6 +117,7 @@ Placement by connections, on both board sides.
   - `.area(ref)`: 
   - `.free(ref, x, y, rot=0, back=False)`: True if ref fits at (x, y): on the board, allowed by the rules, clear of placed parts.
   - `.keep(x0, y0, x1, y1, sides='F')`: Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route.
+  - `.keep_track(points, width, sides='F', clear=0.2)`: Reserve the way of a track drawn by hand later: [(x, y), ...] in board mm, its width, and `clear` mm beside it. A slanted piece is covered by small rectangles along it, not by one round all of it. (Rectangles written by hand had left the slanted end of a track uncovered, and a resistor was placed 0.09 mm from where it was then drawn.)
   - `.inside(refs, *rects)`: Each of refs must lie with its whole courtyard inside one of the rectangles (x0, y0, x1, y1); None for a side that is open. Called again for a part, both hold.
   - `.outside(refs, x0, y0, x1, y1, sides='FB')`: None of refs may reach into the rectangle on the front ("F"), the back ("B") or both: keep() for these parts alone. For a part the router found in the way of the tracks at a place (see evict()).
   - `.over(net, *rects)`: Every pad on `net` lies within one of the rectangles (x0, y0, x1, y1; None: open).
@@ -145,7 +146,7 @@ Placement by connections, on both board sides.
   - `.evict(ref, x0, y0, x1, y1, sides='FB', reach=1.0, max_r=10.0)`: Move a part that near() or improve() placed out of the rectangle on those sides, to the cheapest free place near where it lay (the other side, where it may go there), and keep it out (outside()).
   - `.loose(limit=3.0)`: The parts near() or improve() placed that no tie as strong as `limit` holds at a pin: resistors and the like, not the capacitors at supply pins. What ease() may move.
   - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() or first() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
-  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False, **more)`: Move, turn and exchange the parts near() placed where that shortens the connections.
+  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False, chains=1, **more)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
 ## `leiterbahn.kicad.planar`
 

@@ -138,6 +138,22 @@ pub struct Problem {
     /// How far a part is shifted at most at the start of the annealing, mm; None: a quarter of the board.
     #[serde(default)]
     pub reach: Option<f64>,
+    /// Placements annealed side by side, each on a processor of its own, the first as warm as the
+    /// schedule says and the others warmer by even steps up to `hottest` times. Every so often two
+    /// neighbours change places, readily if the warmer one has the cheaper placement: so what a warm
+    /// one finds by leaping about is settled by a cool one, and nothing is lost when a cool one is
+    /// stuck. 1: one placement, as it always was.
+    #[serde(default = "d_chains")]
+    pub chains: usize,
+    #[serde(default = "d_hottest")]
+    pub hottest: f64,
+}
+
+fn d_chains() -> usize {
+    1
+}
+fn d_hottest() -> f64 {
+    8.0
 }
 
 fn d_spill() -> f64 {
@@ -215,6 +231,7 @@ struct Pose {
     form: usize,
 }
 
+#[derive(Clone)]
 struct State<'a> {
     problem: &'a Problem,
     forms: Vec<Vec<Option<Form>>>,
@@ -439,6 +456,97 @@ impl State<'_> {
     }
 }
 
+/// Moves `from` to `to` of the `total` of an annealing run (`span`), `hot` times as warm as the
+/// schedule says. `tally`: moves tried and kept.
+fn sweep(state: &mut State, rng: &mut Rng, free: &[usize], span: [u64; 3], hot: f64, tally: &mut (u64, u64)) {
+    let [from, to, total] = span;
+    let problem = state.problem;
+    let (mut nets, mut ties) = (Vec::new(), Vec::new());
+    let reach = problem.reach.unwrap_or(problem.size[0].max(problem.size[1]) / 4.0);
+    for k in from..to {
+        let progress = k as f64 / total as f64;
+        let warmth = hot * problem.warm * (problem.cold / problem.warm).powf(progress);
+        let radius = (reach * (1.0 - progress).powi(2)).max(4.0 * problem.grid);
+        let a = free[rng.below(free.len())];
+        let kind = rng.unit();
+        let mut who = vec![a];
+        let ra = state.rect(a);
+        let (cx, cy) = ((ra[0] + ra[2]) / 2.0, (ra[1] + ra[3]) / 2.0);
+        let old_form = state.pose[a].form;
+        let mut next = Vec::new();
+        if kind < 0.6 {
+            // a shift
+            let (dx, dy) = ((rng.unit() * 2.0 - 1.0) * radius, (rng.unit() * 2.0 - 1.0) * radius);
+            next.push(state.pose_at(a, old_form, cx + dx, cy + dy));
+        } else if kind < 0.8 {
+            // another rotation or side, about its middle
+            let form = rng.below(8);
+            if form == old_form || state.forms[a][form].is_none() {
+                continue;
+            }
+            next.push(state.pose_at(a, form, cx, cy));
+        } else {
+            // change places with another part, each keeping its rotation and taking the other's side
+            let b = free[rng.below(free.len())];
+            let rb = state.rect(b);
+            let (bx, by) = ((rb[0] + rb[2]) / 2.0, (rb[1] + rb[3]) / 2.0);
+            let (fa, fb) = (old_form / 2 * 2 + state.pose[b].form % 2, state.pose[b].form / 2 * 2 + old_form % 2);
+            if b == a || state.forms[a][fa].is_none() || state.forms[b][fb].is_none() || (cx - bx).abs().max((cy - by).abs()) > 2.0 * radius + 3.0 {
+                continue;
+            }
+            next.push(state.pose_at(a, fa, bx, by));
+            next.push(state.pose_at(b, fb, cx, cy));
+            who.push(b);
+        }
+        tally.0 += 1;
+        let was = state.share(&who, &mut nets, &mut ties) + problem.crowd * state.excess;
+        let old: Vec<Pose> = who.iter().map(|&p| state.pose[p]).collect();
+        for &p in &who {
+            state.index(p, false);
+            state.count(p, -1);
+        }
+        for (&p, &pose) in who.iter().zip(&next) {
+            state.pose[p] = pose;
+        }
+        // each against what lies there, and against each other: the first goes in before the second is asked
+        let mut fine = true;
+        let mut put = 0;
+        for &p in &who {
+            fine = state.allowed(p);
+            if !fine {
+                break;
+            }
+            state.index(p, true);
+            put += 1;
+        }
+        for &p in &who {
+            state.count(p, 1);
+        }
+        let delta = if fine {
+            state.share(&who, &mut nets, &mut ties) + problem.crowd * state.excess - was
+        } else {
+            0.0
+        };
+        if fine && (delta <= 0.0 || rng.unit() < (-delta / warmth).exp()) {
+            tally.1 += 1;
+        } else {
+            for &p in &who[..put] {
+                state.index(p, false);
+            }
+            for &p in &who {
+                state.count(p, -1);
+            }
+            for (&p, &pose) in who.iter().zip(&old) {
+                state.pose[p] = pose;
+            }
+            for &p in &who {
+                state.index(p, true);
+                state.count(p, 1);
+            }
+        }
+    }
+}
+
 /// Improve the placement. `say` gets a line now and then.
 pub fn place(problem: &Problem, say: &mut dyn FnMut(String)) -> Result<Placed, String> {
     let n = problem.parts.len();
@@ -592,100 +700,80 @@ pub fn place(problem: &Problem, say: &mut dyn FnMut(String)) -> Result<Placed, S
     }
     if !free.is_empty() {
         let total = problem.moves * free.len() as u64;
-        let (mut nets, mut ties) = (Vec::new(), Vec::new());
         let reach = problem.reach.unwrap_or(problem.size[0].max(problem.size[1]) / 4.0);
-        let mut running = result.started.total();
-        for k in 0..total {
-            let progress = k as f64 / total as f64;
-            let warmth = problem.warm * (problem.cold / problem.warm).powf(progress);
-            let radius = (reach * (1.0 - progress).powi(2)).max(4.0 * problem.grid);
-            let a = free[rng.below(free.len())];
-            let kind = rng.unit();
-            let mut who = vec![a];
-            let ra = state.rect(a);
-            let (cx, cy) = ((ra[0] + ra[2]) / 2.0, (ra[1] + ra[3]) / 2.0);
-            let old_form = state.pose[a].form;
-            let mut next = Vec::new();
-            if kind < 0.6 {
-                // a shift
-                let (dx, dy) = ((rng.unit() * 2.0 - 1.0) * radius, (rng.unit() * 2.0 - 1.0) * radius);
-                next.push(state.pose_at(a, old_form, cx + dx, cy + dy));
-            } else if kind < 0.8 {
-                // another rotation or side, about its middle
-                let form = rng.below(8);
-                if form == old_form || state.forms[a][form].is_none() {
-                    continue;
+        let tenth = (total / 10).max(1);
+        let mut tally = (0u64, 0u64);
+        let report = |say: &mut dyn FnMut(String), done: u64, cost: f64| {
+            let radius = (reach * (1.0 - (done - 1) as f64 / total as f64).powi(2)).max(4.0 * problem.grid);
+            say(format!(
+                "{:3.0} %: cost {:.0} mm, parts move within {:.1} mm",
+                done as f64 * 100.0 / total as f64,
+                cost,
+                radius
+            ));
+        };
+        if problem.chains <= 1 {
+            let mut from = 0;
+            while from < total {
+                let to = ((from / tenth + 1) * tenth).min(total);
+                sweep(&mut state, &mut rng, &free, [from, to, total], 1.0, &mut tally);
+                if to.is_multiple_of(tenth) {
+                    report(say, to, state.cost().total());
                 }
-                next.push(state.pose_at(a, form, cx, cy));
-            } else {
-                // change places with another part, each keeping its rotation and taking the other's side
-                let b = free[rng.below(free.len())];
-                let rb = state.rect(b);
-                let (bx, by) = ((rb[0] + rb[2]) / 2.0, (rb[1] + rb[3]) / 2.0);
-                let (fa, fb) = (old_form / 2 * 2 + state.pose[b].form % 2, state.pose[b].form / 2 * 2 + old_form % 2);
-                if b == a || state.forms[a][fa].is_none() || state.forms[b][fb].is_none() || (cx - bx).abs().max((cy - by).abs()) > 2.0 * radius + 3.0 {
-                    continue;
+                from = to;
+            }
+        } else {
+            // slot 0 is the coolest; a placement moves from slot to slot
+            let chains = problem.chains;
+            let hot: Vec<f64> = (0..chains).map(|c| problem.hottest.powf(c as f64 / (chains - 1) as f64)).collect();
+            let mut slots: Vec<(State, Rng, (u64, u64))> = (0..chains)
+                .map(|c| {
+                    (
+                        state.clone(),
+                        Rng((problem.seed.wrapping_add(c as u64 * 7919)).wrapping_mul(0x9E3779B97F4A7C15) | 1),
+                        (0, 0),
+                    )
+                })
+                .collect();
+            let turn = (total / 200).max(1); // (50 to 5000 turns made no difference to the result)
+            let (mut from, mut round, mut swaps) = (0, 0u64, 0u64);
+            while from < total {
+                let to = (from + turn).min(total);
+                let free = &free;
+                std::thread::scope(|scope| {
+                    for (slot, &heat) in slots.iter_mut().zip(&hot) {
+                        scope.spawn(move || sweep(&mut slot.0, &mut slot.1, free, [from, to, total], heat, &mut slot.2));
+                    }
+                });
+                let warmth = problem.warm * (problem.cold / problem.warm).powf(to as f64 / total as f64);
+                let costs: Vec<f64> = slots.iter().map(|slot| slot.0.cost().total()).collect();
+                let mut costs = costs;
+                for c in ((round % 2) as usize..chains - 1).step_by(2) {
+                    // the cooler one takes the warmer one's placement: always if that is the cheaper
+                    let gain = (costs[c] - costs[c + 1]) * (1.0 / (warmth * hot[c]) - 1.0 / (warmth * hot[c + 1]));
+                    if gain >= 0.0 || rng.unit() < gain.exp() {
+                        let (a, b) = slots.split_at_mut(c + 1);
+                        std::mem::swap(&mut a[c].0, &mut b[0].0);
+                        costs.swap(c, c + 1);
+                        swaps += 1;
+                    }
                 }
-                next.push(state.pose_at(a, fa, bx, by));
-                next.push(state.pose_at(b, fb, cx, cy));
-                who.push(b);
-            }
-            result.tried += 1;
-            let was = state.share(&who, &mut nets, &mut ties) + problem.crowd * state.excess;
-            let old: Vec<Pose> = who.iter().map(|&p| state.pose[p]).collect();
-            for &p in &who {
-                state.index(p, false);
-                state.count(p, -1);
-            }
-            for (&p, &pose) in who.iter().zip(&next) {
-                state.pose[p] = pose;
-            }
-            // each against what lies there, and against each other: the first goes in before the second is asked
-            let mut fine = true;
-            let mut put = 0;
-            for &p in &who {
-                fine = state.allowed(p);
-                if !fine {
-                    break;
+                if to / tenth > from / tenth {
+                    report(say, to, costs[0]);
                 }
-                state.index(p, true);
-                put += 1;
+                (from, round) = (to, round + 1);
             }
-            for &p in &who {
-                state.count(p, 1);
-            }
-            let delta = if fine {
-                state.share(&who, &mut nets, &mut ties) + problem.crowd * state.excess - was
-            } else {
-                0.0
-            };
-            if fine && (delta <= 0.0 || rng.unit() < (-delta / warmth).exp()) {
-                result.kept += 1;
-                running += delta;
-            } else {
-                for &p in &who[..put] {
-                    state.index(p, false);
-                }
-                for &p in &who {
-                    state.count(p, -1);
-                }
-                for (&p, &pose) in who.iter().zip(&old) {
-                    state.pose[p] = pose;
-                }
-                for &p in &who {
-                    state.index(p, true);
-                    state.count(p, 1);
-                }
-            }
-            if (k + 1) % (total / 10).max(1) == 0 {
-                say(format!(
-                    "{:3.0} %: cost {:.0} mm, parts move within {:.1} mm",
-                    (k + 1) as f64 * 100.0 / total as f64,
-                    running,
-                    radius
-                ));
-            }
+            let best = (0..chains)
+                .min_by(|&a, &b| slots[a].0.cost().total().total_cmp(&slots[b].0.cost().total()))
+                .unwrap();
+            say(format!(
+                "{} placements side by side changed places {} times; the best was in slot {}",
+                chains, swaps, best
+            ));
+            tally = slots.iter().fold((0, 0), |t, slot| (t.0 + slot.2 .0, t.1 + slot.2 .1));
+            state = slots.swap_remove(best).0;
         }
+        (result.tried, result.kept) = tally;
     }
     result.after = state.cost();
     for &p in &free {
