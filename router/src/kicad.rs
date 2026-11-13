@@ -80,6 +80,8 @@ pub struct Board {
 #[derive(Debug, Clone)]
 pub struct Drawn {
     pub layer: usize,
+    /// Drawn on the solder mask over that layer, not on the copper.
+    pub mask: bool,
     pub rect: Option<[f64; 4]>,
     pub seg: [f64; 4],
     pub r: f64,
@@ -140,6 +142,7 @@ fn drawn(item: &Sexp, layer: usize, origin: [f64; 2], angle: f64, out: &mut Vec<
     let line = |a: [f64; 2], b: [f64; 2], out: &mut Vec<Drawn>| {
         out.push(Drawn {
             layer,
+            mask: false,
             rect: None,
             seg: [a[0], a[1], b[0], b[1]],
             r: half,
@@ -150,6 +153,7 @@ fn drawn(item: &Sexp, layer: usize, origin: [f64; 2], angle: f64, out: &mut Vec<
         pts.iter().for_each(|&p| grow(&mut rect, p));
         out.push(Drawn {
             layer,
+            mask: false,
             rect: Some([rect[0] - half, rect[1] - half, rect[2] + half, rect[3] + half]),
             seg: [rect[0], rect[1], rect[2], rect[3]],
             r: 0.0,
@@ -254,6 +258,7 @@ fn drawn(item: &Sexp, layer: usize, origin: [f64; 2], angle: f64, out: &mut Vec<
             corners.iter().for_each(|&p| grow(&mut rect, p));
             out.push(Drawn {
                 layer,
+                mask: false,
                 rect: Some(rect),
                 seg: [rect[0], rect[1], rect[2], rect[3]],
                 r: 0.0,
@@ -395,7 +400,9 @@ impl Board {
                             } else if on == Some("Edge.Cuts") && part.head() != Some("fp_text") {
                                 drawn(part, 0, origin, angle, &mut board.cuts);
                             } else if let Some(layer) = on.and_then(bared) {
+                                let had = board.drawn.len();
                                 drawn(part, layer, origin, angle, &mut board.drawn);
+                                board.drawn[had..].iter_mut().for_each(|d| d.mask = true);
                             }
                         }
                     }
@@ -403,7 +410,10 @@ impl Board {
                 Some("gr_text") => {
                     let on = item.find("layer").and_then(|l| l.text(1));
                     if let Some(layer) = on.and_then(|l| index.get(l).copied()).or_else(|| on.and_then(bared)) {
+                        let had = board.drawn.len();
                         drawn(item, layer, [0.0, 0.0], 0.0, &mut board.drawn);
+                        let mask = on.and_then(bared).is_some();
+                        board.drawn[had..].iter_mut().for_each(|d| d.mask = mask);
                     }
                 }
                 Some("segment") => {
@@ -458,7 +468,10 @@ impl Board {
                 Some("gr_line") | Some("gr_arc") | Some("gr_rect") | Some("gr_poly") | Some("gr_circle") => {
                     let on = item.find("layer").and_then(|l| l.text(1));
                     if let Some(layer) = on.and_then(|l| index.get(l).copied()).or_else(|| on.and_then(bared)) {
+                        let had = board.drawn.len();
                         drawn(item, layer, [0.0, 0.0], 0.0, &mut board.drawn);
+                        let mask = on.and_then(bared).is_some();
+                        board.drawn[had..].iter_mut().for_each(|d| d.mask = mask);
                     }
                     if item.find("layer").and_then(|l| l.text(1)) != Some("Edge.Cuts") {
                         continue;
@@ -482,6 +495,21 @@ impl Board {
         if outline != EMPTY {
             board.edge = Some(outline);
         }
+        // An opening drawn in the mask over a pad is that pad's (a solder jumper's two pads under
+        // one opening): tracks must reach the pad. Only an opening over no pad is kept clear.
+        let pads = &board.pads;
+        board.drawn.retain(|d| {
+            let b = d.rect.unwrap_or([
+                d.seg[0].min(d.seg[2]) - d.r,
+                d.seg[1].min(d.seg[3]) - d.r,
+                d.seg[0].max(d.seg[2]) + d.r,
+                d.seg[1].max(d.seg[3]) + d.r,
+            ]);
+            !d.mask
+                || !pads
+                    .iter()
+                    .any(|p| p.layers.contains(&d.layer) && p.rect[0] <= b[2] && b[0] <= p.rect[2] && p.rect[1] <= b[3] && b[1] <= p.rect[3])
+        });
         Ok(board)
     }
 }
@@ -718,6 +746,38 @@ fn root(parent: &mut [usize], mut i: usize) -> usize {
         i = parent[i];
     }
     i
+}
+
+impl Board {
+    /// Take the inner layers that pours fill by more than `share` of the board for planes, as
+    /// layers of type `power` are: no tracks there, and what is not on the pour reaches it by a
+    /// via. Returns their names. (Many boards leave all layers as `signal`: a board of four
+    /// layers with ground and supply poured over the two inner ones had those nets joined pad
+    /// by pad with tracks, 371 nets in 830 s.)
+    pub fn planes(&mut self, share: f64) -> Vec<String> {
+        let Some(edge) = self.edge else { return Vec::new() };
+        let board = (edge[2] - edge[0]) * (edge[3] - edge[1]);
+        let mut found = Vec::new();
+        for layer in 1..self.copper.len().saturating_sub(1) {
+            let filled: f64 = self
+                .zones
+                .iter()
+                .filter(|z| z.keepout.is_none() && !z.net.is_empty())
+                .flat_map(|z| z.fills.iter().filter(|f| f.0 == layer))
+                .map(|(_, pts)| {
+                    let twice: f64 = (0..pts.len())
+                        .map(|k| pts[k][0] * pts[(k + 1) % pts.len()][1] - pts[(k + 1) % pts.len()][0] * pts[k][1])
+                        .sum();
+                    twice.abs() / 2.0
+                })
+                .sum();
+            if self.copper[layer].1 && filled > share * board {
+                self.copper[layer].1 = false;
+                found.push(self.copper[layer].0.clone());
+            }
+        }
+        found
+    }
 }
 
 pub struct Options {

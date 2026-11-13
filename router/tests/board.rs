@@ -306,8 +306,35 @@ fn a_pads_own_clearance_and_a_drawn_mask_opening_count() {
         board.drawn.iter().any(|d| d.layer == 1 && d.rect.is_some()),
         "the opening in the back's mask, on the back"
     );
+    // an opening over a pad is that pad's: R2's pads on the back lie at (14, 6) and (16, 6)
+    let over = text.replace("(gr_rect (start 12 8) (end 14 9)", "(gr_rect (start 13 5) (end 17 7)");
+    assert!(Board::parse(&over).unwrap().drawn.is_empty());
     let rules = Rules::parse(PROJECT, &board).unwrap();
     let p = problem(&board, &rules, &options()).unwrap();
     let hole = p.fixed.iter().find(|s| s.hole == 1.0).unwrap();
     assert_eq!(hole.clearance, 1.7);
+}
+
+/// An inner layer of type signal that a pour fills is a plane all the same.
+#[test]
+fn an_inner_layer_filled_by_a_pour_is_taken_for_a_plane() {
+    let text = board_text()
+        .replace(
+            r#"(0 "F.Cu" signal) (2 "B.Cu" signal)"#,
+            r#"(0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) (2 "B.Cu" signal)"#,
+        )
+        .replace(r#"(zone (net "GND") (layer "B.Cu")"#, r#"(zone (net "GND") (layer "In1.Cu")"#)
+        .replace(
+            r#"(filled_polygon (layer "B.Cu") (pts (xy 9 1) (xy 19 1) (xy 19 11) (xy 9 11))"#,
+            r#"(filled_polygon (layer "In1.Cu") (pts (xy 1 1) (xy 19 1) (xy 19 11) (xy 1 11))"#,
+        );
+    let mut board = Board::parse(&text).unwrap();
+    assert_eq!(board.copper.iter().map(|c| c.1).collect::<Vec<_>>(), vec![true, true, true, true]);
+    assert_eq!(
+        board.planes(0.5),
+        vec!["In1.Cu".to_string()],
+        "180 of 240 square mm are filled; In2 has no pour"
+    );
+    assert_eq!(board.copper.iter().map(|c| c.1).collect::<Vec<_>>(), vec![true, false, true, true]);
+    assert!(board.planes(0.5).is_empty());
 }

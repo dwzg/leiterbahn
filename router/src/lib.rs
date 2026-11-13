@@ -1654,7 +1654,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             // whole nets. The first is two to three times as fast on boards that come clean; a board
             // that stalls is helped by nets that take wholly new ways (one of ten boards came clean
             // only so, another kept one connection open instead of two).
-            if problem.relay && restarts == 0 {
+            // (Not a net of many pads: laid again whole in every round, a ground net of some hundred
+            // pads took a board from 14 minutes to more than 25 over two crossings of five cells.)
+            if problem.relay && (restarts == 0 || router.jobs[n].cells.len() > 24) {
                 router.relay(n, Some(press), 1.0);
             } else {
                 router.lay(n, Some(press), 1.0);

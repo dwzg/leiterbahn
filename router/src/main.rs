@@ -3,14 +3,18 @@
 //!
 //! leiterbahn-route board in.kicad_pcb out.kicad_pcb [--step 0.05] [--via-cost 3] [--max-iter 200]
 //!                        [--hole-clear mm] [--weight NET=4]... [--only NET]... [--problem file.json] [--report file.tsv]
-//!                        [--pours trust|ignore] [--room 0.8]
+//!                        [--pours trust|ignore] [--room 0.8] [--planes found|typed]
 //!     Routes every net of a KiCad board that is in more than one piece and writes the board with
 //!     the new tracks. The rules come from the .kicad_pro beside the board. --problem also writes
 //!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
 //!     in mm, their cost with the net alone on the board, pieces left apart. A pad on a pour of
 //!     its net is joined by tracks like any other, unless the pour is on a plane layer; --pours
 //!     trust takes every filled pour as a connection (new tracks may cut it apart). Tracks keep
-//!     --room mm from a pad on a pour where they can, for the spokes that hold it.
+//!     --room mm from a pad on a pour where they can, for the spokes that hold it. A plane is a
+//!     layer of type power: no tracks on it, vias into it. --planes found also takes every inner
+//!     layer for one that pours fill by more than half. (No share tells a plane from a signal
+//!     layer flooded with ground: of five boards, the inner layers their designers left without
+//!     tracks were filled by 68 to 73 %, those with up to 539 tracks by 58 to 74 %.)
 //!
 //! leiterbahn-route place problem.json result.json
 //!     Improves a placement (see `place.rs`): parts are shifted, turned and exchanged where that
@@ -41,6 +45,7 @@ fn main() {
             room: 0.8,
         };
         let mut dump = None;
+        let mut find_planes = false;
         let mut report = None;
         let mut rest = args[4..].iter();
         while let Some(flag) = rest.next() {
@@ -55,6 +60,11 @@ fn main() {
                 "--report" => report = Some(value.clone()),
                 "--only" => options.only.push(value.clone()),
                 "--room" => options.room = number(),
+                "--planes" => match value.as_str() {
+                    "found" => find_planes = true,
+                    "typed" => find_planes = false,
+                    _ => fail(format!("--planes {}: found or typed", value)),
+                },
                 "--pours" => match value.as_str() {
                     "trust" => options.pours = true,
                     "ignore" => options.pours = false,
@@ -68,14 +78,19 @@ fn main() {
             }
         }
         let text = read(&args[2]);
-        let board = kicad::Board::parse(&text).unwrap_or_else(|e| fail(format!("{}: {}", args[2], e)));
+        let mut board = kicad::Board::parse(&text).unwrap_or_else(|e| fail(format!("{}: {}", args[2], e)));
+        if find_planes {
+            for layer in board.planes(0.5) {
+                eprintln!("{} is taken for a plane: pours fill more than half of it", layer);
+            }
+        }
         let project = args[2].strip_suffix(".kicad_pcb").unwrap_or(&args[2]).to_string() + ".kicad_pro";
         let rules = kicad::Rules::parse(&read(&project), &board).unwrap_or_else(|e| fail(format!("{}: {}", project, e)));
         let problem = kicad::problem(&board, &rules, &options).unwrap_or_else(|e| fail(format!("{}: {}", args[2], e)));
         if let Some(path) = dump {
             fs::write(&path, serde_json::to_string(&problem).unwrap()).unwrap_or_else(|e| fail(format!("{}: {}", path, e)));
         }
-        let pieces: usize = problem.nets.iter().map(|n| n.pieces.len() - 1).sum();
+        let pieces: usize = problem.nets.iter().map(|n| n.pieces.len() - 1 + !n.plane.is_empty() as usize).sum();
         eprintln!("{} nets in pieces, {} connections to make", problem.nets.len(), pieces);
         let solution = route(&problem, &mut |line| eprintln!("{}", line));
         let (cost, alone): (f64, f64) = solution.nets.iter().fold((0.0, 0.0), |t, n| (t.0 + n.cost, t.1 + n.alone));

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.32.1
+
+Fixed
+- An opening drawn in the solder mask over a pad is that pad's and no longer in the way (0.32.0
+  shut the two pads of a solder jumper under one opening off from their nets). Only an opening
+  over no pad is kept clear of tracks.
+
+Changed
+- After the rounds have stalled, a net of more than 24 pieces is still laid again only where
+  another lies on it; smaller nets are laid again whole, as before. A ground net of some
+  hundred pads, laid whole in every round, took a board of 1458 connections past 25 minutes
+  over two crossings of five cells each.
+
+Added
+- `leiterbahn-route board --planes found`: every inner layer that pours fill by more than
+  half is taken for a plane, like a layer of type `power`. A board of four layers typed as
+  signal with ground and supply poured inside: 34 s instead of 454 s, one connection open
+  either way. Not the default: no share of fill tells a plane from a signal layer flooded
+  with ground (inner layers their designers left without tracks: filled by 68 to 73 %; with
+  up to 539 tracks: 58 to 74 %), and a board that needs its inner layers for tracks does
+  not route without them.
+
 ## 0.32.0
 
 `leiterbahn-route board`, further on the demo boards:
