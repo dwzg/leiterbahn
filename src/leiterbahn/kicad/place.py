@@ -53,6 +53,42 @@ def with_lanes(box, pads, lane):
     return (x0, y0, x1, y1)
 
 
+def ease(judge, movable, most=3, passes=2, gain=0.2, many=None, say=None):
+    """Let the router say which parts are in the way of the tracks, and move them out, one at a time.
+
+    judge(out) is yours: it places the board anew, calls Placer.evict(*t) for each t of `out`
+    ([(ref, x0, y0, x1, y1, sides)]) after the placement, prepares the board as for routing and
+    returns Board.glance() of it (16 rounds). movable: the parts that may be moved, e.g.
+    Placer.loose() of your placement. Each pass takes the `most` movable parts that stand
+    beside the most cells in conflict (glance()["in_way"]), tries each alone on top of what was
+    kept before, and keeps the one that leaves the fewest cells in conflict (`settled`), if
+    those are fewer by the share `gain`; otherwise it stops. many(outs) may judge several at
+    once (processes): by default one after the other.
+
+    Returns (out, look, tried): what to evict, the glance with it, and [(ref or None,
+    settled)] for all that was looked at. On a board of 287 parts this found the one resistor
+    that made three of eight placements hard to route, in one pass of four glances each: 167,
+    163 and 142 cells in conflict became 39, 12 and 36.
+    """
+    many = many or (lambda outs: [judge(out) for out in outs])
+    out, look = [], many([[]])[0]
+    tried = [(None, look["settled"])]
+    for _ in range(passes):
+        todo = [t for t in look["in_way"] if t[0] in movable and all(t[0] != o[0] for o in out)][:most]
+        if not todo or look["settled"] == 0:
+            break
+        looks = many([out + [(t[0], *t[2], t[3])] for t in todo])
+        tried += [(t[0], got["settled"]) for t, got in zip(todo, looks, strict=True)]
+        if say:
+            say("in the way: " + ", ".join("%s (%s cells left of %s)" % (t[0], got["settled"], look["settled"])
+                                           for t, got in zip(todo, looks, strict=True)))
+        best = min(range(len(todo)), key=lambda k: looks[k]["settled"])
+        if looks[best]["settled"] > (1.0 - gain) * look["settled"]:
+            break
+        out, look = out + [(todo[best][0], *todo[best][2], todo[best][3])], looks[best]
+    return out, look, tried
+
+
 class Placer:
     """Places the footprints of a Board that has its outline.
 
@@ -89,6 +125,7 @@ class Placer:
         self.rules = []
         self.keeps = []                   # (x0, y0, x1, y1, sides)
         self.areas = {}                   # ref -> [[(x0, y0, x1, y1)]]: inside one rectangle of each list
+        self.bans = {}                    # ref -> [(x0, y0, x1, y1, sides)]: not in any of these
         self.planes_at = {}               # net -> [(x0, y0, x1, y1)]: where a pad on that net may lie
         self.hosts_from = 3               # a part with this many pads can be what a resistor or capacitor belongs to
         self.tied_to = {}                 # (ref, pad) -> (to, to_pad, weight), said with tie()
@@ -153,7 +190,7 @@ class Placer:
                                  for dx, dy in _pads.get(pad, ())):
                 return False
         mine = "FB" if through else "B" if back else "F"
-        for x0, y0, x1, y1, sides in self.keeps:
+        for x0, y0, x1, y1, sides in self.keeps + self.bans.get(ref, []):
             if any(c in sides for c in mine) and box[0] < x1 and x0 < box[2] and box[1] < y1 and y0 < box[3]:
                 return False
         if any(rule(ref, box, back, through) for rule in self.rules):
@@ -178,6 +215,13 @@ class Placer:
         group = [tuple(v if v is not None else (-far if k < 2 else far) for k, v in enumerate(r)) for r in rects]
         for ref in refs:
             self.areas.setdefault(ref, []).append(group)
+
+    def outside(self, refs, x0, y0, x1, y1, sides="FB"):
+        """None of refs may reach into the rectangle on the front ("F"), the back ("B") or
+        both: keep() for these parts alone. For a part the router found in the way of the
+        tracks at a place (see evict())."""
+        for ref in refs:
+            self.bans.setdefault(ref, []).append((x0, y0, x1, y1, sides))
 
     def over(self, net, *rects):
         """Every pad on `net` lies within one of the rectangles (x0, y0, x1, y1; None: open).
@@ -397,7 +441,7 @@ class Placer:
         for net in set(self.pins.get(ref, {}).values()):
             self.pads[net] = [t for t in self.pads.get(net, ()) if t[2] != ref]
 
-    def problem(self, moves=20000, seed=1, weights=None, spread=False):
+    def problem(self, moves=20000, seed=1, weights=None, spread=False, **more):
         """The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
 
         The parts near() placed may move, to the sides and rotations it was allowed; what was
@@ -423,7 +467,8 @@ class Placer:
                 mine = self.pins.get(ref, {})
                 shapes[key] = dict(box=list(box), pads={k: list(v[0]) for k, v in pads.items() if k in mine})
             part = dict(name=ref, at=[x, y, rot % 360 if auto else 0, back], fixed=not auto, through=through,
-                        shapes=shapes, inside=[[list(r) for r in group] for group in self.areas.get(ref, ())])
+                        shapes=shapes, inside=[[list(r) for r in group] for group in self.areas.get(ref, ())],
+                        outside=[dict(box=list(k[:4]), sides=k[4]) for k in self.bans.get(ref, ())])
             if auto:
                 part.update(anchor=list(auto[0]), pull=auto[1])
             parts.append(part)
@@ -446,7 +491,7 @@ class Placer:
                             if mine[pad] in self.planes_at and pad in next(iter(part["shapes"].values()))["pads"]]
         return dict(size=list(self.size), edge=self.edge, gap=self.gap, back_cost=self.back_cost, moves=moves,
                     seed=seed, keeps=[dict(box=list(k[:4]), sides=k[4]) for k in self.keeps], parts=parts, nets=nets,
-                    tethers=tethers, spread=bool(spread))
+                    tethers=tethers, spread=bool(spread), **more)
 
     def ties(self):
         """Which pad of a resistor or capacitor belongs at which pin: [(ref, pad, to, to_pad, weight)].
@@ -629,6 +674,38 @@ class Placer:
                 moved.append((part, ref, pad, round(was, 1), round(now, 1)))
             self.auto[part] = auto
 
+    def evict(self, ref, x0, y0, x1, y1, sides="FB", reach=1.0, max_r=10.0):
+        """Move a part that near() or improve() placed out of the rectangle on those sides, to
+        the cheapest free place near where it lay (the other side, where it may go there), and
+        keep it out (outside()).
+
+        For a part that stands in the way of the tracks: Board.glance() names those. On a board
+        of 287 parts, three of eight placements still had 142 to 167 cells in conflict after 16
+        rounds and five had 0 to 57. The three had one resistor on the back below a row of the
+        controller's pins, between the capacitors that belong there; with it moved to the
+        front they had 12 to 39. Wire length, ties and the density of pads were the same in
+        all eight: only the router saw it. Returns (x, y, rot, back), or None if there is no
+        room within max_r mm: then the part stays and may stay.
+        """
+        old, auto, served = self.at[ref], self.auto[ref], dict(self.served)
+        self._lift(ref)
+        self.bans.setdefault(ref, []).append((x0, y0, x1, y1, sides))
+        try:
+            self.near(ref, auto[0], start=old[:2], sides=auto[2], rots=auto[3], pull=auto[1], step=0.25,
+                      reach=reach, max_r=max_r)
+        except RuntimeError:
+            self.bans[ref].pop()
+            self.fix(ref, *old)
+            self.served = served
+        self.auto[ref] = auto
+        return None if self.at[ref] == old else self.at[ref]
+
+    def loose(self, limit=3.0):
+        """The parts near() or improve() placed that no tie as strong as `limit` holds at a pin:
+        resistors and the like, not the capacitors at supply pins. What ease() may move."""
+        held = {t[0] for t in self.ties() if t[4] >= limit}
+        return sorted(ref for ref in self.auto if ref not in held)
+
     def strays(self, limit=3.0):
         """The resistors and capacitors further than `limit` mm from the pin they belong at
         (see ties()), of those near() or first() placed: [(mm, ref, pad, to, to_pad)], the furthest
@@ -643,7 +720,7 @@ class Placer:
                 out.append((round(d, 2), ref, pad, to, to_pad))
         return sorted(out, reverse=True)
 
-    def improve(self, tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False):
+    def improve(self, tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False, **more):
         """Move, turn and exchange the parts near() placed where that shortens the connections.
 
         Simulated annealing in `leiterbahn-route place`: `moves` tries per part, the same
@@ -658,6 +735,9 @@ class Placer:
         set down at an allowed place close by (router/src/place/spread.rs). The sides stay as
         near() chose them. On a board of 287 parts the cost ended 9 % lower than without and
         the nets 15 % shorter, with every one of eight seeds.
+
+        more: other fields of the problem (router/src/place.rs), as warm=0.3, reach=3.0 for a
+        run that starts cool and moves parts by 3 mm at most.
         """
         from .negotiate import binary
         if self.rules:
@@ -665,7 +745,7 @@ class Placer:
         os.makedirs(tmp_dir, exist_ok=True)
         src, out = os.path.join(tmp_dir, "place-problem.json"), os.path.join(tmp_dir, "place-result.json")
         with open(src, "w") as f:
-            json.dump(self.problem(moves, seed, weights, spread), f)
+            json.dump(self.problem(moves, seed, weights, spread, **more), f)
         done = subprocess.run([binary(), "place", src, out], capture_output=True, text=True)
         if done.returncode:
             raise RuntimeError("leiterbahn-route place failed: " + done.stderr[-2000:])

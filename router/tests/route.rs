@@ -463,3 +463,65 @@ fn a_track_gives_room_to_a_pad_that_asks_for_it() {
     assert!(nearest[0].0 < 0.35 && nearest[1].0 >= 0.8 + 0.075 - 0.06, "nearest to the pad: {:?}", nearest);
     assert!(nearest[1].1 < nearest[0].1 + 1.5, "cost {:?}", nearest);
 }
+
+/// Sixteen pads in a square of four by four, 6 mm apart. Each search is for the nearest pad not
+/// yet joined: with more than twelve of them the estimate of the distance was one box round
+/// them all, nothing inside it, and every search spread in all directions from all the net
+/// had laid (here eight times the cells).
+#[test]
+fn a_net_of_many_pads_is_searched_towards_the_nearest_pad() {
+    let pieces: Vec<_> = (0..16)
+        .map(|k| json!([pad(6.0 + 6.0 * (k % 4) as f64, 6.0 + 6.0 * (k / 4) as f64, 0)]))
+        .collect();
+    let s = solve(json!({
+        "box": [0, 0, 30, 30], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "relax": 0,
+        "nets": [{"name": "A", "width": 0.2, "clearance": 0.2, "pieces": pieces}]
+    }));
+    assert!(s.nets[0].open.is_empty() && s.nets[0].paths.len() == 15);
+    assert!(s.nets[0].cost < 90.5, "{}", s.nets[0].cost);
+    assert!(s.expanded < 20_000, "{} cells opened", s.expanded); // 8580; with the box 66930
+}
+
+/// A look says where the nets were in each other's way: two nets on one layer that must cross.
+#[test]
+fn a_glance_says_where_the_nets_fought() {
+    let s = solve(json!({
+        "box": [0, 0, 10, 6], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        "glance": true, "max_iter": 4,
+        "nets": [{"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(0.4, 3.0, 0)], [pad(9.6, 3.0, 0)]]},
+                 {"name": "B", "width": 0.2, "clearance": 0.2, "pieces": [[pad(5.0, 0.4, 0)], [pad(5.0, 5.6, 0)]]}]
+    }));
+    assert!(s.nets.is_empty() && !s.stuck.is_empty());
+    let hottest = s.heat.iter().max_by(|a, b| a.heat.total_cmp(&b.heat)).expect("no heat");
+    assert!(
+        (hottest.x - 4.5).abs() <= 1.0 && (hottest.y - 2.5).abs() <= 1.0 && hottest.layer == 0,
+        "{:?}",
+        hottest
+    );
+    assert!(s.heat.iter().all(|h| (h.x - 4.5).abs() < 3.0), "{:?}", s.heat);
+}
+
+/// A wall across the board with one opening, B straight through its middle (and on to a pad
+/// far away), A's pads to the left and right of B in the opening: A goes round B's pad.
+/// Shortening tries A straight across B; B then has no way at all, and used to search all of
+/// its area to find that out. It may only get as much longer as A got shorter: the search
+/// ends there.
+#[test]
+fn a_pushed_net_does_not_search_further_than_the_pusher_has_won() {
+    let wall = |x0: f64, x1: f64| json!({"box": [x0, 29.9, x1, 30.1], "layers": [0]});
+    let s = solve(json!({
+        "box": [0, 0, 60, 60], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        "fixed": [wall(0.0, 25.5), wall(34.5, 60.0)],
+        "nets": [{"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(26.0, 30.0, 0)], [pad(34.0, 30.0, 0)]]},
+                 {"name": "B", "width": 0.2, "clearance": 0.2,
+                  "pieces": [[pad(30.0, 26.0, 0)], [pad(30.0, 34.0, 0)], [pad(3.0, 3.0, 0)]]}]
+    }));
+    assert!(s.nets.iter().all(|n| n.open.is_empty()));
+    assert!(
+        (s.nets[1].cost - 44.0).abs() < 1.0 && s.nets[0].cost > 12.0,
+        "{} {}",
+        s.nets[0].cost,
+        s.nets[1].cost
+    );
+    assert!(s.expanded < 150_000, "{} cells opened", s.expanded); // 92515; without the limit 282664
+}

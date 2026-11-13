@@ -173,14 +173,25 @@ def glance(board, tmp_dir, rounds=8, say=None, **kw):
     """Look at how the board will route without routing it: `rounds` rounds of negotiate() and what
     is still in conflict then. Takes a fifth to a fiftieth of the time and draws nothing.
 
-    Returns dict(conflicts: cells in conflict after the last round, by_round, seconds, where:
-    [(net, cells, (x0, y0, x1, y1) in board mm, layers, parts)] with the most cells first;
-    parts are the footprints with a pad within 1 mm of that place on one of those layers, the
-    net's own left out: what stands in the way and could be moved). Of ten
-    placements of one board with 158 nets, the four that then routed clean within 130 rounds
-    had 88 to 132 cells in conflict after 8 rounds, the five that ended with connections open
-    186 to 323: so this tells placements apart, and `where` says which pins are in trouble.
-    Other arguments as negotiate().
+    Returns dict(
+    conflicts: cells in conflict after the last round; by_round; seconds;
+    settled: the mean of the last four rounds. From round 6 on the count swings by a third from
+        round to round, so compare placements by this, after 16 rounds rather than 8;
+    where: [(net, cells, (x0, y0, x1, y1) in board mm, layers, parts)], the most cells first;
+        parts are the footprints with a pad within 1 mm of that place on one of those layers,
+        the net's own left out;
+    in_way: [(ref, cells, (x0, y0, x1, y1), sides)]: those parts, with the cells of all the nets
+        each stands beside, the most first, and the place it would have to leave: what
+        Placer.evict() takes (see place.ease());
+    heat: [(x, y, side, heat)]: the squares of 1 mm (x, y: their corner in board mm; side "F",
+        "B" or "" for an inner layer) in which nets were in each other's way in any round,
+        summed over cells and rounds: where the router had too little room, also where it
+        found a way in the end. Hottest first.)
+
+    Of eight placements of one board with 159 nets, five had settled at 0 to 57 cells after
+    16 rounds (one of them routed in full: 26 rounds), and three at 142 to 167: those took 136
+    to 172 rounds, and one kept a connection open. The heat of the eight differed in one place
+    of 4 mm square, where the three had one resistor more. Other arguments as negotiate().
     """
     r, _items, prob, _routed = _board_problem(board, kw.pop("only", None), kw.pop("skip", ()), kw.pop("box", None),
                                               kw.pop("step", 0.1), kw.pop("via_cost", 3.0), rounds,
@@ -209,8 +220,29 @@ def glance(board, tmp_dir, rounds=8, say=None, **kw):
     where = sorted(((t["name"], t["cells"],
                      tuple(round(v - o, 2) for v, o in zip(t["area"], (ox, oy, ox, oy), strict=True)), t["layers"],
                      beside(t)) for t in answer["stuck"]), key=lambda t: (-t[1], t[0]))
+    side = {pcbnew.F_Cu: "F", pcbnew.B_Cu: "B"}
+    cells, areas, own = {}, {}, {}
+    for t in answer["stuck"]:
+        for ref in beside(t):
+            cells[ref] = cells.get(ref, 0) + t["cells"]
+            areas.setdefault(ref, []).append(t["area"])
+    for x, y, w, h, on, ref, _net in pads:
+        b = own.setdefault(ref, [x - w, y - h, x + w, y + h, set()])
+        b[:4] = min(b[0], x - w), min(b[1], y - h), max(b[2], x + w), max(b[3], y + h)
+        b[4] |= on
+    in_way = []
+    for ref in sorted(cells, key=lambda ref: (-cells[ref], ref)):
+        a, b = areas[ref], own[ref]
+        box = (max(b[0] - 3.0, min(t[0] for t in a) - 1.0), max(b[1] - 3.0, min(t[1] for t in a) - 1.0),
+               min(b[2] + 3.0, max(t[2] for t in a) + 1.0), min(b[3] + 3.0, max(t[3] for t in a) + 1.0))
+        in_way.append((ref, cells[ref], tuple(round(v - o, 2) for v, o in zip(box, (ox, oy, ox, oy), strict=True)),
+                       "".join(side[layer] for layer in (pcbnew.F_Cu, pcbnew.B_Cu) if layer in b[4])))
+    last = answer["conflicts"][-4:]
+    heat = sorted(((round(t["x"] - ox, 2), round(t["y"] - oy, 2), side.get(r.routing[t["layer"]], ""),
+                    round(t["heat"], 1)) for t in answer.get("heat", ())), key=lambda t: (-t[3], t[:3]))
     return dict(conflicts=answer["conflicts"][-1] if answer["conflicts"] else 0, by_round=answer["conflicts"],
-                seconds=round(time.time() - started, 1), where=where)
+                settled=round(sum(last) / len(last), 1) if last else 0.0, seconds=round(time.time() - started, 1),
+                where=where, in_way=in_way, heat=heat)
 
 
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,

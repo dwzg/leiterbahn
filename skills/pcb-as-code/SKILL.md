@@ -106,9 +106,18 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
 - Pours on outer layers that are added after routing: name them in `negotiate(pours={"GND":
   (F_Cu, B_Cu)})`, or the router leads tracks past through-hole ground pins at clearance
   and the pour then reaches them by one spoke (DRC: starved thermal).
-- `b.glance()` before a long routing run, and to choose between placements: 8 rounds, a
-  fifth of the time or less. Under about 150 cells in conflict the board came clean, over
-  about 180 it kept connections open (one board, ten placements); `where` names the pins.
+- `b.glance()` before a long routing run, and to choose between placements: a few rounds, a
+  fifth of the time or less. Compare by `settled` after 16 rounds: the count of a single
+  round swings by a third. One board, eight placements: five settled at 0 to 57 cells in
+  conflict, three at 142 to 167, and those three took 136 to 172 rounds to route. `where` names the
+  pins, `in_way` the parts beside them, `heat` every square the router fought over.
+- A placement that settles high has parts in the tracks' way, and neither wire length nor
+  pad density shows which: `place.ease(judge, p.loose())` asks the router. It takes the
+  parts `glance()` names, moves each out of its place in turn (`p.evict()`: usually to the
+  other side) and keeps the move that leaves the fewest cells in conflict. `judge(out)` is
+  the board script up to the glance, with `p.evict(*t)` for each `t` of `out` after the
+  placement; put the list it returns into the script. On that board one resistor below a
+  row of controller pins made the three slow placements slow.
 
 Then render front and back, with and without the pour, and look before showing anyone. The
 `layout-reviewer` agent does an independent pass.

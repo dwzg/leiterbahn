@@ -110,6 +110,7 @@ Placement by connections, on both board sides.
 
 - `passive(ref)`: True for resistors and capacitors (R12, C3): the parts placed last, on either side.
 - `with_lanes(box, pads, lane)`: The box (x0, y0, x1, y1) of a part, grown so that it reaches `lane` mm beyond the outer end of every long pad that points out of the part. pads: the boxes of its SMD pads. A part with fewer than five pads, or lane 0, keeps its box.
+- `ease(judge, movable, most=3, passes=2, gain=0.2, many=None, say=None)`: Let the router say which parts are in the way of the tracks, and move them out, one at a time.
 - class `Placer`: Places the footprints of a Board that has its outline.
   - `.__init__(board, nets=None, planes=('GND',), gap=0.2, edge=0.5, back_cost=2.5, lane=0.0)`: 
   - `.shape(ref, rot, back)`: (courtyard (x0, y0, x1, y1), {pad: [(dx, dy)]}, through) relative to the part's origin.
@@ -117,6 +118,7 @@ Placement by connections, on both board sides.
   - `.free(ref, x, y, rot=0, back=False)`: True if ref fits at (x, y): on the board, allowed by the rules, clear of placed parts.
   - `.keep(x0, y0, x1, y1, sides='F')`: Reserve a rectangle on the front ("F"), the back ("B") or both ("FB"), e.g. for a hand route.
   - `.inside(refs, *rects)`: Each of refs must lie with its whole courtyard inside one of the rectangles (x0, y0, x1, y1); None for a side that is open. Called again for a part, both hold.
+  - `.outside(refs, x0, y0, x1, y1, sides='FB')`: None of refs may reach into the rectangle on the front ("F"), the back ("B") or both: keep() for these parts alone. For a part the router found in the way of the tracks at a place (see evict()).
   - `.over(net, *rects)`: Every pad on `net` lies within one of the rectangles (x0, y0, x1, y1; None: open).
   - `.only(refs, side)`: refs go on the front ("F") or on the back ("B") only.
   - `.fix(ref, x, y, rot=0, back=False)`: Put ref's footprint origin at (x, y). Rules, gap and edge do not apply: you decided.
@@ -133,15 +135,17 @@ Placement by connections, on both board sides.
   - `.large(refs, anchor, sides=(False,), pull=0.6)`: First pass: the unplaced large parts of refs around anchor, largest first.
   - `.small(refs, anchor, sides=(False, True), pull=0.15)`: Second pass: the rest of refs, always the part with the most connections to placed parts.
   - `.length()`: Half-perimeter wire length of all nets off the planes, mm: a figure to compare placements by.
-  - `.problem(moves=20000, seed=1, weights=None, spread=False)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
+  - `.problem(moves=20000, seed=1, weights=None, spread=False, **more)`: The placement as a problem for `leiterbahn-route place` (router/src/place.rs).
   - `.ties()`: Which pad of a resistor or capacitor belongs at which pin: [(ref, pad, to, to_pad, weight)].
   - `.tie(ref, pad, to, to_pad, weight=3.0)`: Say where a pad belongs: pad `pad` of ref at pad `to_pad` of `to`. improve() pulls it there with `weight` mm of cost per mm of distance, strays() lists it when it is far.
   - `.first(refs, sides=(False, True), reach=1.5)`: Place these now, in this order, each as near as it gets to the pins it belongs at (see ties(); a part with none goes where its nets pull it), and keep them there: improve() does not move them. For the few parts that must win the room next to a fine-pitch part: with everything tied to its pins at the same weight, a controller's supply capacitor ended 5 mm out behind a divider that could have been anywhere.
   - `.ties_of(ref)`: ties() of one part that is not placed yet or placed: where its pads belong.
   - `.unmet(**limits)`: What the placement does not give the circuit, from what the symbols say of the pins: a supply pin without a capacitor near, a feedback or input node that reaches far, a boot capacitor far from its pin. [(kind, ref, pad, net, mm, part, text)], worst first: see intent.findings().
   - `.mend(sides=(False, True), **limits)`: Move what unmet() lists to the pin it belongs at, as far as there is room nearer than where it lies: after improve(), which weighs all wishes against each other and leaves a few unmet that a free spot beside the pin would settle. Only parts that near() or improve() placed are moved, and a move is kept only if all that is unmet, summed in mm, got less by it: a resistor between the inputs of two parts 28 mm apart was moved to the one and the other then reached 29 mm. Returns [(part, ref, pad, mm before, mm after)]. limits as intent.findings().
+  - `.evict(ref, x0, y0, x1, y1, sides='FB', reach=1.0, max_r=10.0)`: Move a part that near() or improve() placed out of the rectangle on those sides, to the cheapest free place near where it lay (the other side, where it may go there), and keep it out (outside()).
+  - `.loose(limit=3.0)`: The parts near() or improve() placed that no tie as strong as `limit` holds at a pin: resistors and the like, not the capacitors at supply pins. What ease() may move.
   - `.strays(limit=3.0)`: The resistors and capacitors further than `limit` mm from the pin they belong at (see ties()), of those near() or first() placed: [(mm, ref, pad, to, to_pad)], the furthest first. Print it after placing: a board routes just as well with a boot capacitor 8 mm from its pins.
-  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False)`: Move, turn and exchange the parts near() placed where that shortens the connections.
+  - `.improve(tmp_dir, moves=20000, seed=1, weights=None, say=None, spread=False, **more)`: Move, turn and exchange the parts near() placed where that shortens the connections.
 
 ## `leiterbahn.kicad.planar`
 
