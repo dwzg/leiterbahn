@@ -672,6 +672,47 @@ def test_every_supply_pin_is_given_a_capacitor_before_any_gets_two(project):
     assert sorted(t[2] for t in p.ties()) == ["J1", "J1", "J2"]              # J2, 30 mm away, would get one
 
 
+def test_a_part_in_the_tracks_way_is_moved_out_and_stays_out(project, tmp_path):
+    """evict(): out of the rectangle to the cheapest free place near by, and improve() leaves it out."""
+    b, p = placer(project)
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    for ref, at in (("R1", (10, 10)), ("R2", (30, 10)), ("R3", (14, 10)), ("R4", (26, 10))):
+        p.near(ref, anchor=at, start=at, pull=0.0, sides=(False,))
+    place = (8.0, 7.0, 12.0, 13.0)                         # where R1 lies, on the front
+    assert overlap(p.boxes["R1"], place) and "R1" in p.loose()
+    was = p.at["R1"]
+    now = p.evict("R1", *place, "F")
+    assert now == p.at["R1"] != was and not overlap(p.boxes["R1"], place)
+    assert math.hypot(now[0] - was[0], now[1] - was[1]) < 5         # near where it lay
+    p._lift("R3")
+    assert p.free("R3", 10, 10)                            # the place is closed to R1 alone
+    p.near("R3", anchor=(14, 10), start=(14, 10), pull=0.0, sides=(False,))
+    p.improve(str(tmp_path), moves=3000)
+    assert not overlap(p.boxes["R1"], place)
+    p.keep(0, 0, 40, 30, "F")                              # no room anywhere: it stays, and may
+    old, bans = p.at["R2"], len(p.bans.get("R2", ()))
+    assert p.evict("R2", 28.0, 8.0, 32.0, 12.0, "F") is None and p.at["R2"] == old and len(p.bans.get("R2", ())) == bans
+
+
+def test_ease_keeps_the_move_that_leaves_the_fewest_cells_in_conflict():
+    """ease(): one part at a time, the best of those the router names, as long as it helps by a fifth."""
+    from leiterbahn.kicad.place import ease
+    left = {(): 200.0, ("R1",): 150.0, ("R2",): 40.0, ("U1",): 0.0, ("R2", "R1"): 38.0, ("R2", "R3"): 39.0}
+    asked = []
+
+    def judge(out):
+        refs = tuple(t[0] for t in out)
+        asked.append(refs)
+        assert all(len(t) == 6 for t in out)               # ref, the rectangle, the sides: what evict() takes
+        return dict(settled=left[refs],
+                    in_way=[(ref, 9, (1.0, 2.0, 3.0, 4.0), "B") for ref in ("U1", "R1", "R2", "R3")])
+    out, look, tried = ease(judge, {"R1", "R2", "R3"}, most=2)
+    assert out == [("R2", 1.0, 2.0, 3.0, 4.0, "B")] and look["settled"] == 40.0
+    assert asked == [(), ("R1",), ("R2",), ("R2", "R1"), ("R2", "R3")]          # U1 may not move; R2 only once
+    assert tried == [(None, 200.0), ("R1", 150.0), ("R2", 40.0), ("R1", 38.0), ("R3", 39.0)]
+
+
 def test_what_the_symbols_say_of_the_pins_decides_where_parts_belong(project, monkeypatch):
     """An enable input tied to the rail is no supply pin: with the pins' kinds known, the capacitors beside
     it go to the pin that is one. And a resistor between a pin called FB and another part belongs at FB."""
@@ -1190,6 +1231,10 @@ def test_glance_says_what_is_in_conflict_and_draws_nothing(project, tmp_path):
     assert 1 <= len(got["by_round"]) <= 2 and got["conflicts"] == got["by_round"][-1]  # round 0 only lays
     assert all(len(t) == 5 and t[1] > 0 and isinstance(t[4], list) for t in got["where"])
     assert (got["conflicts"] == 0) == (got["where"] == [])
+    assert got["settled"] == sum(got["by_round"][-4:]) / len(got["by_round"][-4:])
+    assert all(len(t) == 4 and t[3] in ("F", "B", "FB") for t in got["in_way"])
+    assert all(len(t) == 4 and t[2] in ("F", "B", "") and t[3] > 0 for t in got["heat"])
+    assert {t[0] for t in got["in_way"]} == {ref for t in got["where"] for ref in t[4]}
 
 
 def test_negotiate_keeps_a_quiet_net_away_from_a_noisy_one(project, tmp_path):

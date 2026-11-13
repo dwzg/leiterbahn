@@ -14,7 +14,7 @@ pub mod place;
 pub mod problem;
 pub mod sexp;
 
-use problem::{Path, Problem, Role, Routed, Shape, Solution, Stuck};
+use problem::{Heat, Path, Problem, Role, Routed, Shape, Solution, Stuck};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -57,6 +57,42 @@ struct Laid {
     open: Vec<usize>,
     /// A search found no way even across other nets: trying again changes nothing.
     stuck: bool,
+}
+
+/// Where tracks have changed, and when: the board in tiles of `tile` cells, each with the
+/// count of changes at the last one near it.
+struct Fresh {
+    stamps: Vec<u32>,
+    nx: i32,
+    ny: i32,
+    tile: i32,
+    now: u32,
+}
+
+impl Fresh {
+    /// Has anything changed in the box since `since`?
+    fn hit(&self, b: [i32; 4], since: u32) -> bool {
+        let (i0, i1) = ((b[0] / self.tile).clamp(0, self.nx - 1), (b[2] / self.tile).clamp(0, self.nx - 1));
+        let (j0, j1) = ((b[1] / self.tile).clamp(0, self.ny - 1), (b[3] / self.tile).clamp(0, self.ny - 1));
+        (j0..=j1).any(|j| (i0..=i1).any(|i| self.stamps[(j * self.nx + i) as usize] > since))
+    }
+
+    /// The cells have changed: the tiles within `reach` cells of them count as changed now.
+    fn note(&mut self, cells: impl Iterator<Item = (i32, i32)>, reach: i32) {
+        self.now += 1;
+        let mut tiles: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+        for (i, j) in cells {
+            tiles.insert((i / self.tile, j / self.tile));
+        }
+        let r = reach / self.tile + 1;
+        for (ti, tj) in tiles {
+            for j in (tj - r).max(0)..=(tj + r).min(self.ny - 1) {
+                for i in (ti - r).max(0)..=(ti + r).min(self.nx - 1) {
+                    self.stamps[(j * self.nx + i) as usize] = self.now;
+                }
+            }
+        }
+    }
 }
 
 struct Grids {
@@ -364,7 +400,16 @@ struct Search {
     /// near it costs more, in cells.
     shy: Option<usize>,
     shy_cost: f32,
+    /// For a search with many goals: per tile of `FAR` cells, how far the nearest goal is at
+    /// least, and the search that wrote this.
+    far: Vec<f32>,
+    far_seen: Vec<u32>,
+    /// A way that costs more than this is not looked for.
+    bound: f32,
 }
+
+/// The side of a tile of `Search::far`, in cells.
+const FAR: i32 = 8;
 
 fn item_of(shape: &Shape, x0: f64, y0: f64, step: f64, clearance: f64) -> Item {
     let (rect, a) = match (shape.rect, shape.seg) {
@@ -492,17 +537,32 @@ impl Search {
         let (nx, ny, nl) = (grids.nx as i32, grids.ny as i32, grids.nl);
         let (track, via) = (&grids.track[kind], &grids.via[via_kind]);
         let (shy, shy_cost) = (self.shy.map(|a| &grids.near[a]), self.shy_cost);
-        let union = goals.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |u, b| {
-            [u[0].min(b[0]), u[1].min(b[1]), u[2].max(b[2]), u[3].max(b[3])]
-        });
-        let one = [union];
-        let goals: &[[i32; 4]] = if goals.len() > 12 { &one } else { goals };
-        let h = |i: i32, j: i32| -> f32 {
+        // How far the nearest goal is at least. With many goals that is looked up per tile, and
+        // worked out when a tile is first touched: one box round all the goals, as it was, is no
+        // estimate at all inside that box, and a net of forty pads searched in all directions from
+        // all it had laid (300 000 cells opened for a way of 50).
+        let many = goals.len() > 12;
+        let tiles = nx / FAR + 1;
+        let (far, far_seen) = (&mut self.far, &mut self.far_seen);
+        let mut h = |i: i32, j: i32| -> f32 {
+            let (lo, hi, at) = if many {
+                let (ti, tj) = (i / FAR, j / FAR);
+                let at = (tj * tiles + ti) as usize;
+                if far_seen[at] == round {
+                    return far[at];
+                }
+                ([ti * FAR, tj * FAR], [ti * FAR + FAR - 1, tj * FAR + FAR - 1], at)
+            } else {
+                ([i, j], [i, j], 0)
+            };
             let mut best = f32::MAX;
             for b in goals {
-                let dx = (b[0] - i).max(i - b[2]).max(0) as f32;
-                let dy = (b[1] - j).max(j - b[3]).max(0) as f32;
+                let dx = (b[0] - hi[0]).max(lo[0] - b[2]).max(0) as f32;
+                let dy = (b[1] - hi[1]).max(lo[1] - b[3]).max(0) as f32;
                 best = best.min(dx.max(dy) + (DIAG - 1.0) * dx.min(dy));
+            }
+            if many {
+                (far[at], far_seen[at]) = (best, round);
             }
             best
         };
@@ -524,6 +584,9 @@ impl Search {
             let n = node as usize;
             if g > self.marks[n].g {
                 continue; // a cheaper way to this cell was found after this one was queued
+            }
+            if self.queue.at as f32 / 4.0 > self.bound {
+                break; // whatever is found from here on costs more than the caller will pay
             }
             if self.target[n] != 0 {
                 let mut path = vec![node];
@@ -621,6 +684,9 @@ struct Router<'a> {
     /// All cells, and whether a search that finds no way in its window may use them.
     whole: [i32; 4],
     widen: bool,
+    /// How much more than its tracks that go the net's new ones may cost, in cells: a search
+    /// ends without a way when that is spent. None: whatever it takes.
+    budget: Option<f32>,
 }
 
 impl Router<'_> {
@@ -748,6 +814,25 @@ impl Router<'_> {
         ]
     }
 
+    /// Where the net lies differently than before: the cells of the tracks that went or came.
+    /// By cells, not by tracks: the same copper may come back as other tracks, cut elsewhere.
+    fn changed(&self, old: &Laid, new: &Laid) -> Vec<(i32, i32)> {
+        let cells = |laid: &Laid| -> std::collections::HashSet<(u32, usize)> {
+            laid.nodes
+                .iter()
+                .zip(&laid.kinds)
+                .flat_map(|(path, &kind)| path.iter().map(move |&c| (c, kind)))
+                .collect()
+        };
+        let (was, is) = (cells(old), cells(new));
+        was.symmetric_difference(&is)
+            .map(|&(node, _kind)| {
+                let (_l, i, j) = self.grids.split(node);
+                (i as i32, j as i32)
+            })
+            .collect()
+    }
+
     /// What the net's tracks cost: their length in cells, a via as `via_cost`, a narrow track half as much again.
     fn cost(&self, n: usize) -> f32 {
         self.cost_of(n, &self.laid[n])
@@ -774,7 +859,7 @@ impl Router<'_> {
 
     /// Lay the net anew: from its first piece, always to the nearest piece not yet joined.
     fn lay(&mut self, n: usize, press: Option<f32>, memory: f32) {
-        self.lay_on(n, press, memory, false)
+        self.lay_on(n, press, memory, false, None)
     }
 
     /// Lay only what must be laid anew: the net's tracks that no other net lies on stay (as far
@@ -782,10 +867,32 @@ impl Router<'_> {
     /// again. A net of forty pads with one branch in another's way was laid again whole, forty
     /// searches for one, and came out different all over each round.
     fn relay(&mut self, n: usize, press: Option<f32>, memory: f32) {
-        self.lay_on(n, press, memory, true)
+        self.lay_on(n, press, memory, true, None)
     }
 
-    fn lay_on(&mut self, n: usize, press: Option<f32>, memory: f32, keep: bool) {
+    /// Lay again only the net's tracks near what has changed, `fresh`: the others stay as in
+    /// `relay`. For the passes that shorten, where a net of forty pads was laid again whole in
+    /// each pass because one track somewhere near it had moved.
+    fn lay_near(&mut self, n: usize, press: Option<f32>, fresh: &Fresh, since: u32) {
+        self.lay_on(n, press, 0.0, true, Some((fresh, since)))
+    }
+
+    /// The cells round a track.
+    fn bounds(&self, path: &[u32]) -> [i32; 4] {
+        let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        for &c in path {
+            let (_l, i, j) = self.grids.split(c);
+            b = [b[0].min(i as i32), b[1].min(j as i32), b[2].max(i as i32), b[3].max(j as i32)];
+        }
+        b
+    }
+
+    /// Has anything changed near the net's tracks or pads since `since`?
+    fn is_fresh(&self, n: usize, fresh: &Fresh, since: u32) -> bool {
+        self.jobs[n].boxes.iter().any(|&b| fresh.hit(b, since)) || self.laid[n].nodes.iter().any(|path| fresh.hit(self.bounds(path), since))
+    }
+
+    fn lay_on(&mut self, n: usize, press: Option<f32>, memory: f32, keep: bool, fresh: Option<(&Fresh, u32)>) {
         self.search.shy = self.jobs[n].shy.filter(|_| self.grids.shy());
         self.own(n, 1);
         self.search.laying += 1;
@@ -816,7 +923,8 @@ impl Router<'_> {
                 .zip(&before.kinds)
                 .map(|(path, &kind)| {
                     let track = &self.grids.track[kind];
-                    path.iter().all(|&c| track[c as usize].soft == 0 && track[c as usize].hard == 0)
+                    let far = fresh.is_none_or(|(fresh, since)| !fresh.hit(self.bounds(path), since));
+                    far && path.iter().all(|&c| track[c as usize].soft == 0 && track[c as usize].hard == 0)
                         && path
                             .windows(2)
                             .all(|w| w[0] / plane == w[1] / plane || via_grid[(w[0] % plane) as usize].soft == 0)
@@ -911,6 +1019,8 @@ impl Router<'_> {
                 laid.nodes.push(path.clone());
             }
         }
+        // what the new tracks may cost: what those that went did, and the budget
+        let mut left = self.budget.map(|b| b + 2.0 + self.cost_of(n, &before) - self.cost_of(n, &laid));
         // (the first `held.len()` tracks of `laid` are those that stayed: the new ones follow)
         let mut joined: Vec<bool> = group.iter().map(|&g| g == group[0]).collect();
         let mut apart_from: Vec<usize> = Vec::new(); // pieces a new group of joined pieces began with
@@ -954,6 +1064,7 @@ impl Router<'_> {
                 }
             }
             let mut kind = job.kind;
+            self.search.bound = left.unwrap_or(f32::INFINITY);
             let mut found = self.search.run(
                 &self.grids,
                 kind,
@@ -993,6 +1104,10 @@ impl Router<'_> {
                     self.via_cost,
                     self.problem.limit,
                 );
+            }
+            self.search.bound = f32::INFINITY;
+            if let (Some(left), Some(path)) = (left.as_mut(), &found) {
+                *left -= self.search.marks[*path.last().unwrap() as usize].g;
             }
             let mut piece = found.as_ref().map(|path| self.search.target[*path.last().unwrap() as usize] as usize - 1);
             // A narrow track only as long as it must be: it was laid because a pin had no way out at the
@@ -1299,10 +1414,14 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             expanded: 0,
             shy: None,
             shy_cost: problem.shy as f32,
+            far: vec![0.0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
+            far_seen: vec![0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
+            bound: f32::INFINITY,
         },
         via_cost: (problem.via.cost / step) as f32,
         whole: [0, 0, nx as i32 - 1, ny as i32 - 1],
         widen: true,
+        budget: None,
         grids,
     };
     let mut solution = Solution::default();
@@ -1442,6 +1561,32 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             }
             router.soft(n, 1);
         }
+        // and where they were in each other's way in any round: what each cell has been remembered for
+        let tile = (1.0 / step).round().max(1.0) as usize;
+        let (nx, ny, nl) = (router.grids.nx, router.grids.ny, router.grids.nl);
+        let (tx, ty) = (nx / tile + 1, ny / tile + 1);
+        let mut heat = vec![0.0f64; nl * tx * ty];
+        for grid in &router.grids.track {
+            for (node, cell) in grid.iter().enumerate().filter(|c| c.1.hist > 0.0) {
+                let (l, i, j) = router.grids.split(node as u32);
+                heat[(l * ty + j / tile) * tx + i / tile] += cell.hist as f64;
+            }
+        }
+        for grid in &router.grids.via {
+            for (flat, cell) in grid.iter().enumerate().filter(|c| c.1.hist > 0.0) {
+                for l in 0..nl {
+                    heat[(l * ty + flat / nx / tile) * tx + flat % nx / tile] += cell.hist as f64;
+                }
+            }
+        }
+        for (k, &h) in heat.iter().enumerate().filter(|h| *h.1 > 0.0) {
+            solution.heat.push(Heat {
+                x: x0 + (k % tx * tile) as f64 * step,
+                y: y0 + (k / tx % ty * tile) as f64 * step,
+                layer: k / tx / ty,
+                heat: h,
+            });
+        }
         solution.expanded = router.search.expanded;
         return solution;
     }
@@ -1489,9 +1634,20 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     let weight = |n: usize| problem.nets[n].weight as f32;
     let clock = std::time::Instant::now();
     let margin = (3.0 / step) as i32; // a way round may leave the net's own area by 3 mm
+    let reach = (1.5 / step) as i32; // how far a track is in the way of another: widths, clearances, the distance kept from noisy copper
     let whole = router.whole;
     router.widen = false;
-    let mut stale = vec![true; router.jobs.len()]; // a net is tried again only if something near it has changed
+    // A net is tried again only if something near it has changed, and then only its tracks near that.
+    let tile = 32;
+    let (tnx, tny) = (router.grids.nx as i32 / tile + 1, router.grids.ny as i32 / tile + 1);
+    let mut fresh = Fresh {
+        stamps: vec![1; (tnx * tny) as usize],
+        nx: tnx,
+        ny: tny,
+        tile,
+        now: 1,
+    };
+    let mut tried = vec![0u32; router.jobs.len()]; // the count of changes when the net was last tried
     say(format!("all nets laid after {:.0} s", started.elapsed().as_secs_f64()));
     let mut ideal = vec![0.0f32; router.jobs.len()];
     let mut alone = vec![0.0f32; router.jobs.len()]; // the same without what nearness costs: lengths, to say
@@ -1520,7 +1676,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                     n,
                 )
             })
-            .filter(|t| t.0 >= 4.0 && stale[t.1])
+            .filter(|t| t.0 >= 4.0 && router.is_fresh(t.1, &fresh, tried[t.1]))
             .collect();
         todo.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         let (mut better, mut pushed, mut saved) = (0u32, 0u32, 0.0f32);
@@ -1530,6 +1686,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             // saved no more.)
             let mut moved: Vec<(usize, Laid)> = Vec::new();
             let mut futile = false;
+            let mut gain = 0.0f32; // what n has won, weighted, less what those it pushed have lost
             let mut queue: std::collections::VecDeque<(usize, u32)> = [(n, 0)].into();
             while let Some((m, depth)) = queue.pop_front() {
                 if moved.iter().any(|t| t.0 == m) {
@@ -1540,16 +1697,26 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 router.search.window = router.around(m, margin);
                 let mut crossed: Vec<usize> = Vec::new();
                 if depth < 1 {
-                    router.lay(m, Some(1.5 / weight(m).max(0.1)), 0.0); // a heavier net crosses others more readily
-                                                                        // Even across others it is no shorter than it lies and joins no more: then there is
-                                                                        // nothing to be had, by pushing or without. (Most tries end here: 63 of 67 in the
-                                                                        // third pass on a board of 158 nets, each of which went on to two more searches.)
+                    let press = Some(1.5 / weight(m).max(0.1)); // a heavier net crosses others more readily
+                    if problem.relay && tried[m] > 0 {
+                        router.lay_near(m, press, &fresh, tried[m]);
+                    } else {
+                        router.lay(m, press, 0.0);
+                    }
+                    // Even across others it is no shorter than it lies and joins no more: then there is
+                    // nothing to be had, by pushing or without. (Most tries end here: 63 of 67 in the
+                    // third pass on a board of 158 nets, each of which went on to two more searches.)
                     if router.laid[m].open.len() >= old.open.len() && router.cost(m) >= router.cost_of(m, &old) - 0.5 {
                         router.laid[m] = old;
                         router.soft(m, 1);
                         futile = true;
                         break;
                     }
+                    gain = if router.laid[m].open.len() < old.open.len() {
+                        f32::INFINITY // a connection more is worth any length
+                    } else {
+                        weight(m) * (router.cost_of(m, &old) - router.cost(m))
+                    };
                     let fresh = &router.laid[m];
                     crossed = order
                         .iter()
@@ -1557,18 +1724,29 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                         .filter(|&o| o != m && fresh.items.iter().any(|a| router.laid[o].items.iter().any(|b| clash(a, b, step))))
                         .collect();
                 }
+                let mut lost = false;
                 if depth >= 1 && problem.relay {
-                    router.relay(m, None, 0.0); // only what the net that pushes lies on
+                    // Only what the net that pushes lies on, and no dearer than the pusher has won:
+                    // a pushed net with no other way searched its whole area to find that out (a
+                    // supply net of forty pads: 4.5 million cells, in every pass).
+                    router.budget = Some(gain.max(0.0) / weight(m).max(1e-3));
+                    router.relay(m, None, 0.0);
+                    router.budget = None;
+                    gain -= weight(m) * (router.cost(m) - router.cost_of(m, &old));
+                    lost = router.laid[m].open.len() > old.open.len();
                 } else if depth >= 1 || moved.len() + queue.len() + crossed.len() > 6 {
                     router.lay(m, None, 0.0);
                     crossed.clear();
                 }
                 router.soft(m, 1);
                 moved.push((m, old));
+                if lost {
+                    break; // the exchange is off: no need to push the others
+                }
                 queue.extend(crossed.into_iter().map(|c| (c, depth + 1)));
             }
             if futile {
-                stale[n] = false;
+                tried[n] = fresh.now;
                 continue;
             }
             let was: f32 = moved.iter().map(|(m, old)| weight(*m) * router.cost_of(*m, old)).sum();
@@ -1584,12 +1762,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 better += 1;
                 pushed += (moved.len() > 1) as u32;
                 saved += was - now;
-                for (m, _) in &moved {
-                    let b = router.around(*m, margin);
-                    for &o in &order {
-                        let c = router.around(o, 0);
-                        stale[o] = stale[o] || (b[0] <= c[2] && c[0] <= b[2] && b[1] <= c[3] && c[1] <= b[3]);
-                    }
+                tried[n] = fresh.now;
+                for (m, old) in &moved {
+                    fresh.note(router.changed(old, &router.laid[*m]).into_iter(), reach + margin);
                 }
                 continue;
             }
@@ -1604,19 +1779,20 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             let old = router.laid[n].clone();
             router.soft(n, -1);
             router.search.window = router.around(n, margin);
-            router.lay(n, None, 0.0);
+            if problem.relay && tried[n] > 0 {
+                router.lay_near(n, None, &fresh, tried[n]);
+            } else {
+                router.lay(n, None, 0.0);
+            }
             let alone = router.cost(n);
             if router.laid[n].open.len() <= old.open.len() && alone < router.cost_of(n, &old) - 0.5 {
                 better += 1;
                 saved += weight(n) * (router.cost_of(n, &old) - alone);
-                let b = router.around(n, margin);
-                for &o in &order {
-                    let c = router.around(o, 0);
-                    stale[o] = stale[o] || (b[0] <= c[2] && c[0] <= b[2] && b[1] <= c[3] && c[1] <= b[3]);
-                }
+                tried[n] = fresh.now;
+                fresh.note(router.changed(&old, &router.laid[n]).into_iter(), reach + margin);
             } else {
                 router.laid[n] = old;
-                stale[n] = false;
+                tried[n] = fresh.now;
             }
             router.soft(n, 1);
         }

@@ -53,6 +53,9 @@ pub struct Part {
     /// Its courtyard must lie within one rectangle of each group.
     #[serde(default)]
     pub inside: Vec<Vec<[f64; 4]>>,
+    /// Rectangles its courtyard must not reach into on the sides named: a `Keep` for this part alone.
+    #[serde(default)]
+    pub outside: Vec<Keep>,
     /// Pads that must lie within one of the rectangles given with them: (pad, rectangles). For a
     /// pad on a plane that covers only part of the board.
     #[serde(default)]
@@ -337,7 +340,7 @@ impl State<'_> {
                 return false;
             }
         }
-        for keep in &problem.keeps {
+        for keep in problem.keeps.iter().chain(&problem.parts[p].outside) {
             let b = &keep.rect;
             let on = (sides[0] && keep.sides.contains('F')) || (sides[1] && keep.sides.contains('B'));
             if on && r[0] < b[2] && b[0] < r[2] && r[1] < b[3] && b[1] < r[3] {

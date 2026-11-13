@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.25.0
+
+Added
+- The router says which parts are in the tracks' way, and the placer moves them out:
+  `place.ease(judge, movable)` with `Placer.evict()`, `Placer.outside()` and
+  `Placer.loose()`. `Board.glance()` now also returns `in_way` (the parts beside the nets in
+  conflict, with the place each would have to leave), `heat` (every square of 1 mm the
+  nets fought over in any round) and `settled` (the mean of the last four rounds: a single
+  round's count swings by a third). `ease()` tries the parts named, one at a time, by
+  evicting each and looking again, and keeps the move that leaves the fewest cells in
+  conflict. On a board of 287 parts and 159 nets, eight placements: three settled at 142
+  to 167 cells in conflict after 16 rounds and took 136 to 172 rounds to route (one kept a
+  connection open); five settled at 0 to 57 (the one routed in full: 26 rounds). The heat
+  maps of the eight differed in one place of 4 mm square below a row of controller pins,
+  where the three had one resistor more; wire length, ties and pad density were the same.
+  `ease()` found that resistor in one pass (four glances), and with it on the other side
+  the three route clean in 25 to 29 rounds, 28 to 41 s instead of 146 to 282 s.
+  (Tried first and dropped: allowing fewer pads in the hot squares and annealing again.
+  Three such runs settled no lower than three runs without.)
+- `Placer.improve(**more)` passes further fields to the annealer, as `warm=0.3, reach=3.0`
+  for a run that starts cool and moves parts by 3 mm at most.
+
+Changed
+- Routing is faster, with the same kind of result: a board of 159 nets in 33 s instead of
+  44 s, older placements of it that route clean in 37 to 78 s instead of 40 to 91 s.
+  Four older placements that have never routed clean reliably (all with that resistor's
+  kind of trouble at the controller) came out with 16 connections open between them
+  instead of 9 with the old estimate of the next item, three worse and one better: the
+  same costs, other ties. Not known whether that is chance.
+  - A search for the nearest of more than twelve pads estimated the distance by one box
+    round them all, which is no estimate inside the box: a net of forty pads searched in all
+    directions from all it had laid (300 000 cells opened for a way of 50). Now the distance
+    to the nearest goal is looked up per square of 8 cells, worked out when first touched.
+  - A net pushed aside while shortening may only get as much longer as the pusher got
+    shorter: its search ends there. A pushed net with no other way used to search its whole
+    area to find that out (a supply net: 4.5 million cells, in every pass).
+  - In the shortening passes a net is tried again only where something near its tracks has
+    changed, and only those tracks are laid again.
+
 ## 0.24.0
 
 Added

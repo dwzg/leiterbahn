@@ -180,6 +180,18 @@ pub struct Solution {
     pub expanded: u64,
     /// With `Problem::glance`: the nets that lie in another's way when the rounds end.
     pub stuck: Vec<Stuck>,
+    /// With `Problem::glance`: where the nets were in each other's way in any of the rounds.
+    pub heat: Vec<Heat>,
+}
+
+/// A square of the board, 1 mm wide, on one layer, and how often cells of it were used by two
+/// nets at once: summed over the cells and the rounds.
+#[derive(Serialize, Debug, Default, Clone)]
+pub struct Heat {
+    pub x: f64,
+    pub y: f64,
+    pub layer: usize,
+    pub heat: f64,
 }
 
 #[derive(Serialize, Debug, Default, Clone)]
