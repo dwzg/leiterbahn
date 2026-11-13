@@ -871,12 +871,11 @@ impl Router<'_> {
             for (p, g) in group.iter_mut().enumerate() {
                 *g = find(&mut root, p);
             }
-            for k in 0..before.nodes.len() {
+            for (k, path) in before.nodes.iter().enumerate() {
                 let g = find(&mut root, pieces + k);
                 if !stays[k] || g >= pieces {
                     continue; // (a track that hangs on no piece cannot be, and would be of no use)
                 }
-                let path = &before.nodes[k];
                 let had = laid.vias.len();
                 copper(
                     &self.grids,
@@ -912,7 +911,7 @@ impl Router<'_> {
                 laid.nodes.push(path.clone());
             }
         }
-        let kept = held.len(); // the first `kept` tracks of `laid` are those that stayed
+        // (the first `held.len()` tracks of `laid` are those that stayed: the new ones follow)
         let mut joined: Vec<bool> = group.iter().map(|&g| g == group[0]).collect();
         let mut apart_from: Vec<usize> = Vec::new(); // pieces a new group of joined pieces began with
         let cells_of = |g: usize, laid: &Laid| -> Vec<u32> {
@@ -922,10 +921,8 @@ impl Router<'_> {
                     cells.extend(own.iter().map(|c| c.0));
                 }
             }
-            for k in 0..kept {
-                if held[k] == g {
-                    cells.extend(laid.nodes[k].iter().copied());
-                }
+            for (path, _) in laid.nodes.iter().zip(&held).filter(|t| *t.1 == g) {
+                cells.extend(path.iter().copied());
             }
             cells
         };
@@ -944,13 +941,13 @@ impl Router<'_> {
                     }
                 }
             }
-            for k in 0..kept {
+            for ((path, &g), &bounds) in laid.nodes.iter().zip(&held).zip(&held_box) {
                 // a track that stayed, of a group not yet joined: reaching it is reaching its group
-                if !joined[held[k]] {
-                    goals.push(held_box[k]);
-                    for &node in &laid.nodes[k] {
+                if !joined[g] {
+                    goals.push(bounds);
+                    for &node in path {
                         if self.search.target[node as usize] == 0 {
-                            self.search.target[node as usize] = held[k] as u32 + 1;
+                            self.search.target[node as usize] = g as u32 + 1;
                             marked.push(node);
                         }
                     }
