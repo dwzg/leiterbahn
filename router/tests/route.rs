@@ -638,17 +638,35 @@ fn a_turned_box_is_in_the_way_only_where_it_lies() {
     for w in lines(&s).iter() {
         for t in 0..=20 {
             let (x, y) = ((w.2 + (w.4 - w.2) * t as f64 / 20.0) * 0.1, (w.3 + (w.5 - w.3) * t as f64 / 20.0) * 0.1);
-            // the nearest point of the turned box's middle line: (5, 5) + a (1, -1) / sqrt 2, |a| <= 3
-            let along = (((x - 5.0) - (y - 5.0)) / 2f64.sqrt()).clamp(-3.0, 3.0);
-            let (px, py) = (5.0 + along / 2f64.sqrt(), 5.0 - along / 2f64.sqrt());
-            let apart = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
-            // half the box, the clearance, half the track; less what a cell may be off
+            // the point as the turned box sees it: along it and across it from its middle
+            let (along, across) = (((x - 5.0) - (y - 5.0)) / 2f64.sqrt(), ((x - 5.0) + (y - 5.0)) / 2f64.sqrt());
+            let apart = ((along.abs() - 3.0).max(0.0).powi(2) + (across.abs() - 0.2).max(0.0).powi(2)).sqrt();
+            // the clearance and half the track
+            assert!(apart > 0.2 + 0.1 - 1e-6, "the track is {} mm from the turned box at ({}, {})", apart, x, y);
+        }
+    }
+}
+
+/// A row of pads 0.2 mm wide at 0.4 mm pitch, a clearance of 0.2 mm, a track of 0.13 mm, a grid
+/// of 0.05 mm that the row does not lie on: the cell nearest the middle pad's middle line is
+/// 0.02 mm off it, and a track from there passes the neighbours at 0.215 mm. That is allowed,
+/// and with half a cell kept on top of the clearance it was not: the pad had no way out.
+#[test]
+fn a_pad_of_fine_pitch_off_the_grid_has_a_way_out() {
+    let pin = |x: f64| json!({"box": [x - 0.1, 0.7, x + 0.1, 1.3], "layers": [0]});
+    let s = solve(json!({
+        "box": [0, 0, 3, 5], "step": 0.05, "layers": 1, "via": {"d": 0.45, "hole": 0.3, "cost": 3.0},
+        "fixed": [pin(1.02), pin(1.82)],
+        "nets": [{"name": "A", "width": 0.13, "clearance": 0.2, "pieces": [[pin(1.42)], [pad(1.4, 4.0, 0)]]}]
+    }));
+    assert!(s.nets[0].open.is_empty(), "the middle pad is shut in");
+    for w in lines(&s).iter().filter(|w| w.3.min(w.5) < 30.0) {
+        // beside the neighbours (y up to 1.3 mm and the clearance): no nearer to either than clearance and half the track
+        for x in [w.2 * 0.05, w.4 * 0.05] {
             assert!(
-                apart > 0.2 + 0.2 + 0.1 - 0.06,
-                "the track is {} mm from the turned box's middle line at ({}, {})",
-                apart,
-                x,
-                y
+                (x - 1.12).min(1.72 - x) > 0.2 + 0.065 - 1e-9,
+                "a track at x = {} between pads that end at 1.12 and 1.72",
+                x
             );
         }
     }

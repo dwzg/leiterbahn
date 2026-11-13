@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.31.0
+
+Changed
+- Tracks keep from fixed copper what the geometry asks for beyond the clearance, not half a
+  cell. A track runs from cell centre to cell centre, and between two centres it can be
+  nearer to a corner beside it than at either: by root(r squared + s squared / 2) - r for a
+  distance r to keep and a cell of s, 3 um at r = 0.19 mm on a 0.05 mm grid. That and a
+  tenth of a cell is kept now (8 um on that grid; it was 25 um). At a connector of 0.4 mm
+  pitch, 0.2 mm between pads and 0.2 mm clearance, half a cell left a pad no cell to start
+  from unless one lay within 11 um of its middle line. Demo boards, checked with KiCad's
+  DRC: one of 164 connections all routed in 19 s (4 open after 253 s before), one of fine
+  pitch with 17 open of 208 (39). A board of 159 nets on a 0.05 mm grid, the same 24
+  placements routed before and after: tracks 0.9 % shorter (in 18 of 24), 1 % fewer vias,
+  all clean both times; 61 % more routing rounds.
+- The same allowance, without the tenth, between laid copper: on a 0.1 mm grid a track
+  passed a via 2 um nearer than a clearance of 0.254 mm allows (four such errors on one
+  board; none on a 0.05 mm grid, where it is under 1 um).
+
 ## 0.30.0
 
 Fixed

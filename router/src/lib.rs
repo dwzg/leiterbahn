@@ -213,10 +213,21 @@ impl Grids {
         (n / (self.nx * self.ny), n % self.nx, (n / self.nx) % self.ny)
     }
 
-    /// Count the item in (or out of) every kind's grids. `margin`: extra distance in mm, for
-    /// copper that does not lie on the grid.
-    fn stamp(&mut self, item: &Item, soft: bool, margin: f64, delta: i32) {
+    /// Count the item in (or out of) every kind's grids. `fixed`: copper that does not lie on the
+    /// grid, which tracks keep a little further from.
+    ///
+    /// How much further: a track runs from cell centre to cell centre, and between two centres
+    /// it can be nearer to a corner beside it than at either. For a distance r to keep and a
+    /// slanted step of s times root 2 that is root(r squared + s squared / 2) - r: 3 um at
+    /// r = 0.19 mm on a 0.05 mm grid. A tenth of a cell is added for the end of a track that is
+    /// moved onto the line of another. (It was half a cell for all, 25 um on that grid: at a
+    /// connector of 0.4 mm pitch with 0.2 mm between pads and 0.2 mm clearance no cell of a pad
+    /// was then free to start from unless it lay within 11 um of the pad's middle line.)
+    fn stamp(&mut self, item: &Item, soft: bool, fixed: bool, delta: i32) {
         let (nx, ny, nl, step) = (self.nx, self.ny, self.nl, self.step);
+        // (Laid copper lies on the grid, but the same holds between two cells of it: a track past a
+        // via on a 0.1 mm grid came 2 um nearer than a clearance of 0.254 mm allows.)
+        let with = |r: f64| (r * r + step * step / 2.0).sqrt() + if fixed { 0.1 * step } else { 0.0 };
         let centre = Item {
             rect: false,
             turn: (1.0, 0.0),
@@ -233,13 +244,13 @@ impl Grids {
         };
         for k in 0..self.kinds.len() {
             let (half, clearance) = self.kinds[k];
-            let grow = item.r + (item.clearance.max(clearance) + half + margin) / step;
+            let grow = item.r + with(item.clearance.max(clearance) + half) / step;
             let grid = &mut self.track[k];
             for &l in &item.layers {
                 raster(grid, soft, nx, ny, l, item, grow, delta);
             }
             if item.hole > 0.0 {
-                let grow = item.hole + (self.hole_clear + half + margin) / step;
+                let grow = item.hole + with(self.hole_clear + half) / step;
                 for l in 0..nl {
                     raster(grid, soft, nx, ny, l, &centre, grow, delta);
                 }
@@ -249,10 +260,10 @@ impl Grids {
             let grid = &mut self.via[c];
             if !item.layers.is_empty() {
                 let keep = (item.clearance.max(self.via_kinds[c]) + self.via_r).max(self.hole_clear + self.via_hole / 2.0);
-                raster(grid, soft, nx, ny, 0, item, item.r + (keep + margin) / step, delta);
+                raster(grid, soft, nx, ny, 0, item, item.r + with(keep) / step, delta);
             }
             if item.hole > 0.0 {
-                let grow = item.hole + (self.hole_clear + self.via_r + margin) / step;
+                let grow = item.hole + with(self.hole_clear + self.via_r) / step;
                 raster(grid, soft, nx, ny, 0, &centre, grow, delta);
             }
         }
@@ -749,13 +760,12 @@ impl Router<'_> {
     /// Take the net's own pads out of the way of its tracks (or put them back), and keep its
     /// vias out of its own pads: no via in a pad, no second hole beside the first.
     fn own(&mut self, n: usize, delta: i32) {
-        let margin = self.grids.step / 2.0;
         let (nx, ny, step) = (self.grids.nx, self.grids.ny, self.grids.step);
         let (via_r, hole_clear, via_kind) = (self.grids.via_r, self.grids.hole_clear, self.jobs[n].via_kind);
         for piece in 0..self.jobs[n].items.len() {
             for s in 0..self.jobs[n].items[piece].len() {
                 let item = self.jobs[n].items[piece][s].clone();
-                self.grids.stamp(&item, false, margin, -delta);
+                self.grids.stamp(&item, false, true, -delta);
                 let grid = &mut self.grids.via[via_kind];
                 if item.hole > 0.0 {
                     let (x, y) = ((item.a[0] + item.a[2]) / 2.0, (item.a[1] + item.a[3]) / 2.0);
@@ -779,7 +789,7 @@ impl Router<'_> {
     fn soft(&mut self, n: usize, delta: i32) {
         for k in 0..self.laid[n].items.len() {
             let item = self.laid[n].items[k].clone();
-            self.grids.stamp(&item, true, 0.0, delta);
+            self.grids.stamp(&item, true, false, delta);
             if let Some(a) = self.jobs[n].shy.filter(|&a| a < 2) {
                 self.grids.beside(&item, 1 - a, delta);
             }
@@ -1402,7 +1412,6 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         },
         planes: Vec::new(),
     };
-    let margin = step / 2.0;
     // the board's edge and the keep-out areas: no track centre within half a track of them
     for k in 0..grids.kinds.len() + grids.via_kinds.len() {
         let via = k >= grids.kinds.len();
@@ -1454,7 +1463,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     };
     for shape in &problem.fixed {
         let item = item_of(shape, x0, y0, step, shape.clearance);
-        grids.stamp(&item, false, margin, 1);
+        grids.stamp(&item, false, true, 1);
         if let Some(w) = which(shape.role) {
             grids.beside(&item, w, 1);
         }
@@ -1488,7 +1497,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             let mut cells = Vec::new();
             let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
             for (s, item) in items.iter().enumerate() {
-                grids.stamp(item, false, margin, 1);
+                grids.stamp(item, false, true, 1);
                 if let Some(w) = which(net.role) {
                     grids.beside(item, w, 1);
                 }
