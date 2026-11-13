@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.26.0
+
+Added
+- `negotiate(race=8)`: the router runs that many times side by side, each with the nets in
+  a slightly other order (`seed` in the problem), and the run that comes clean in the
+  fewest rounds wins; a run that is past the rounds of a clean one is stopped. Where the
+  rounds are a close thing any other order ends them elsewhere: eight placements of a board
+  of 159 nets took 11 to 172 rounds, and 11 to 200 with a single tie broken otherwise.
+  Four of them that took 102, 68, 40 and 47 rounds alone took 18, 18, 15 and 23 as a race
+  of eight, 18 to 27 s. The same race gives the same board every time. A processor and
+  about 0.6 GB per run.
+- `intent.driven()`: the nets an output drives.
+
+Fixed
+- A net that an output drives is no quiet node: the inverting input of a follower sits on
+  its own output, and that made the output a node to keep short and its resistors parts
+  that belong at the amplifier. A resistor from a buffer to a converter's input was held by
+  both ends and lay 22 mm from the converter. `Placer.ties()`, `intent.findings()` and
+  `intent.roles()` now leave such nets out. Eight placements of that board: 5 unmet needs
+  on average instead of 8, their distances summed 55 mm instead of 112 mm.
+- Resistor networks (RN1) are passives for the placer: a network of four pads had counted
+  as a part that others belong to, and belonged nowhere itself. Two pads of one part on a
+  quiet node are tied like one.
+
 ## 0.25.0
 
 Added

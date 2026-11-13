@@ -108,7 +108,7 @@ Build a KiCad PCB from a schematic netlist with the pcbnew Python API.
 
 Placement by connections, on both board sides.
 
-- `passive(ref)`: True for resistors and capacitors (R12, C3): the parts placed last, on either side.
+- `passive(ref)`: True for resistors, capacitors and resistor networks (R12, C3, RN1): the parts placed last, on either side. (A network of four pads counted as a part others belong to, and belonged nowhere itself: a divider lay 18 mm from the amplifier input it feeds.)
 - `with_lanes(box, pads, lane)`: The box (x0, y0, x1, y1) of a part, grown so that it reaches `lane` mm beyond the outer end of every long pad that points out of the part. pads: the boxes of its SMD pads. A part with fewer than five pads, or lane 0, keeps its box.
 - `ease(judge, movable, most=3, passes=2, gain=0.2, many=None, say=None)`: Let the router say which parts are in the way of the tracks, and move them out, one at a time.
 - class `Placer`: Places the footprints of a Board that has its outline.
@@ -192,10 +192,10 @@ Route many nets at once with the `leiterbahn-route` program (router/, Rust): neg
 - `shape_of(it, index)`: An item of finish.copper_items() as leiterbahn-route's shape. index: {layer id: routing layer number}.
 - `touches(it, box)`: 
 - `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).
-- `solve(prob, tmp_dir, say=None)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
+- `solve(prob, tmp_dir, say=None, race=1)`: Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
 - `shut_in(board, tmp_dir, step=0.1, skip=(), say=None)`: The nets that have no way even alone on the board: [(net, [(x, y)])].
 - `glance(board, tmp_dir, rounds=8, say=None, **kw)`: Look at how the board will route without routing it: `rounds` rounds of negotiate() and what is still in conflict then. Takes a fifth to a fiftieth of the time and draws nothing.
-- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True, room=0.8, pours=None)`: Route every net of the board that is in more than one piece, all at once.
+- `negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False, say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True, room=0.8, pours=None, race=1)`: Route every net of the board that is in more than one piece, all at once.
 
 ## `leiterbahn.kicad.intent`
 
@@ -204,5 +204,6 @@ What a circuit needs of its layout, read from the netlist.
 - `passive(ref)`: 
 - `grounds(pins, nets)`: The nets that are a ground: those named so, and those whose supply pins are all called GND, AGND, VSS ... (A negative rail that one part uses as its ground is a rail.)
 - `supply_pins(pins, nets, ground=None)`: [(ref, pad, net)]: the pins a symbol calls a supply input, on a net that is no ground.
-- `roles(pins, nets)`: (quiet, noisy): the nets with a pin whose name says it takes up what is near it (FB, COMP, a sense or amplifier input, a reference) and those with a pin that swings (SW, BOOT, a gate drive, a clock). Supply rails and grounds are neither. For negotiate(quiet=, noisy=).
+- `driven(pins, nets)`: The nets an output drives: those with a pin the symbol calls an output (not an open collector) on a part that is no resistor or capacitor. An input on such a net sees a low impedance, whatever it is called: the inverting input of a follower is on its output.
+- `roles(pins, nets)`: (quiet, noisy): the nets with a pin whose name says it takes up what is near it (FB, COMP, a sense or amplifier input, a reference) and those with a pin that swings (SW, BOOT, a gate drive, a clock). Supply rails and grounds are neither, nor is a net an output drives (driven()) quiet. For negotiate(quiet=, noisy=).
 - `findings(pins, nets, at, near=4.0, node=10.0, boot=4.0)`: What the placement does not give the circuit: [(kind, ref, pad, net, mm, part, text)], worst first; part is the capacitor or resistor that is too far (None: there is none).

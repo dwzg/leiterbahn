@@ -740,6 +740,24 @@ def test_what_the_symbols_say_of_the_pins_decides_where_parts_belong(project, mo
     assert p.mend() == []
 
 
+def test_a_resistor_from_a_followers_output_belongs_at_the_input_it_feeds(project):
+    """Tied by both ends it belonged nowhere: the follower's inverting input sits on its output, and that made the
+    output a quiet node too. A net an output drives is none. And a resistor network is a part that belongs
+    somewhere, with two pads on the node if it likes, not a part others belong to."""
+    b, p = placer(project, nets={"BUF": [("J1", "1"), ("J1", "2"), ("R1", "1")], "AIN": [("J2", "1"), ("R1", "2")],
+                                 "GND": [("J2", "2"), ("R2", "2")]})
+    p.hosts_from = 2
+    p.fix("J1", 4, 10)
+    p.fix("J2", 36, 10)
+    p.near("R1", anchor=(20, 10), start=(20, 10), pull=0.0)
+    p.pin_info = {("J1", "1"): ("", "output"), ("J1", "2"): ("-", "input"), ("J2", "1"): ("AIN0", "input")}
+    assert [t for t in p.ties() if t[0] == "R1"] == [("R1", "2", "J2", "1", 3.0)]
+    p.pin_info[("J1", "1")] = ("", "passive")              # no output on it: both ends are quiet nodes, nobody's
+    assert not [t for t in p.ties() if t[0] == "R1" and t[4] >= 3.0]
+    from leiterbahn.kicad import place
+    assert place.passive("RN1") and place.passive("R12") and not place.passive("RV1") and not place.passive("U1")
+
+
 def test_face_and_find(project):
     b, p = placer(project)
     rot = p.face("R1", "MID", "left")
@@ -1441,3 +1459,25 @@ def test_negotiate_routes_all_nets_at_once(project, tmp_path):
     assert "Found 0 unconnected" in report
     assert not re.search(r"\[(clearance|shorting_items|tracks_crossing|hole_clearance|copper_edge_clearance)\]", report)
 
+
+
+def test_a_race_takes_the_run_that_is_clean_in_the_fewest_rounds(project, tmp_path):
+    """negotiate(race=3): three runs with the nets in other orders; the same winner every time."""
+    from leiterbahn.kicad.negotiate import _board_problem, solve
+    b = planes_board(project)
+    assert b.fan_to_planes() == []
+    b.fill_zones()
+    prob = _board_problem(b)[2]
+    lines = []
+    one = solve(prob, str(tmp_path / "one"))
+    got = solve(prob, str(tmp_path / "race"), lines.append, race=3)
+    runs = [json.load(open(tmp_path / "race" / ("route-result-%d.json" % seed))) for seed in range(3)
+            if (tmp_path / "race" / ("route-result-%d.json" % seed)).exists()]
+    assert runs and "seed" not in one and got["seed"] in (0, 1, 2)
+    clean = [r for r in runs if not any(net["open"] for net in r["nets"])]
+    assert clean and got["iterations"] == min(r["iterations"] for r in clean) <= one["iterations"]
+    assert not any(net["open"] for net in got["nets"]) and "a race of 3: seed %d won" % got["seed"] in lines[-1]
+    again = solve(prob, str(tmp_path / "again"), race=3)
+    assert again == got
+    routed = b.negotiate(str(tmp_path / "board"), race=3)
+    assert routed["open"] == [] and routed["seed"] == got["seed"] and b.unrouted() == 0

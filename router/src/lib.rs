@@ -1398,6 +1398,14 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         (u[2] - u[0]).max(0) + (u[3] - u[1]).max(0)
     };
     order.sort_by_key(|&n| (reach(n), n));
+    if problem.seed > 0 {
+        let mix = |n: usize| -> u64 {
+            let mut x = (n as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ problem.seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+            x = (x ^ (x >> 31)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            x ^ (x >> 29)
+        };
+        order.sort_by_key(|&n| (reach(n) as u64 * (768 + mix(n) % 513) / 1024, n));
+    }
     let nodes = nx * ny * nl;
     let mut router = Router {
         problem,

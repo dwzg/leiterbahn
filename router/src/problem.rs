@@ -82,6 +82,13 @@ pub struct Problem {
     /// 186 to 323.
     #[serde(default)]
     pub glance: bool,
+    /// Another run of the same problem: with a seed other than 0 the nets are laid in a slightly
+    /// other order (a net's reach counts as 0.75 to 1.25 times what it is). Where the rounds
+    /// are a close thing, any change of order ends them elsewhere: eight placements of a board
+    /// took 11 to 172 rounds, and with one tie broken otherwise 11 to 200, the same placement
+    /// 164 or 77. Several seeds side by side, and the first to come clean wins (negotiate(race=)).
+    #[serde(default)]
+    pub seed: u64,
     /// Settle nets that go on changing places by trying their orders: see untangle.rs.
     #[serde(default = "d_true")]
     pub untangle: bool,

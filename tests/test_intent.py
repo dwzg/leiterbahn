@@ -66,3 +66,18 @@ def test_read_pins_gives_name_and_kind_without_the_number_kicad_appends(tmp_path
                  '(node (ref "R1") (pin "2") (pintype "passive")))))')
     assert read_pins(str(p)) == {("U1", "4"): ("FB", "input"), ("U1", "A1"): ("A_1", "passive"),
                                  ("R1", "2"): ("", "passive")}
+
+
+def test_a_net_an_output_drives_is_no_quiet_node():
+    """A follower: the amplifier's inverting input is on its own output. That net is low impedance, whatever the
+    pin is called, and a resistor from it to a converter's input belongs at the converter."""
+    pins = {("U1", "1"): ("", "output"), ("U1", "2"): ("-", "input"), ("U1", "3"): ("+", "input"),
+            ("U2", "5"): ("AIN1N", "input"), ("U3", "1"): ("ALERT", "open_collector")}
+    nets = {"BUF": [("U1", "1"), ("U1", "2"), ("R1", "1")], "AIN": [("U2", "5"), ("R1", "2"), ("C1", "1")],
+            "SRC": [("U1", "3"), ("R2", "1"), ("U3", "1")]}
+    assert intent.driven(pins, nets) == {"BUF"}            # an open collector drives nothing
+    assert intent.roles(pins, nets)[0] == {"AIN", "SRC"}
+    at = {("U1", "1"): (0, 0), ("U1", "2"): (0, 1), ("U1", "3"): (0, 2), ("R1", "1"): (1, 0), ("R1", "2"): (2, 0),
+          ("U2", "5"): (30, 0), ("C1", "1"): (30, 1), ("R2", "1"): (1, 2), ("U3", "1"): (2, 2)}
+    found = intent.findings(pins, nets, lambda r, p: at.get((r, p)))
+    assert [(f[1], f[3], f[5]) for f in found] == [("U2", "AIN", "R1")]   # not U1 pin 2 on BUF, 30 mm from R1

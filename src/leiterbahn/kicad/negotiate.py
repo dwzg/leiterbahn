@@ -7,6 +7,7 @@ is used by one net. This module turns a board into its problem file and its answ
 """
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -96,20 +97,74 @@ def problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cos
                 keepouts=keepouts, fixed=fixed, rooms=rooms, nets=nets, max_iter=max_iter), routed
 
 
-def solve(prob, tmp_dir, say=None):
-    """Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs)."""
+def solve(prob, tmp_dir, say=None, race=1):
+    """Run leiterbahn-route on a problem; returns its answer (see router/src/problem.rs).
+
+    race: that many runs side by side, each with another seed (a slightly other order of the
+    nets), and the answer of the one with the fewest connections open, then the fewest rounds,
+    then the lowest seed: its seed is answer["seed"]. A run that has already taken more
+    rounds than a clean one that is done is stopped, so the race takes about as long as its
+    winner, and the same race gives the same answer every time.
+    """
     os.makedirs(tmp_dir, exist_ok=True)
-    src, out = os.path.join(tmp_dir, "route-problem.json"), os.path.join(tmp_dir, "route-result.json")
-    with open(src, "w") as f:
-        json.dump(prob, f)
-    done = subprocess.run([binary(), src, out], capture_output=True, text=True)
-    if done.returncode:
-        raise RuntimeError("leiterbahn-route failed: " + done.stderr[-2000:])
+    if race <= 1:
+        src, out = os.path.join(tmp_dir, "route-problem.json"), os.path.join(tmp_dir, "route-result.json")
+        with open(src, "w") as f:
+            json.dump(prob, f)
+        done = subprocess.run([binary(), src, out], capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError("leiterbahn-route failed: " + done.stderr[-2000:])
+        if say:
+            for line in done.stderr.splitlines():
+                say(line)
+        with open(out) as f:
+            return json.load(f)
+    exe, runs = binary(), []
+    for seed in range(race):
+        src, out, log = (os.path.join(tmp_dir, "route-%s-%d.%s" % (kind, seed, ext))
+                         for kind, ext in (("problem", "json"), ("result", "json"), ("log", "txt")))
+        with open(src, "w") as f:
+            json.dump(dict(prob, seed=seed), f)
+        with open(log, "w") as f:
+            runs.append(dict(seed=seed, out=out, log=log, proc=subprocess.Popen([exe, src, out], stderr=f,
+                                                                               stdout=subprocess.DEVNULL)))
+
+    def rounds(run):
+        with open(run["log"]) as f:
+            found = re.findall(r"^round (\d+):", f.read(), re.M)
+        return int(found[-1]) if found else 0
+    try:
+        while any("key" not in run and not run.get("stopped") for run in runs):
+            time.sleep(0.2)
+            for run in runs:
+                if "key" in run or run.get("stopped") or run["proc"].poll() is None:
+                    continue
+                if run["proc"].returncode:
+                    with open(run["log"]) as f:
+                        raise RuntimeError("leiterbahn-route failed: " + f.read()[-2000:])
+                with open(run["out"]) as f:
+                    run["answer"] = json.load(f)
+                run["key"] = (sum(len(net["open"]) for net in run["answer"]["nets"]), run["answer"]["iterations"],
+                              run["seed"])
+            done = [run["key"] for run in runs if "key" in run]
+            if done and min(done)[0] == 0:                 # a clean one: whoever is past its rounds has lost
+                for run in runs:
+                    if "key" not in run and not run.get("stopped") and rounds(run) > min(done)[1]:
+                        run["proc"].kill()
+                        run["stopped"] = True
+    finally:
+        for run in runs:
+            if run["proc"].poll() is None:
+                run["proc"].kill()
+            run["proc"].wait()
+    best = min((run for run in runs if "key" in run), key=lambda run: run["key"])
     if say:
-        for line in done.stderr.splitlines():
-            say(line)
-    with open(out) as f:
-        return json.load(f)
+        with open(best["log"]) as f:
+            for line in f.read().splitlines():
+                say(line)
+        say("a race of %d: seed %d won (connections open, rounds, seed: %s)"
+            % (race, best["seed"], ", ".join(str(run.get("key", "stopped")) for run in runs)))
+    return dict(best["answer"], seed=best["seed"])
 
 
 def _board_problem(board, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
@@ -247,7 +302,7 @@ def glance(board, tmp_dir, rounds=8, say=None, **kw):
 
 def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, locked=False,
               say=None, weights=None, edge_clear=0.3, quiet=(), noisy=(), apart=0.5, shy=3.0, straight=True,
-              room=0.8, pours=None):
+              room=0.8, pours=None, race=1):
     """Route every net of the board that is in more than one piece, all at once.
 
     box: (x0, y0, x1, y1) on the sheet: route only inside it (copper outside stays; a net is
@@ -267,11 +322,16 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     more than `shy` times longer: such a pad hangs in the pour by its spokes, and a track led
     past it at clearance left it one (DRC: starved thermal). 0: no such wish. pours: {net:
     [layers]} for pours that are added only after routing (the usual order on outer layers);
-    the zones the board has are seen without. Returns dict(nets,
+    the zones the board has are seen without. race: route that many times side by side with
+    the nets in slightly other orders, and take the run that comes clean in the fewest
+    rounds (see solve()): where the rounds are a close thing, any other order ends them
+    elsewhere, and a board that takes 164 rounds one way takes 30 another. Costs a processor
+    and about 0.6 GB per run. Returns dict(nets,
     routed, open [(net, pieces left apart)], rounds, seconds, cost, alone, by_net): cost is
     all tracks in mm with a via as
     `via_cost` and narrow track half as much again; alone is the same with each net alone on
-    the board (no result is below that); by_net is {net: (cost, alone)}. Tracks are laid at
+    the board (no result is below that); by_net is {net: (cost, alone)}. seed: which run of a
+    race this is (0 without). Tracks are laid at
     their net class's width; a connection that has no way at that width, even with all other
     nets out of the way, is laid at the board's track width (narrow_tracks() reports it,
     widen() restores what fits).
@@ -280,7 +340,7 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     r, items, prob, routed = _board_problem(board, only, skip, box, step, via_cost, max_iter, locked, weights,
                                             edge_clear, quiet, noisy, apart, shy, straight, room, pours)
     started = time.time()
-    answer = solve(prob, tmp_dir, say)
+    answer = solve(prob, tmp_dir, say, race)
     grid = finish.Grid(prob["box"], step)
     left, count = [], 0
     for net in answer["nets"]:
@@ -300,5 +360,5 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
     return dict(nets=len(answer["nets"]), routed=count, open=left, rounds=answer["iterations"],
                 conflicts=answer["conflicts"], seconds=round(time.time() - started, 1),
                 cost=round(sum(c for c, _ in by_net.values()), 1), alone=round(sum(a for _, a in by_net.values()), 1),
-                by_net=by_net,
+                by_net=by_net, seed=answer.get("seed", 0),
                 beside={net["name"]: round(net["beside"], 2) for net in answer["nets"] if net["beside"]})

@@ -111,6 +111,9 @@ assignment and `net_conflict` DRC errors that looked like a routing bug.
   round swings by a third. One board, eight placements: five settled at 0 to 57 cells in
   conflict, three at 142 to 167, and those three took 136 to 172 rounds to route. `where` names the
   pins, `in_way` the parts beside them, `heat` every square the router fought over.
+- `negotiate(race=8)` where processors are free: eight runs with the nets in other orders,
+  and the one that is clean in the fewest rounds wins. A board that takes 100 rounds one
+  way takes 18 another, and nothing tells beforehand which.
 - A placement that settles high has parts in the tracks' way, and neither wire length nor
   pad density shows which: `place.ease(judge, p.loose())` asks the router. It takes the
   parts `glance()` names, moves each out of its place in turn (`p.evict()`: usually to the

@@ -20,6 +20,7 @@ resistor belongs where the circuit needs it, not where the wire length is shorte
 import json
 import math
 import os
+import re
 import subprocess
 
 import pcbnew
@@ -31,8 +32,10 @@ RAIL = 5                                  # a net with more pads than this is a 
 
 
 def passive(ref):
-    """True for resistors and capacitors (R12, C3): the parts placed last, on either side."""
-    return ref[0] in "RC" and ref[1:].isdigit()
+    """True for resistors, capacitors and resistor networks (R12, C3, RN1): the parts placed last, on
+    either side. (A network of four pads counted as a part others belong to, and belonged nowhere
+    itself: a divider lay 18 mm from the amplifier input it feeds.)"""
+    return bool(re.match(r"^(R|C|RN)\d+$", ref))
 
 
 def with_lanes(box, pads, lane):
@@ -516,6 +519,7 @@ class Placer:
         def far(a, b):
             (ax, ay), (bx, by) = self.pad(*a), self.pad(*b)
             return abs(ax - bx) + abs(ay - by)
+        low = intent.driven(self.pin_info, self.nets)      # nets an output drives: no quiet nodes
         hosts = {}                                         # net -> [(ref, pad)] of parts that can be a host
         for net, pads in self.nets.items():
             if net not in self.planes:
@@ -569,10 +573,12 @@ class Placer:
             # A part on the net of a pin that takes up what is near it (FB, COMP, an amplifier's input: see
             # intent.QUIET) belongs at that pin, whatever its other end is on: such a node was 30 mm long
             # with its resistor at the far end's part.
-            quiet = [(pad, t) for pad, net in mine if len(self.nets[net]) <= 8
+            # (Not on a net an output drives: a follower's inverting input is on its output, and a resistor
+            # from there to a converter's input was held by both ends and lay 22 mm from the converter.)
+            quiet = [(pad, t, net) for pad, net in mine if len(self.nets[net]) <= 8 and net not in low
                      for t in hosts.get(net, ()) if intent.QUIET.match(self.pin_info.get(t, ("", ""))[0])]
-            if quiet and len({pad for pad, _t in quiet}) == 1:
-                pad, to = min(quiet, key=lambda q: (far((ref, q[0]), q[1]), q[1]))
+            if quiet and len({net for _pad, _t, net in quiet}) == 1:       # (two pads of a network may be on it)
+                pad, to, _net = min(quiet, key=lambda q: (far((ref, q[0]), q[1]), q[1]))
                 found.append((ref, pad, to[0], to[1], 3.0))
                 continue
             common = None

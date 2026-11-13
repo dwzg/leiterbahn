@@ -643,6 +643,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         shy: 3.0,
         straight: true,
         glance: false,
+        seed: 0,
         relay: true,
         untangle: true,
         stall: 20,

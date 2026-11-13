@@ -43,12 +43,23 @@ def supply_pins(pins, nets, ground=None):
                   and not re.match(r"^(J|P|H|MH|X)\d", ref))
 
 
+def driven(pins, nets):
+    """The nets an output drives: those with a pin the symbol calls an output (not an open
+    collector) on a part that is no resistor or capacitor. An input on such a net sees a low
+    impedance, whatever it is called: the inverting input of a follower is on its output."""
+    return {net for net, pads in nets.items()
+            if any(pins.get(t, ("", ""))[1].split("+")[0] in ("output", "power_out") and not passive(t[0])
+                   for t in pads)}
+
+
 def roles(pins, nets):
     """(quiet, noisy): the nets with a pin whose name says it takes up what is near it (FB, COMP,
     a sense or amplifier input, a reference) and those with a pin that swings (SW, BOOT, a gate
-    drive, a clock). Supply rails and grounds are neither. For negotiate(quiet=, noisy=)."""
+    drive, a clock). Supply rails and grounds are neither, nor is a net an output drives
+    (driven()) quiet. For negotiate(quiet=, noisy=)."""
     ground = grounds(pins, nets)
     rails = {net for _r, _p, net in supply_pins(pins, nets, ground)}
+    low = driven(pins, nets)
     quiet, noisy = set(), set()
     for net, pads in nets.items():
         if net in ground or net in rails:
@@ -56,7 +67,7 @@ def roles(pins, nets):
         names = [pins.get(t, ("", ""))[0] for t in pads if not passive(t[0])]
         if any(NOISY.match(n) for n in names):
             noisy.add(net)
-        elif any(QUIET.match(n) for n in names):
+        elif net not in low and any(QUIET.match(n) for n in names):
             quiet.add(net)
     return quiet, noisy
 
@@ -67,8 +78,9 @@ def findings(pins, nets, at, near=4.0, node=10.0, boot=4.0):
 
     "supply": a supply pin whose nearest capacitor from its net to a ground is further than
     `near` mm (inf: the net has none). "node": a pin named as a quiet one (see roles()) whose
-    net reaches further than `node` mm from it. "boot": a boot pin whose capacitor is further
-    than `boot` mm. Distances are between pad centres.
+    net reaches further than `node` mm from it, unless an output drives that net (driven()).
+    "boot": a boot pin whose capacitor is further than `boot` mm. Distances are between pad
+    centres.
     """
     ground = grounds(pins, nets)
     on = {}
@@ -85,6 +97,7 @@ def findings(pins, nets, at, near=4.0, node=10.0, boot=4.0):
 
     found = []
     supplies = supply_pins(pins, nets, ground)
+    low = driven(pins, nets)
     rails = {n for _r, _p, n in supplies}
     held = {n for n, pads in nets.items() if sum(1 for r, _p in pads if r[0] == "C" and r[1:2].isdigit()) >= 2}
     for ref, pad, net in supplies:
@@ -107,7 +120,7 @@ def findings(pins, nets, at, near=4.0, node=10.0, boot=4.0):
             if best[0] > boot:
                 found.append(("boot", ref, pad, net, best[0], best[1],
                               "no capacitor on its net" if best[1] is None else "its capacitor is %s" % best[1]))
-        elif QUIET.match(name) and len(nets[net]) <= 8:
+        elif QUIET.match(name) and len(nets[net]) <= 8 and net not in low:
             reach = max(((far((ref, pad), t), t[0]) for t in nets[net]
                          if t != (ref, pad) and not t[0].startswith("TP")), default=(0.0, None))
             if node < reach[0] < math.inf:

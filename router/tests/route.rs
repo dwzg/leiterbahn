@@ -525,3 +525,30 @@ fn a_pushed_net_does_not_search_further_than_the_pusher_has_won() {
     );
     assert!(s.expanded < 150_000, "{} cells opened", s.expanded); // 92515; without the limit 282664
 }
+
+/// A seed lays the nets in another order: the result is still a clean board, and seed 0 is the order as it was.
+#[test]
+fn another_seed_routes_the_same_board_clean() {
+    let problem = |seed: u64| {
+        let nets: Vec<_> = (0..6)
+            .map(|k| {
+                let y = 2.0 + k as f64;
+                json!({"name": format!("N{}", k), "width": 0.2, "clearance": 0.2,
+                       "pieces": [[pad(1.0, y, 0)], [pad(19.0, 9.0 - y, 0)], [pad(5.0 + 2.0 * k as f64, if k % 2 == 0 { 1.0 } else { 8.0 }, 0)]]})
+            })
+            .collect();
+        json!({"box": [0, 0, 20, 9], "step": 0.1, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "seed": seed, "nets": nets})
+    };
+    let plain = {
+        let mut p = problem(0);
+        p.as_object_mut().unwrap().remove("seed");
+        solve(p)
+    };
+    let zero = solve(problem(0));
+    assert_eq!(serde_json::to_string(&zero.nets).unwrap(), serde_json::to_string(&plain.nets).unwrap());
+    assert!(zero.nets.iter().all(|n| n.open.is_empty()));
+    for seed in 1..4 {
+        let s = solve(problem(seed));
+        assert!(s.nets.iter().all(|n| n.open.is_empty()), "seed {}", seed);
+    }
+}
