@@ -1373,6 +1373,8 @@ def test_improve_replaces_a_detour_with_two_vias_by_a_straight_track(project, tm
     assert len(mid) == 3 and all(t.IsLocked() for t in mid)
     assert b.unrouted() == open_before
     assert b.improve()["better"] == 0                      # nothing left to gain
+    from leiterbahn.kicad.board import acute_angles       # and no piece that leaves a joint of its net at a slant
+    assert not [t for t in acute_angles(b.board) if 1 <= t[-1] < 44]
 
 
 def test_improve_lets_a_run_push_another_out_of_its_way_when_the_sum_gets_shorter(project, tmp_path):
@@ -1515,3 +1517,21 @@ def test_a_race_takes_the_run_that_is_clean_in_the_fewest_rounds(project, tmp_pa
     assert again == got
     routed = b.negotiate(str(tmp_path / "board"), race=3)
     assert routed["open"] == [] and routed["seed"] == got["seed"] and b.unrouted() == 0
+
+
+def test_straighten_merges_a_jog_but_makes_no_acute_joint(project):
+    """A step aside of 0.05 mm in a run becomes one piece. A branch that runs one cell beside its trunk and joins it
+    by one slanted step stays as it is: merged, it would leave the joint 8 degrees off the trunk."""
+    from leiterbahn.kicad.board import acute_angles
+    b = board(project)
+    b.track("SIG", [(110, 120), (112, 120), (112.05, 120.05), (114, 120.05)], width=0.15, locked=False)   # a jog
+    b.track("SIG", [(110, 110), (110, 111), (109.65, 111.35)], width=0.15, locked=False)                 # the trunk
+    b.track("SIG", [(110.05, 110.65), (110.05, 110.95), (110, 111)], width=0.15, locked=False)           # the branch
+    assert not [a for a in acute_angles(b.board) if 1 <= a[-1] < 44]
+    count = len(list(b.board.GetTracks()))
+    assert b.straighten() >= 1
+    assert len(list(b.board.GetTracks())) < count
+    assert not [a for a in acute_angles(b.board) if 1 <= a[-1] < 44]
+    branch = [t for t in b.board.GetTracks()
+              if pcbnew.ToMM(t.GetStart().x) == 110.05 or pcbnew.ToMM(t.GetEnd().x) == 110.05]
+    assert len(branch) == 2, "the branch keeps its slanted step"

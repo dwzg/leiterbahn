@@ -671,3 +671,21 @@ fn a_pad_of_fine_pitch_off_the_grid_has_a_way_out() {
         }
     }
 }
+
+/// Two nets that cross on one layer, each with a free way round the other's end, 6 mm from its
+/// own pads. A search looks 4 mm about the net's pads and tracks; the track that gives way
+/// moves out round by round until it is past the other's end. (What is done for nets that stay
+/// stuck, the wider look and the tracks given up about a knot, must not get in the way of this.)
+#[test]
+fn nets_that_cross_part_within_a_few_rounds() {
+    let s = solve(json!({
+        "box": [0, 0, 20, 20], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "max_iter": 60,
+        "nets": [{"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(4.0, 10.0, 0)], [pad(16.0, 10.0, 0)]]},
+                 {"name": "B", "width": 0.2, "clearance": 0.2, "pieces": [[pad(10.0, 4.0, 0)], [pad(10.0, 16.0, 0)]]}]
+    }));
+    assert!(s.nets.iter().all(|n| n.open.is_empty()));
+    assert!(s.iterations < 12, "{} rounds: {:?}", s.iterations, s.conflicts);
+    // one of them goes round an end of the other, the other lies straight
+    let (longer, shorter) = (s.nets[0].cost.max(s.nets[1].cost), s.nets[0].cost.min(s.nets[1].cost));
+    assert!(longer > 17.0 && longer < 20.0 && shorter < 12.5, "{} and {}", longer, shorter);
+}

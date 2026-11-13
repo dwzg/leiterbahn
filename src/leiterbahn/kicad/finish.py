@@ -915,8 +915,33 @@ def improve(board, step=0.1, via_cost=3.0, limit=100000, gain=0.3, margin=3.0, s
         tracks, vias = got[0], got[1]
         return sum(length(p + q) for _l, xy in tracks for p, q in zip(xy, xy[1:], strict=False)), len(vias)
 
+    def slants(run, got):
+        """A new piece would leave a joint of its net at less than 45 degrees to a piece that stays."""
+        for layer, xy in got[0]:
+            for (px, py), (qx, qy) in ((xy[0], xy[1]), (xy[-1], xy[-2])) if len(xy) > 1 else ():
+                tx, ty = qx - px, qy - py
+                for it in items.values():
+                    if it["kind"] != "seg" or it["net"] != run["net"] or layer not in it["layers"]:
+                        continue
+                    x0, y0, x1, y1 = it["seg"]
+                    vx, vy = x1 - x0, y1 - y0
+                    t = max(0.0, min(1.0, ((px - x0) * vx + (py - y0) * vy) / ((vx * vx + vy * vy) or 1.0)))
+                    if math.hypot(px - x0 - t * vx, py - y0 - t * vy) > 1e-3:
+                        continue                           # it does not touch the point
+                    for ex, ey in ((x0, y0), (x1, y1)):    # as it leaves the point, to either end
+                        ox, oy = ex - px, ey - py
+                        if math.hypot(ox, oy) > 1e-3:
+                            angle = abs(math.degrees(math.atan2(tx * oy - ty * ox, tx * ox + ty * oy)))
+                            if 1.0 < angle < 44.0:
+                                return True
+        return False
+
     def no_thinner(run, got):
-        """No more track below the net class's width than the run had."""
+        """No more track below the net class's width than the run had, and no acute joint: a run from a via
+        to a joint of its net, searched again on this function's own grid, came back as one piece 8 degrees
+        off the track it joins (shorter, so better)."""
+        if slants(run, got):
+            return False
         return got[3] >= run["full"] - 1e-6 or (got[3] >= run["w"] - 1e-6 and measure(got)[0] <= run["thin"] + 1e-6)
 
     def again(items, run, rip_mm=0.0):
@@ -978,7 +1003,8 @@ def improve(board, step=0.1, via_cost=3.0, limit=100000, gain=0.3, margin=3.0, s
             if not isinstance(got, str) and (got[0] or got[1]):
                 new_len, new_vias = measure(got)
                 saved = run["cost"] - new_len - via_cost * new_vias
-                if (saved >= gain and no_thinner(run, got)) or (got[3] > run["w"] + 1e-6 and saved >= -wider_for):
+                if (saved >= gain and no_thinner(run, got)) or (got[3] > run["w"] + 1e-6 and saved >= -wider_for
+                                                               and not slants(run, got)):
                     free = (got, saved)
             # is there much more to gain by pushing other runs out of the way?
             pushed = None

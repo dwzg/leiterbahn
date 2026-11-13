@@ -1279,6 +1279,25 @@ class Board:
                 dev = abs((k[2] - ax) * vy - (k[3] - ay) * vx) / L
                 if dev > tol or (anchored and dev > 0.4 * mm(s1.GetWidth())):
                     continue
+                # Not if the straight piece then leaves a joint of its net at a slant: a branch that ran
+                # 0.3 mm beside its trunk, one cell off, and joined it by one slanted step became one
+                # piece 8 degrees off the trunk (an acute joint, where etchant stays).
+                def slants(end, to, group=group, k=k, ends=ends):
+                    ex, ey = round(mm(end.x), 3), round(mm(end.y), 3)
+                    tx, ty = mm(to.x) - ex, mm(to.y) - ey
+                    for o in ends.get((k[0], k[1], ex, ey), ()):
+                        if o is group[0] or o is group[1]:
+                            continue
+                        st = o.GetStart()
+                        other = o.GetEnd() if (round(mm(st.x), 3), round(mm(st.y), 3)) == (ex, ey) else st
+                        ox, oy = mm(other.x) - ex, mm(other.y) - ey
+                        if math.hypot(ox, oy) > 1e-6:
+                            angle = abs(math.degrees(math.atan2(tx * oy - ty * ox, tx * ox + ty * oy)))
+                            if 1.0 < angle < 44.0:
+                                return True
+                    return False
+                if slants(a, b) or slants(b, a):
+                    continue
                 # clearance of the straight replacement against other nets' copper
                 new = pcbnew.PCB_TRACK(self.board)
                 new.SetStart(a)

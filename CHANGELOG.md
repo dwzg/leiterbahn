@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.33.0
+
+Changed
+- Nets that stay in each other's way are helped out of it. When the conflicts have not got
+  fewer for four rounds, the nets in conflict give up all their tracks within 2 mm of where
+  they are stuck, then within 4 mm, and so on, and after twelve rounds every net with a
+  track there does; and from the second such round on, a net whose way still crosses
+  another's is shown the whole board once, not only the ground about its own pads. Until
+  now a net was laid again only where another lay on it and searched only near itself, as
+  long as that gave any way at all. A board of 1458 connections sat on two crossings of
+  five cells from round 25 on, 17 s a round, and did not end in 25 minutes; now the
+  crossings are gone by round 47, 17 minutes. A board of 159 nets, the same 24 placements:
+  30 % fewer rounds (fewer in 14, more in 3), tracks as long, all clean as before.
+
+Fixed
+- `Board.straighten()` no longer merges two pieces into one that leaves a joint of its net
+  at a slant (a branch one cell beside its trunk, joined by one slanted step, would become
+  a piece 8 degrees off the trunk), and `Board.improve()` no longer takes a new way that
+  does: on its own grid a run from a via to a joint came back as such a piece, shorter and
+  so better, and the board had an acute joint.
+
 ## 0.32.1
 
 Fixed

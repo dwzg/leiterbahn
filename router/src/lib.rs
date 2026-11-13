@@ -754,6 +754,9 @@ struct Router<'a> {
     /// How much more than its tracks that go the net's new ones may cost, in cells: a search
     /// ends without a way when that is spent. None: whatever it takes.
     budget: Option<f32>,
+    /// The rounds are getting nowhere: a way that crosses another net is checked against the
+    /// whole board (see `lay_on`).
+    far: bool,
 }
 
 impl Router<'_> {
@@ -1165,6 +1168,53 @@ impl Router<'_> {
                     self.via_cost,
                     self.problem.limit,
                 );
+            }
+            // A way was found near the net, but only across another net, and the rounds are getting
+            // nowhere: then one look at the whole board for a way that costs less. (Crossing is
+            // always possible near the net, so a search that looks further only when it finds
+            // nothing never did: two tracks crossed in open ground for 40 rounds, each with a free
+            // way 5 mm outside its bounds.)
+            if let (Some(path), true) = (&found, self.far && self.widen && press.is_some() && self.search.window != self.whole) {
+                let plane = (self.grids.nx * self.grids.ny) as u32;
+                let (track, via) = (&self.grids.track[kind], &self.grids.via[job.via_kind]);
+                let crosses = path.iter().any(|&c| track[c as usize].soft > 0)
+                    || path.windows(2).any(|w| w[0] / plane != w[1] / plane && via[(w[0] % plane) as usize].soft > 0);
+                if crosses {
+                    let near = self.search.window;
+                    let cost = self.search.marks[*path.last().unwrap() as usize].g;
+                    self.search.window = self.whole;
+                    self.search.bound = cost - 0.5;
+                    let wider = self.search.run(
+                        &self.grids,
+                        kind,
+                        job.via_kind,
+                        &sources,
+                        &goals,
+                        press,
+                        memory,
+                        self.via_cost,
+                        self.problem.limit,
+                    );
+                    match wider {
+                        Some(way) => found = Some(way),
+                        None => {
+                            // nothing cheaper anywhere: the way near the net it is (searched again: the marks are gone)
+                            self.search.window = near;
+                            self.search.bound = left.unwrap_or(f32::INFINITY);
+                            found = self.search.run(
+                                &self.grids,
+                                kind,
+                                job.via_kind,
+                                &sources,
+                                &goals,
+                                press,
+                                memory,
+                                self.via_cost,
+                                self.problem.limit,
+                            );
+                        }
+                    }
+                }
             }
             if let (None, Some(narrow)) = (&found, job.narrow) {
                 kind = narrow;
@@ -1603,6 +1653,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         whole: [0, 0, nx as i32 - 1, ny as i32 - 1],
         widen: true,
         budget: None,
+        far: false,
         grids,
     };
     let mut solution = Solution::default();
@@ -1634,18 +1685,45 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     let mut press = 0.5f32;
     let mut clean = false;
     let (mut fewest, mut since, mut restarts) = (u64::MAX, 0u32, 0u32);
+    // Where nets have gone on lying on each other: see below.
+    let knot_tile = 16;
+    let new_knot = |grids: &Grids| Fresh {
+        stamps: vec![0; (grids.nx / knot_tile as usize + 1) * (grids.ny / knot_tile as usize + 1)],
+        nx: grids.nx as i32 / knot_tile + 1,
+        ny: grids.ny as i32 / knot_tile + 1,
+        tile: knot_tile,
+        now: 0,
+    };
+    let mut knot = new_knot(&router.grids);
     for round in 0..problem.max_iter {
         let (mut found, mut again) = (0u64, 0usize);
+        // Two nets that lie on each other and are each laid again only where the other is on them
+        // can go on so for ever: the way out for the one is through a track of the other that
+        // nobody lies on, and that stays. (A board of 1458 connections: two crossings of five
+        // cells from round 20 on, each round a search of the whole board for a way that is not
+        // there, 17 s a round.) So when the conflicts have not got fewer for four rounds, the nets
+        // in conflict give up all their tracks within 2 mm of where they are stuck, then within
+        // 4 mm, and so on; after twelve rounds every net with a track there does.
+        if since == 0 && knot.now > 0 {
+            knot = new_knot(&router.grids);
+        }
+        router.far = since >= 2;
+        let wide = (problem.relay && round > 0 && since >= 4).then(|| ((2.0 * 2f64.powi(((since - 4) / 4) as i32)).min(32.0) / step) as i32);
         for &n in &order {
             if round > 0 {
                 router.soft(n, -1);
                 let c = router.conflicts(n, 0.4);
                 let retry = !router.laid[n].open.is_empty() && !router.laid[n].stuck;
-                if c == 0 && !retry {
+                let beside = c == 0 && since >= 12 && wide.is_some() && router.laid[n].nodes.iter().any(|path| knot.hit(router.bounds(path), 0));
+                if c == 0 && !retry && !beside {
                     router.soft(n, 1);
                     continue;
                 }
                 found += c;
+                if let (Some(reach), Some((_cells, b, _layers))) = (wide, router.where_stuck(n)) {
+                    let b = b.map(|v| v as i32);
+                    knot.note([(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])].into_iter(), reach);
+                }
             }
             // a search stays within 4 mm of the net's pads and tracks, unless there is no way there:
             // without this bound the supply board's 158 nets took 146 s, nearly all of it searching
@@ -1656,7 +1734,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             // only so, another kept one connection open instead of two).
             // (Not a net of many pads: laid again whole in every round, a ground net of some hundred
             // pads took a board from 14 minutes to more than 25 over two crossings of five cells.)
-            if problem.relay && (restarts == 0 || router.jobs[n].cells.len() > 24) {
+            if wide.is_some() && knot.now > 0 {
+                router.lay_on(n, Some(press), 1.0, true, Some((&knot, 0)));
+            } else if problem.relay && (restarts == 0 || router.jobs[n].cells.len() > 24) {
                 router.relay(n, Some(press), 1.0);
             } else {
                 router.lay(n, Some(press), 1.0);
