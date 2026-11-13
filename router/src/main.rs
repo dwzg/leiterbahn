@@ -11,7 +11,8 @@
 //!     its net is joined by tracks like any other, unless the pour is on a plane layer; --pours
 //!     trust takes every filled pour as a connection (new tracks may cut it apart). Tracks keep
 //!     --room mm from a pad on a pour where they can, for the spokes that hold it. A plane is a
-//!     layer of type power: no tracks on it, vias into it. --planes found also takes every inner
+//!     layer of type power: no tracks on it, vias into it (an outer one only if something is
+//!     poured on it). --planes found also takes every inner
 //!     layer for one that pours fill by more than half. (No share tells a plane from a signal
 //!     layer flooded with ground: of five boards, the inner layers their designers left without
 //!     tracks were filled by 68 to 73 %, those with up to 539 tracks by 58 to 74 %.)
@@ -79,6 +80,9 @@ fn main() {
         }
         let text = read(&args[2]);
         let mut board = kicad::Board::parse(&text).unwrap_or_else(|e| fail(format!("{}: {}", args[2], e)));
+        for layer in &board.freed {
+            eprintln!("{} is of type power, but nothing is poured on it: tracks are laid there", layer);
+        }
         if find_planes {
             for layer in board.planes(0.5) {
                 eprintln!("{} is taken for a plane: pours fill more than half of it", layer);

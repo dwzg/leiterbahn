@@ -164,6 +164,25 @@ fn a_pad_off_its_hole_and_a_text_on_copper_are_in_the_way() {
     assert_eq!(nobody.len(), 2, "the text and the line, on the front, of no net");
 }
 
+/// A text on copper is in the way where it is, not far to either side of it: KiCad sets these
+/// seven letters 6.35 mm wide and 1.7 mm high, and a line end written into the text is no letter.
+#[test]
+fn a_text_on_copper_is_about_as_wide_as_it_is_set() {
+    let text = board_text().replace(
+        "(gr_line (start 0 0)",
+        r#"(gr_text "JTAG_EN\n" (at 10 9 0) (layer "F.Cu") (uuid "u") (effects (font (size 1 1) (thickness 0.15))))
+  (gr_line (start 0 0)"#,
+    );
+    let board = Board::parse(&text).unwrap();
+    let words = board.drawn.iter().find(|d| d.rect.is_some()).unwrap().rect.unwrap();
+    let (wide, high) = (words[2] - words[0], words[3] - words[1]);
+    assert!((6.35..8.0).contains(&wide) && (1.7..2.0).contains(&high), "{} x {}", wide, high);
+    assert!(
+        (words[0] + words[2] - 20.0).abs() < 1e-9 && (words[1] + words[3] - 18.0).abs() < 1e-9,
+        "about its place"
+    );
+}
+
 /// What the board's constraints ask for at least goes before the net class.
 #[test]
 fn the_boards_least_widths_go_before_the_net_class() {
@@ -299,6 +318,23 @@ fn a_pad_drawn_as_a_polygon_is_the_boxes_it_is_made_of() {
     assert_eq!(pads.len(), 3, "the anchor and two bars");
     assert!(covers(12.0 - 0.4, 7.0) && covers(12.0 + 0.4, 7.0 - 0.5), "the long bar and the foot");
     assert!(!covers(12.0 - 0.2, 7.0 - 0.45), "the corner between them");
+}
+
+/// An outer layer of type power is a plane only if something is poured on it; a teardrop is not.
+#[test]
+fn an_outer_power_layer_with_no_pour_is_routed_on() {
+    let typed = board_text().replace(r#"(2 "B.Cu" signal)"#, r#"(2 "B.Cu" power)"#);
+    let board = Board::parse(&typed).unwrap();
+    assert_eq!((board.copper[1].1, board.freed.len()), (false, 0), "GND is poured on the back");
+    let teardrop = typed.replace(
+        r#"(zone (net "GND") (layer "B.Cu")"#,
+        r#"(zone (net "GND") (layer "B.Cu") (attr (teardrop (type padvia)))"#,
+    );
+    let board = Board::parse(&teardrop).unwrap();
+    assert_eq!((board.copper[1].1, board.freed.clone()), (true, vec!["B.Cu".to_string()]));
+    let front = board_text().replace(r#"(0 "F.Cu" signal)"#, r#"(0 "F.Cu" power)"#);
+    let board = Board::parse(&front).unwrap();
+    assert_eq!(board.copper.iter().map(|c| c.1).collect::<Vec<_>>(), vec![true, true]);
 }
 
 /// The outline as it is drawn: a corner cut off by an arc, and a slot. Copper keeps the edge

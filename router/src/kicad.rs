@@ -58,12 +58,17 @@ pub struct Zone {
     pub bounds: [f64; 4],
     /// The filled copper: (layer, outline of one island).
     pub fills: Vec<(usize, Vec<[f64; 2]>)>,
+    /// A teardrop at a pad or a via, which KiCad keeps as a zone: copper, but no pour.
+    pub teardrop: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Board {
-    /// Copper layers front to back: (name, routed on). Layers of type `power` are planes.
+    /// Copper layers front to back: (name, routed on). Layers of type `power` are planes, but
+    /// for an outer one on which nothing is poured (see `freed`).
     pub copper: Vec<(String, bool)>,
+    /// Outer layers of type `power` that are routed on all the same: nothing is poured on them.
+    pub freed: Vec<String>,
     pub pads: Vec<Pad>,
     pub segments: Vec<Segment>,
     pub vias: Vec<Hole>,
@@ -271,9 +276,22 @@ fn drawn(item: &Sexp, layer: usize, origin: [f64; 2], angle: f64, out: &mut Vec<
             let font = item.find("effects").and_then(|e| e.find("font"));
             let size = font.and_then(|f| f.find("size")).map(xy).unwrap_or([1.0, 1.0]); // height, width
             let thick = font.and_then(|f| f.find("thickness")).and_then(|t| t.num(1)).unwrap_or(0.15);
-            let lines: Vec<&str> = words.split("\\n").collect();
-            let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * size[1] * 1.3 + thick + 0.4;
-            let height = lines.len() as f64 * size[0] * 1.6 + thick + 0.4;
+            // As KiCad's own font sets it, measured there: a letter is at most 1.05 of the width
+            // given, but for a few; a line is 1.35 of the height and each further one 1.62; the
+            // pen adds its width all round. (It was 1.3 for every letter and 1.6 for every line,
+            // and a line's end written into the text counted as a letter: a label of seven letters
+            // 6.5 mm wide was taken for 11 mm, and covered a pad 1.5 mm beside it, which then had
+            // no way out.)
+            let lines: Vec<&str> = words.split("\\n").flat_map(|l| l.split('\n')).collect();
+            let lines = &lines[..lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |last| last + 1)];
+            let wide = |c: char| match c {
+                'm' | '@' => 1.35,
+                '-' | '+' | '&' | '=' | '<' | '>' => 1.25,
+                'M' | 'W' | '%' => 1.15,
+                _ => 1.05,
+            };
+            let width = lines.iter().map(|l| l.chars().map(wide).sum::<f64>()).fold(0.0, f64::max) * size[1] + 2.0 * thick + 0.1;
+            let height = (1.35 + 1.62 * lines.len().saturating_sub(1) as f64) * size[0] + 2.4 * thick + 0.1;
             // to one side of its place or about it: either way within its width on both sides
             let aside = item.find("effects").and_then(|e| e.find("justify")).is_some();
             let (w, h) = (if aside { width } else { width / 2.0 }, if aside { height } else { height / 2.0 });
@@ -534,6 +552,7 @@ impl Board {
                         keepout,
                         bounds,
                         fills,
+                        teardrop: item.find("attr").is_some_and(|a| a.find("teardrop").is_some()),
                     });
                 }
                 Some("gr_line") | Some("gr_arc") | Some("gr_rect") | Some("gr_poly") | Some("gr_circle") => {
@@ -581,6 +600,17 @@ impl Board {
                     .iter()
                     .any(|p| p.layers.contains(&d.layer) && p.rect[0] <= b[2] && b[0] <= p.rect[2] && p.rect[1] <= b[3] && b[1] <= p.rect[3])
         });
+        // An outer layer of type power on which nothing is poured is no plane: the pads lie on it,
+        // and with no tracks allowed there a board of two layers is one of a single layer. (A demo
+        // board of through-hole parts, its top typed power and used for 37 bridges: 13 of 87
+        // connections had no way on the bottom alone.)
+        for l in [0, board.copper.len().saturating_sub(1)] {
+            let poured = |z: &Zone| z.keepout.is_none() && !z.net.is_empty() && !z.teardrop && z.layers.contains(&l);
+            if board.copper.get(l).is_some_and(|c| !c.1) && !board.zones.iter().any(poured) {
+                board.copper[l].1 = true;
+                board.freed.push(board.copper[l].0.clone());
+            }
+        }
         Ok(board)
     }
 }

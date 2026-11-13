@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.35.2
+
+Fixed
+- `leiterbahn-route board`: an outer layer of type `power` on which nothing is poured is
+  routed on (and said so); a teardrop is no pour. With no tracks allowed there a board of
+  two layers was one of a single layer: a demo board of through-hole parts, its top typed
+  power and used for 37 bridges, kept 13 of 87 connections open and now has none, in 2 s
+  instead of 13. Inner layers of type power stay planes, poured or not.
+- `leiterbahn-route board`: a text on copper is taken as wide as KiCad sets it, by the
+  widths of its font's letters measured there (1.05 of the width given, a few letters up to
+  1.35; a line 1.35 of the height, each further line 1.62; the pen's width all round). It
+  was 1.3 for every letter, and a line end written into the text counted as one: a label of
+  seven letters, 6.35 mm wide, was taken for 11 mm and covered a pad 1.5 mm beside it,
+  which was then reported as having no way out.
+
+Ten demo boards, KiCad's DRC: all ten with nothing unconnected (8 before), no error added by
+the routing but starved thermals and islands of pours.
+
 ## 0.35.1
 
 Fixed
