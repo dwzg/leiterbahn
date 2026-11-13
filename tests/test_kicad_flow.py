@@ -1373,8 +1373,9 @@ def test_improve_replaces_a_detour_with_two_vias_by_a_straight_track(project, tm
     assert len(mid) == 3 and all(t.IsLocked() for t in mid)
     assert b.unrouted() == open_before
     assert b.improve()["better"] == 0                      # nothing left to gain
-    from leiterbahn.kicad.board import acute_angles       # and no piece that leaves a joint of its net at a slant
-    assert not [t for t in acute_angles(b.board) if 1 <= t[-1] < 44]
+    from leiterbahn.kicad.board import acute_angles
+
+    assert not [t for t in acute_angles(b.board) if 1 <= t[-1] < 44]      # no joint of the net at a slant
 
 
 def test_improve_lets_a_run_push_another_out_of_its_way_when_the_sum_gets_shorter(project, tmp_path):
