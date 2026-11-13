@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.37.0
+
+Changed
+- A search at a net's width that has found no way and had looked at every cell it could
+  reach is not made again for that net from cells it had reached: from there there is still
+  none. A ground net of 124 pads had 21 pins of fine pitch that only a narrow track
+  reaches, and each was looked for at full width over the whole board first, 6 million
+  cells, every time the net was laid: 12 s of it, several times per pass. That board now
+  takes 2.4 minutes instead of 7 (same seed, the same tracks to 4 mm in 8918), in the rounds
+  as in the passes that shorten. Four bytes more per cell of the grid.
+- In the passes that shorten, a track at the net's width that is as good as straight between
+  its ends (a twentieth longer at most) and near nothing it should keep away from is left
+  alone when its net is tried again, and a net of more than 24 pads is tried so the first
+  time too, not laid again whole. A board of 1458 connections: 179 s instead of 220.
+
+Ten demo boards, KiCad's DRC: nothing unconnected on any, as before; the two slowest 3.7
+minutes (was 12) and 2.4 (was 3.5). A board of 159 nets, 24 placements: all clean, the same
+rounds, lengths within 0.2 %, routing 4 % faster.
+
+Noted in the placer's source, measured and not built: a wire density estimate as chip
+placers use it follows neither the rounds a placement needs nor its detours (rank
+correlation 0.36 at best over 24 placements).
+
 ## 0.36.0
 
 Changed

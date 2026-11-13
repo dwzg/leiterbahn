@@ -22,6 +22,13 @@
 //! perimeter followed the routed length of a net alone on the board closely (correlation 0.95
 //! over 20 placements) and the routed result with all nets only loosely (0.6 to 0.7). So a
 //! result of this is a candidate; route it to judge it.
+//!
+//! A wire density estimate as chip placers use it (each net's wire spread evenly over the box
+//! round its pads, summed per square, the overfull squares counted) does not close that gap for
+//! placements that come out of here: over 24 of them on that board, in squares of 1, 2 and 4 mm,
+//! no such figure followed the rounds the router needed, the detours of its nets or its narrow
+//! track with a rank correlation above 0.36, no better than the pads per square that `crowd`
+//! counts already. It is not part of the cost for that reason.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

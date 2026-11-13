@@ -452,6 +452,11 @@ struct Search {
     far_seen: Vec<u32>,
     /// A way that costs more than this is not looked for.
     bound: f32,
+    /// The last search found no way and had looked at every cell it could reach.
+    spent: bool,
+    /// Per cell: the mark of the last search without a way that reached it (`Router::lay_on`).
+    reach: Vec<u32>,
+    reached: u32,
     /// The plane of the net being laid, while that is still to be joined (`Grids::planes`): a way
     /// may end in a via anywhere inside it.
     plane: Option<usize>,
@@ -651,12 +656,15 @@ impl Search {
             self.queue.push(h(i as i32, j as i32), 0.0, s);
         }
         let mut opened = 0u64;
+        self.spent = false;
+        let mut dry = true;
         while let Some((node, g)) = self.queue.pop() {
             let n = node as usize;
             if g > self.marks[n].g {
                 continue; // a cheaper way to this cell was found after this one was queued
             }
             if self.queue.at as f32 / 4.0 > self.bound {
+                dry = false;
                 break; // whatever is found from here on costs more than the caller will pay
             }
             // (a way that has just changed layers inside the net's plane has reached the plane)
@@ -676,6 +684,7 @@ impl Search {
             }
             opened += 1;
             if opened > limit {
+                dry = false;
                 break;
             }
             let (l, i, j) = grids.split(node);
@@ -747,6 +756,7 @@ impl Search {
             }
         }
         self.expanded += opened;
+        self.spent = dry;
         None
     }
 }
@@ -761,6 +771,8 @@ struct Router<'a> {
     /// All cells, and whether a search that finds no way in its window may use them.
     whole: [i32; 4],
     widen: bool,
+    /// The passes that shorten are on: `lay_near` leaves a track alone that is straight already.
+    direct: bool,
     /// How much more than its tracks that go the net's new ones may cost, in cells: a search
     /// ends without a way when that is spent. None: whatever it takes.
     budget: Option<f32>,
@@ -1031,6 +1043,26 @@ impl Router<'_> {
         b
     }
 
+    /// Is the track no more than a twentieth (and a cell) longer than the shortest there could be
+    /// between its two ends, a via counted if they are on different layers?
+    fn straight(&self, path: &[u32]) -> bool {
+        let plane = (self.grids.nx * self.grids.ny) as u32;
+        let mut cost = 0.0f32;
+        for w in path.windows(2) {
+            cost += if w[0] / plane != w[1] / plane {
+                self.via_cost
+            } else if w[0].abs_diff(w[1]) == 1 || w[0].abs_diff(w[1]) == self.grids.nx as u32 {
+                1.0
+            } else {
+                DIAG
+            };
+        }
+        let (a, b) = (self.grids.split(path[0]), self.grids.split(*path.last().unwrap()));
+        let (dx, dy) = (a.1.abs_diff(b.1) as f32, a.2.abs_diff(b.2) as f32);
+        let least = dx.max(dy) + (DIAG - 1.0) * dx.min(dy) + if a.0 != b.0 { self.via_cost } else { 0.0 };
+        cost <= least * 1.05 + 1.0
+    }
+
     /// Has anything changed near the net's tracks or pads since `since`?
     fn is_fresh(&self, n: usize, fresh: &Fresh, since: u32) -> bool {
         self.jobs[n].boxes.iter().any(|&b| fresh.hit(b, since)) || self.laid[n].nodes.iter().any(|path| fresh.hit(self.bounds(path), since))
@@ -1068,6 +1100,14 @@ impl Router<'_> {
                 .map(|(path, &kind)| {
                     let track = &self.grids.track[kind];
                     let far = fresh.is_none_or(|(fresh, since)| !fresh.hit(self.bounds(path), since));
+                    // In the passes that shorten, a track at the net's width that is as good as
+                    // straight between its ends, and near nothing it should keep away from, stays
+                    // as well: a new search has nothing to win there. (A ground net of 124 pads was near something changed all over the
+                    // board in every pass, and its tries took 24 to 36 s each, 56 of the 59 s of a
+                    // pass together with one other supply net, mostly to no gain.)
+                    let shy = self.search.shy.map(|a| &self.grids.near[a]);
+                    let apart = |path: &[u32]| shy.is_none_or(|near| path.iter().all(|&c| near[c as usize].hard == 0));
+                    let far = far || (self.direct && fresh.is_some() && kind == job.kind && self.straight(path) && apart(path));
                     far && path.iter().all(|&c| track[c as usize].soft == 0 && track[c as usize].hard == 0)
                         && path
                             .windows(2)
@@ -1182,6 +1222,13 @@ impl Router<'_> {
             cells
         };
         let mut sources: Vec<u32> = cells_of(group[0], &laid);
+        // Once a search at the net's width has found no way to anything and had looked at all it
+        // could reach, a later one for this net need only start from cells that one did not
+        // reach: from the others there is still no way. (`shut`: how many sources there were
+        // then, and the window.) A ground net of 124 pads had 21 pins of fine pitch that only a
+        // narrow track reaches, and each of them was looked for at full width over the whole
+        // board first, 6 million cells, every time the net was laid: 12 s of it.
+        let mut shut: Option<(usize, [i32; 4])> = None;
         while joined.iter().any(|j| !j) {
             let mut marked = Vec::new();
             let mut goals = Vec::new();
@@ -1213,14 +1260,20 @@ impl Router<'_> {
             self.search.bound = left.unwrap_or(f32::INFINITY);
             // (what is left has no cell to be reached at: a piece shut in for good, see `route`)
             let nowhere = marked.is_empty() && self.search.plane.is_none();
-            let mut found = if nowhere {
+            shut = shut.filter(|s| s.1 == self.search.window && left.is_none());
+            let fresh_sources: Option<Vec<u32>> = shut.map(|(from, _)| {
+                let token = self.search.reached;
+                sources[from..].iter().copied().filter(|&c| self.search.reach[c as usize] != token).collect()
+            });
+            let opened = self.search.expanded;
+            let mut found = if nowhere || fresh_sources.as_ref().is_some_and(|f| f.is_empty()) {
                 None
             } else {
                 self.search.run(
                     &self.grids,
                     kind,
                     job.via_kind,
-                    &sources,
+                    fresh_sources.as_deref().unwrap_or(&sources),
                     &goals,
                     press,
                     memory,
@@ -1228,6 +1281,30 @@ impl Router<'_> {
                     self.problem.limit,
                 )
             };
+            if !nowhere && found.is_none() && left.is_none() {
+                let searched = fresh_sources.as_ref().is_none_or(|f| !f.is_empty());
+                if searched && self.search.spent && (shut.is_some() || self.search.expanded - opened > 100_000) {
+                    // what this search reached, within its window, is where no way begins
+                    if shut.is_none() {
+                        self.search.reached += 1;
+                    }
+                    let (token, round, w) = (self.search.reached, self.search.round, self.search.window);
+                    let (nx, area) = (self.grids.nx, self.grids.nx * self.grids.ny);
+                    for l in 0..self.grids.nl {
+                        for j in w[1].max(0) as usize..=(w[3] as usize).min(self.grids.ny - 1) {
+                            let row = l * area + j * nx;
+                            for m in row + w[0].max(0) as usize..=row + (w[2] as usize).min(nx - 1) {
+                                if self.search.marks[m].seen == round {
+                                    self.search.reach[m] = token;
+                                }
+                            }
+                        }
+                    }
+                    shut = Some((sources.len(), w));
+                } else if searched {
+                    shut = None;
+                }
+            }
             if !nowhere && found.is_none() && self.widen && self.search.window != self.whole {
                 // no way near the net: the whole board, for the rest of this net
                 self.search.window = self.whole;
@@ -1468,6 +1545,7 @@ impl Router<'_> {
                     break;
                 }
                 sources = cells_of(next, &laid);
+                shut = None;
                 continue;
             };
             let piece = piece.unwrap();
@@ -1756,11 +1834,15 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             far: vec![0.0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
             far_seen: vec![0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
             bound: f32::INFINITY,
+            spent: false,
+            reach: vec![0; nodes],
+            reached: 0,
             plane: None,
         },
         via_cost: (problem.via.cost / step) as f32,
         whole: [0, 0, nx as i32 - 1, ny as i32 - 1],
         widen: true,
+        direct: false,
         budget: None,
         far: false,
         pinch: false,
@@ -2043,6 +2125,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     let reach = (1.5 / step) as i32; // how far a track is in the way of another: widths, clearances, the distance kept from noisy copper
     let whole = router.whole;
     router.widen = false;
+    router.direct = true;
     // A net is tried again only if something near it has changed, and then only its tracks near that.
     let tile = 32;
     let (tnx, tny) = (router.grids.nx as i32 / tile + 1, router.grids.ny as i32 / tile + 1);
@@ -2104,7 +2187,9 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 let mut crossed: Vec<usize> = Vec::new();
                 if depth < 1 {
                     let press = Some(1.5 / weight(m).max(0.1)); // a heavier net crosses others more readily
-                    if problem.relay && tried[m] > 0 {
+                                                                // (A net of many pads also the first time: all of it counts as changed then, and
+                                                                // what is straight stays.)
+                    if problem.relay && (tried[m] > 0 || router.jobs[m].cells.len() > 24) {
                         router.lay_near(m, press, &fresh, tried[m]);
                     } else {
                         router.lay(m, press, 0.0);
@@ -2213,7 +2298,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             let old = router.laid[n].clone();
             router.soft(n, -1);
             router.search.window = router.around(n, margin);
-            if problem.relay && tried[n] > 0 {
+            if problem.relay && (tried[n] > 0 || router.jobs[n].cells.len() > 24) {
                 router.lay_near(n, None, &fresh, tried[n]);
             } else {
                 router.lay(n, None, 0.0);
