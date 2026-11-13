@@ -323,7 +323,10 @@ domains taught:
   of 29 mm against 14): other nets are in its way. Then `weights={net: 4}` helps if one or
   two nets are concerned; where thirteen nets at one controller were all longer than alone,
   weights gained nothing and routing them first left five other connections open: the area
-  is too full, and the parts around it have to make room.
+  is too full, and the parts around it have to make room. (Since 0.36.0 the weight counts
+  in the rounds too, and on that board, placed with room, `weights` of 3 for those thirteen
+  made them 8 % shorter on the placement in use. Over 24 placements they were 2.7 % shorter
+  with half again as much narrow track: compare with and without on the placement you keep.)
 - Start a board script with `repeatable()` (from `leiterbahn.kicad.board`). Without it two runs
   of one script differ: the finishing pass left other connections open (VIN and a slope pin
   in one run, a switch node in the next), and hand rework written for the first result did

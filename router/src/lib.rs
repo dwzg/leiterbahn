@@ -1865,12 +1865,21 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             // only so, another kept one connection open instead of two).
             // (Not a net of many pads: laid again whole in every round, a ground net of some hundred
             // pads took a board from 14 minutes to more than 25 over two crossings of five cells.)
+            // A net with a weight pays that much less for a cell another lies on: it keeps to its
+            // short way longer, and the others, at the full price, are the ones to give way. (As
+            // routers for programmable logic weigh a net's delay against congestion by how
+            // critical it is. The weight counted only in the passes that shorten, after the rounds
+            // had settled who goes round whom.) What a cell that was fought over costs stays the
+            // same for all: with that divided as well, one of 24 placements of a board kept a
+            // connection open; the rounds end because that price rises for everyone.
+            let heavy = problem.nets[n].weight.max(0.1) as f32;
+            let (press, memory) = (press / heavy, 1.0);
             if wide.is_some() && knot.now > 0 {
-                router.lay_on(n, Some(press), 1.0, true, Some((&knot, 0)));
+                router.lay_on(n, Some(press), memory, true, Some((&knot, 0)));
             } else if problem.relay && (restarts == 0 || router.jobs[n].cells.len() > 24) {
-                router.relay(n, Some(press), 1.0);
+                router.relay(n, Some(press), memory);
             } else {
-                router.lay(n, Some(press), 1.0);
+                router.lay(n, Some(press), memory);
             }
             router.soft(n, 1);
             again += 1;

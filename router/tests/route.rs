@@ -168,6 +168,28 @@ fn the_heavier_net_gets_the_short_way() {
     }
 }
 
+/// The weight counts in the rounds already, not only in the passes that shorten: with no such
+/// pass, the heavier of two nets that want one gap is the one that gets it.
+#[test]
+fn the_heavier_net_wins_the_gap_in_the_rounds() {
+    let wall = |x0: f64, x1: f64| json!({"box": [x0, 4.9, x1, 5.1], "layers": [0]});
+    for heavy in ["A", "B"] {
+        let net = |name: &str, x: f64| {
+            json!({"name": name, "width": 0.2, "clearance": 0.2, "weight": if name == heavy { 5.0 } else { 1.0 },
+                   "pieces": [[pad(x, 4.0, 0)], [pad(x, 6.0, 0)]]})
+        };
+        let s = solve(json!({
+            "box": [0, 0, 12, 10], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "relax": 0,
+            "edge": [0, 0, 12, 10], "edge_clear": 0.2,
+            "fixed": [wall(3.0, 5.6), wall(6.4, 9.0)],
+            "nets": [net("A", 5.0), net("B", 7.0)]
+        }));
+        assert!(s.nets.iter().all(|n| n.open.is_empty()));
+        let (short, long) = if heavy == "A" { (&s.nets[0], &s.nets[1]) } else { (&s.nets[1], &s.nets[0]) };
+        assert!(short.cost < long.cost - 1.0, "{} heavy: {} mm, the other {} mm", heavy, short.cost, long.cost);
+    }
+}
+
 /// A net that the rounds pushed onto a long way keeps it only as long as the short one is taken.
 #[test]
 fn no_net_costs_less_than_alone_on_the_board() {

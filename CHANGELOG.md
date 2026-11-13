@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.36.0
+
+Changed
+- A net's weight counts in the rounds as well: it pays that much less for a cell another
+  net lies on, so it keeps to its short way and the others give way. (As routers for
+  programmable logic weigh a net's delay against congestion by how critical it is.) The
+  weight counted only in the passes that shorten, after the rounds had settled who goes
+  round whom. What a cell that was fought over costs stays the same for every net: with
+  that divided too, one of 24 placements of a board kept a connection open. Without
+  weights nothing changes: nine demo boards and a board of 71 nets came out the same file.
+  On a board of 159 nets with 13 of them weighted 3, 24 placements: all clean, those 13
+  nets 2.7 % shorter than unweighted (in 18 placements, longer in 6) and 1.0 % shorter than
+  with the weight in the passes only, all tracks 0.1 % shorter, but 56 % more narrow track
+  over all placements. So it is worth a look per board: on the placement in use the 13
+  nets went from 158 to 145 mm with the narrow track unchanged.
+
 ## 0.35.2
 
 Fixed

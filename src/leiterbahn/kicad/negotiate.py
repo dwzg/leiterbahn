@@ -307,7 +307,8 @@ def negotiate(board, tmp_dir, only=None, skip=(), box=None, step=0.1, via_cost=3
 
     box: (x0, y0, x1, y1) on the sheet: route only inside it (copper outside stays; a net is
     joined where its pieces reach into the box). weights: {net: number} for nets whose length
-    matters more than that of others (default 1): once all nets are laid, each is given a
+    matters more than that of others (default 1): in the rounds such a net pays that much less
+    for crossing another, so the others give way; and once all nets are laid, each is given a
     shorter way where it finds one, also by pushing others aside, as long as the sum of
     lengths times weights gets smaller. edge_clear: what tracks and vias keep from the board's
     edge, mm (0.6 mm tracks were laid 0.3 mm from it). quiet, noisy: nets to keep apart (a
