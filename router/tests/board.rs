@@ -98,7 +98,7 @@ fn copper_on_a_pour_of_its_net_is_joined_already() {
     assert_eq!(sig.pieces.len(), 3, "two pads and a hand-drawn track that touches neither");
     assert_eq!((p.nets[0].width, p.nets[0].narrow, sig.width), (0.5, Some(0.2), 0.2));
     assert_eq!(p.keepouts.len(), 1);
-    assert_eq!(p.fixed.len(), 2, "the two ground pads");
+    assert_eq!(p.fixed.len(), 2 + 4, "the two ground pads, and the four lines of the outline");
     // routing one net only: the other one's pads are in the way like any copper
     let all: usize = p.nets[0].pieces.iter().map(|piece| piece.len()).sum();
     let one = problem(
@@ -111,7 +111,7 @@ fn copper_on_a_pour_of_its_net_is_joined_already() {
     )
     .unwrap();
     assert_eq!(one.nets.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), vec!["SIG"]);
-    assert_eq!(one.fixed.len(), 2 + all);
+    assert_eq!(one.fixed.len(), 2 + 4 + all);
 }
 
 #[test]
@@ -255,4 +255,59 @@ fn a_pad_at_an_angle_keeps_its_shape() {
     let p = problem(&board, &rules, &options()).unwrap();
     let turned: Vec<_> = p.nets.iter().flat_map(|n| n.pieces.iter().flatten()).filter(|s| s.angle != 0.0).collect();
     assert_eq!(turned.len(), 2);
+}
+
+/// The outline as it is drawn: a corner cut off by an arc, and a slot. Copper keeps the edge
+/// clearance from those lines, not only from the box round the board.
+#[test]
+fn the_outline_as_drawn_and_its_cut_outs_are_kept_clear() {
+    let text = board_text().replace(
+        "(gr_line (start 0 0) (end 20 0)",
+        r#"(gr_arc (start 17 12) (mid 19.12 11.12) (end 20 9) (stroke (width 0.1) (type default)) (layer "Edge.Cuts"))
+  (gr_rect (start 6 10) (end 8 10.6) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))
+  (gr_line (start 0 0) (end 20 0)"#,
+    );
+    let board = Board::parse(&text).unwrap();
+    // four lines of the outline, four of the slot, and the quarter circle about (17, 9) in six steps
+    assert_eq!(board.cuts.len(), 4 + 4 + 6);
+    let on_arc: Vec<_> = board
+        .cuts
+        .iter()
+        .filter(|c| c.seg[0] > 16.9 && c.seg[1] > 8.9 && c.seg[2] > 16.9 && c.seg[3] > 8.9 && c.seg[1] != c.seg[3] && c.seg[0] != c.seg[2])
+        .collect();
+    assert_eq!(on_arc.len(), 6);
+    for c in &on_arc {
+        for p in [[c.seg[0], c.seg[1]], [c.seg[2], c.seg[3]]] {
+            let r = ((p[0] - 17.0f64).powi(2) + (p[1] - 9.0f64).powi(2)).sqrt();
+            assert!((r - 3.0).abs() < 0.01, "a point of the arc at {:?}, {} from its middle", p, r);
+        }
+    }
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    let edges: Vec<_> = p.fixed.iter().filter(|s| s.layers == vec![0, 1] && s.hole == 0.0 && s.seg.is_some()).collect();
+    assert_eq!(edges.len(), 14);
+    assert!(edges.iter().all(|s| s.clearance == 0.3), "the project's edge clearance");
+}
+
+/// A pad with a clearance of its own keeps tracks that far off, and a drawing on a solder mask
+/// layer is in the way on the copper under it.
+#[test]
+fn a_pads_own_clearance_and_a_drawn_mask_opening_count() {
+    let text = board_text().replace(
+        "(gr_line (start 0 0) (end 20 0)",
+        r#"(footprint "H" (layer "F.Cu") (at 4 3) (property "Reference" "H1" (at 0 0 0))
+    (pad "" np_thru_hole circle (at 0 0) (size 2 2) (drill 2) (layers "*.Cu" "*.Mask") (clearance 1.7) (uuid "u")))
+  (gr_rect (start 12 8) (end 14 9) (stroke (width 0.1) (type default)) (fill yes) (layer "B.Mask"))
+  (gr_line (start 0 0) (end 20 0)"#,
+    );
+    let board = Board::parse(&text).unwrap();
+    assert_eq!(board.pads.iter().find(|p| p.reference == "H1").unwrap().clearance, Some(1.7));
+    assert!(
+        board.drawn.iter().any(|d| d.layer == 1 && d.rect.is_some()),
+        "the opening in the back's mask, on the back"
+    );
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    let hole = p.fixed.iter().find(|s| s.hole == 1.0).unwrap();
+    assert_eq!(hole.clearance, 1.7);
 }

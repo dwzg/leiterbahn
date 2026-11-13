@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.32.0
+
+`leiterbahn-route board`, further on the demo boards:
+
+Fixed
+- The outline as it is drawn, and every cut-out in it, is a line that copper keeps the edge
+  clearance from. Only the box round the outline was known, and copper lay across rounded
+  corners, notches and slots (46 errors on four boards; none now). Arcs are walked in steps
+  of 15 degrees, not as two chords.
+- A clearance given for a pad or its footprint is kept (a mounting hole that asks for
+  1.7 mm round it had tracks at 0.9 mm).
+- A drawing on a solder mask layer is in the way on the copper under it: a track there lay
+  bare in an opening meant for something else (KiCad: solder mask bridge, 20 on one board).
+
 ## 0.31.0
 
 Changed

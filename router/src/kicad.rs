@@ -20,6 +20,9 @@ pub struct Pad {
     /// nearly three times as wide as it is, and the pins of such a part shut each other in: a
     /// board with 39 of its 94 parts at 45 degrees had a third of its connections left open.)
     pub turned: Option<([f64; 4], f64)>,
+    /// A clearance of its own, given for the pad or for its footprint: a mounting hole that
+    /// asks for 1.7 mm round it.
+    pub clearance: Option<f64>,
     /// Copper layers it is on, as indices into `Board::copper`.
     pub layers: Vec<usize>,
     /// Radius of the drilled hole, 0 for none.
@@ -67,6 +70,8 @@ pub struct Board {
     pub zones: Vec<Zone>,
     /// Text and drawings on copper layers: copper of no net, in the way of every track.
     pub drawn: Vec<Drawn>,
+    /// The lines of the board's outline and of every cut-out in it (`layer` is not used).
+    pub cuts: Vec<Drawn>,
     /// Bounding box of the outline's centre lines.
     pub edge: Option<[f64; 4]>,
 }
@@ -158,9 +163,33 @@ fn drawn(item: &Sexp, layer: usize, origin: [f64; 2], angle: f64, out: &mut Vec<
             }
         }
         "arc" => {
-            if let (Some(a), Some(m), Some(b)) = (item.find("start"), item.find("mid"), item.find("end")) {
-                line(place(xy(a)), place(xy(m)), out);
-                line(place(xy(m)), place(xy(b)), out);
+            if let (Some(a), Some(m), Some(b)) = (item.find("start").map(xy), item.find("mid").map(xy), item.find("end").map(xy)) {
+                // the circle through the three points, walked in steps of 15 degrees at most (two
+                // chords for a quarter circle of 3 mm lie 0.2 mm inside it)
+                let d = 2.0 * (a[0] * (m[1] - b[1]) + m[0] * (b[1] - a[1]) + b[0] * (a[1] - m[1]));
+                let mut pts = vec![a, m, b];
+                if d.abs() > 1e-12 {
+                    let sq = |p: [f64; 2]| p[0] * p[0] + p[1] * p[1];
+                    let cx = (sq(a) * (m[1] - b[1]) + sq(m) * (b[1] - a[1]) + sq(b) * (a[1] - m[1])) / d;
+                    let cy = (sq(a) * (b[0] - m[0]) + sq(m) * (a[0] - b[0]) + sq(b) * (m[0] - a[0])) / d;
+                    let r = ((a[0] - cx).powi(2) + (a[1] - cy).powi(2)).sqrt();
+                    let at = |p: [f64; 2]| (p[1] - cy).atan2(p[0] - cx);
+                    let tau = std::f64::consts::TAU;
+                    let (from, mut via, mut to) = (at(a), (at(m) - at(a)).rem_euclid(tau), (at(b) - at(a)).rem_euclid(tau));
+                    if via > to {
+                        // the other way round
+                        (via, to) = (via - tau, to - tau);
+                    }
+                    let _ = via;
+                    let n = (to.abs() / (tau / 24.0)).ceil().max(1.0) as usize;
+                    pts = (0..=n)
+                        .map(|k| from + to * k as f64 / n as f64)
+                        .map(|t| [cx + r * t.cos(), cy + r * t.sin()])
+                        .collect();
+                }
+                for w in pts.windows(2) {
+                    line(place(w[0]), place(w[1]), out);
+                }
             }
         }
         "rect" => {
@@ -264,6 +293,16 @@ impl Board {
         };
         let net = |s: &Sexp| s.find("net").and_then(|n| n.text(n.items().len() - 1)).unwrap_or("").to_string();
         let locked = |s: &Sexp| s.find("locked").map(|l| l.text(1) != Some("no")).unwrap_or(false) || s.words().contains(&"locked");
+        // A drawing on a solder mask layer bares the copper under it: a track of another net there
+        // would lie open beside what the opening is for (KiCad: solder mask bridge). So it is in the
+        // way on the outer copper layer of its side, like a drawing on that layer.
+        let bared = |layer: &str| -> Option<usize> {
+            match layer {
+                "F.Mask" => index.get("F.Cu").copied(),
+                "B.Mask" => index.get("B.Cu").copied(),
+                _ => None,
+            }
+        };
         let mut outline = EMPTY;
         for item in root.items() {
             match item.head() {
@@ -339,20 +378,31 @@ impl Board {
                             at: centre,
                             rect,
                             turned,
+                            clearance: pad
+                                .find("clearance")
+                                .or_else(|| item.find("clearance"))
+                                .and_then(|c| c.num(1))
+                                .filter(|c| *c > 0.0),
                             layers,
                             hole: hole.unwrap_or(0.0),
                         });
                     }
                     for part in item.items() {
                         if matches!(part.head(), Some("fp_text" | "fp_line" | "fp_arc" | "fp_rect" | "fp_poly" | "fp_circle")) {
-                            if let Some(&layer) = part.find("layer").and_then(|l| l.text(1)).and_then(|l| index.get(l)) {
+                            let on = part.find("layer").and_then(|l| l.text(1));
+                            if let Some(&layer) = on.and_then(|l| index.get(l)) {
+                                drawn(part, layer, origin, angle, &mut board.drawn);
+                            } else if on == Some("Edge.Cuts") && part.head() != Some("fp_text") {
+                                drawn(part, 0, origin, angle, &mut board.cuts);
+                            } else if let Some(layer) = on.and_then(bared) {
                                 drawn(part, layer, origin, angle, &mut board.drawn);
                             }
                         }
                     }
                 }
                 Some("gr_text") => {
-                    if let Some(&layer) = item.find("layer").and_then(|l| l.text(1)).and_then(|l| index.get(l)) {
+                    let on = item.find("layer").and_then(|l| l.text(1));
+                    if let Some(layer) = on.and_then(|l| index.get(l).copied()).or_else(|| on.and_then(bared)) {
                         drawn(item, layer, [0.0, 0.0], 0.0, &mut board.drawn);
                     }
                 }
@@ -406,12 +456,14 @@ impl Board {
                     });
                 }
                 Some("gr_line") | Some("gr_arc") | Some("gr_rect") | Some("gr_poly") | Some("gr_circle") => {
-                    if let Some(&layer) = item.find("layer").and_then(|l| l.text(1)).and_then(|l| index.get(l)) {
+                    let on = item.find("layer").and_then(|l| l.text(1));
+                    if let Some(layer) = on.and_then(|l| index.get(l).copied()).or_else(|| on.and_then(bared)) {
                         drawn(item, layer, [0.0, 0.0], 0.0, &mut board.drawn);
                     }
                     if item.find("layer").and_then(|l| l.text(1)) != Some("Edge.Cuts") {
                         continue;
                     }
+                    drawn(item, 0, [0.0, 0.0], 0.0, &mut board.cuts);
                     let mut pts = points(item);
                     pts.extend(["start", "end", "mid"].iter().filter_map(|k| item.find(k)).map(xy));
                     if item.head() == Some("gr_circle") {
@@ -558,6 +610,8 @@ struct Copper {
     rect: Option<[f64; 4]>,
     /// A pad at an angle (`Pad::turned`): `rect` is then the box round it.
     turned: Option<([f64; 4], f64)>,
+    /// What tracks keep from it, if not their clearance: the board's edge.
+    keep: Option<f64>,
     seg: [f64; 4],
     r: f64,
     hole: f64,
@@ -713,6 +767,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             layers,
             rect: Some(pad.rect),
             turned: pad.turned,
+            keep: pad.clearance.map(|c| c.max(rules.keep(&pad.net))),
             seg: [pad.at[0], pad.at[1], pad.at[0], pad.at[1]],
             r: 0.0,
             hole: pad.hole,
@@ -724,6 +779,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             layers: vec![s.layer],
             rect: None,
             turned: None,
+            keep: None,
             seg: [s.a[0], s.a[1], s.b[0], s.b[1]],
             r: s.width / 2.0,
             hole: 0.0,
@@ -735,9 +791,25 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             layers: all.clone(),
             rect: None,
             turned: None,
+            keep: None,
             seg: [v.at[0], v.at[1], v.at[0], v.at[1]],
             r: v.size / 2.0,
             hole: v.drill / 2.0,
+        });
+    }
+    // The outline as it is drawn, and every cut-out: a line that no copper comes nearer to than the
+    // edge clearance, on all layers. (Only the box round the outline was known: copper lay across
+    // rounded corners, notches and slots, 46 times on four boards.)
+    for d in &board.cuts {
+        copper.push(Copper {
+            net: String::new(),
+            layers: all.clone(),
+            rect: d.rect,
+            turned: None,
+            keep: Some(rules.edge_clear),
+            seg: d.seg,
+            r: 0.0,
+            hole: 0.0,
         });
     }
     for d in &board.drawn {
@@ -746,6 +818,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             layers: vec![d.layer],
             rect: d.rect,
             turned: None,
+            keep: None,
             seg: d.seg,
             r: d.r,
             hole: 0.0,
@@ -868,7 +941,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         .enumerate()
         .filter(|(n, c)| !routed.contains(c.net.as_str()) || held.contains(n))
         .map(|(_, c)| Shape {
-            clearance: rules.keep(&c.net),
+            clearance: c.keep.unwrap_or_else(|| rules.keep(&c.net)),
             ..c.shape(&routing)
         })
         .collect();
