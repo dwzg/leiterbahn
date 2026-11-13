@@ -621,3 +621,35 @@ fn a_pad_is_joined_to_its_plane_by_a_via_inside_it() {
     // the wall on the front between pad and plane: over it on the back, so the way has two vias or starts with one
     assert!(gnd.cost < 6.0 + 2.0 * 3.0 + 1.5, "{}", gnd.cost);
 }
+
+/// A box turned by 45 degrees is in the way where it lies, not all over the box round it: a
+/// pad inside that outer box is reached, and the track keeps its distance from the turned box.
+#[test]
+fn a_turned_box_is_in_the_way_only_where_it_lies() {
+    let s = solve(json!({
+        "box": [0, 0, 10, 10], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        // 6 mm long and 0.4 mm wide about (5, 5), turned (anticlockwise, y down): from (2.9, 7.1) to (7.1, 2.9)
+        "fixed": [{"box": [2.0, 4.8, 8.0, 5.2], "angle": 45.0, "layers": [0]}],
+        // the first pad is inside the box round the turned one (2.76 to 7.24 both ways), the second beyond it
+        "nets": [{"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(3.2, 3.0, 0)], [pad(8.0, 6.0, 0)]]}]
+    }));
+    assert!(s.nets[0].open.is_empty());
+    assert!(s.nets[0].cost > 6.5, "round an end of it, not across: {}", s.nets[0].cost);
+    for w in lines(&s).iter() {
+        for t in 0..=20 {
+            let (x, y) = ((w.2 + (w.4 - w.2) * t as f64 / 20.0) * 0.1, (w.3 + (w.5 - w.3) * t as f64 / 20.0) * 0.1);
+            // the nearest point of the turned box's middle line: (5, 5) + a (1, -1) / sqrt 2, |a| <= 3
+            let along = (((x - 5.0) - (y - 5.0)) / 2f64.sqrt()).clamp(-3.0, 3.0);
+            let (px, py) = (5.0 + along / 2f64.sqrt(), 5.0 - along / 2f64.sqrt());
+            let apart = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+            // half the box, the clearance, half the track; less what a cell may be off
+            assert!(
+                apart > 0.2 + 0.2 + 0.1 - 0.06,
+                "the track is {} mm from the turned box's middle line at ({}, {})",
+                apart,
+                x,
+                y
+            );
+        }
+    }
+}

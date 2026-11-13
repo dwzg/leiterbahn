@@ -39,6 +39,9 @@ const STEPS: [(i32, i32, f32); 8] = [
 struct Item {
     rect: bool,
     a: [f64; 4],
+    /// A rectangle may be turned about its middle: (cosine, sine) of the angle, anticlockwise on a
+    /// sheet whose y axis points down, as KiCad counts. (1, 0): upright.
+    turn: (f64, f64),
     r: f64,
     layers: Vec<usize>,
     hole: f64,
@@ -131,6 +134,13 @@ struct Cell {
 fn dist2(item: &Item, x: f64, y: f64) -> f64 {
     let a = &item.a;
     if item.rect {
+        let (mut x, mut y) = (x, y);
+        if item.turn.1 != 0.0 {
+            // the point as the turned rectangle sees it
+            let (cx, cy, (c, s)) = ((a[0] + a[2]) / 2.0, (a[1] + a[3]) / 2.0, item.turn);
+            let (dx, dy) = (x - cx, y - cy);
+            (x, y) = (cx + dx * c - dy * s, cy + dx * s + dy * c);
+        }
         let dx = (a[0] - x).max(x - a[2]).max(0.0);
         let dy = (a[1] - y).max(y - a[3]).max(0.0);
         return dx * dx + dy * dy;
@@ -151,8 +161,18 @@ fn dist2(item: &Item, x: f64, y: f64) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn raster(grid: &mut [Cell], soft: bool, nx: usize, ny: usize, layer: usize, item: &Item, grow: f64, delta: i32) {
     let a = &item.a;
-    let (x0, x1) = (a[0].min(a[2]) - grow, a[0].max(a[2]) + grow);
-    let (y0, y1) = (a[1].min(a[3]) - grow, a[1].max(a[3]) + grow);
+    let (mut x0, mut x1) = (a[0].min(a[2]) - grow, a[0].max(a[2]) + grow);
+    let (mut y0, mut y1) = (a[1].min(a[3]) - grow, a[1].max(a[3]) + grow);
+    if item.rect && item.turn.1 != 0.0 {
+        let (w, h, (c, s)) = ((a[2] - a[0]) / 2.0, (a[3] - a[1]) / 2.0, item.turn);
+        let (cx, cy, ex, ey) = (
+            (a[0] + a[2]) / 2.0,
+            (a[1] + a[3]) / 2.0,
+            (w * c).abs() + (h * s).abs(),
+            (w * s).abs() + (h * c).abs(),
+        );
+        (x0, x1, y0, y1) = (cx - ex - grow, cx + ex + grow, cy - ey - grow, cy + ey + grow);
+    }
     if x1 < 0.0 || y1 < 0.0 || x0 > (nx - 1) as f64 || y0 > (ny - 1) as f64 {
         return;
     }
@@ -199,6 +219,7 @@ impl Grids {
         let (nx, ny, nl, step) = (self.nx, self.ny, self.nl, self.step);
         let centre = Item {
             rect: false,
+            turn: (1.0, 0.0),
             a: [
                 (item.a[0] + item.a[2]) / 2.0,
                 (item.a[1] + item.a[3]) / 2.0,
@@ -424,8 +445,10 @@ fn item_of(shape: &Shape, x0: f64, y0: f64, step: f64, clearance: f64) -> Item {
         (None, Some(s)) => (false, s),
         (None, None) => panic!("a shape needs a box or a seg"),
     };
+    let (sin, cos) = shape.angle.to_radians().sin_cos();
     Item {
         rect,
+        turn: if rect && shape.angle != 0.0 { (cos, sin) } else { (1.0, 0.0) },
         a: [(a[0] - x0) / step, (a[1] - y0) / step, (a[2] - x0) / step, (a[3] - y0) / step],
         r: shape.r / step,
         layers: shape.layers.clone(),
@@ -441,6 +464,24 @@ fn cells_of(grids: &Grids, item: &Item) -> Vec<u32> {
     let mut pts: Vec<(i64, i64)> = Vec::new();
     if item.hole > 0.0 {
         pts.push((((a[0] + a[2]) / 2.0).round() as i64, ((a[1] + a[3]) / 2.0).round() as i64));
+    } else if item.rect && item.turn.1 != 0.0 {
+        // a turned pad: the cells within its middle half, or the one at its middle
+        let (cx, cy) = ((a[0] + a[2]) / 2.0, (a[1] + a[3]) / 2.0);
+        let half = Item {
+            a: [(a[0] + cx) / 2.0, (a[1] + cy) / 2.0, (a[2] + cx) / 2.0, (a[3] + cy) / 2.0],
+            ..item.clone()
+        };
+        let reach = ((a[2] - a[0]).abs().max((a[3] - a[1]).abs()) / 2.0).ceil() as i64;
+        for j in cy.round() as i64 - reach..=cy.round() as i64 + reach {
+            for i in cx.round() as i64 - reach..=cx.round() as i64 + reach {
+                if dist2(&half, i as f64, j as f64) < 1e-9 {
+                    pts.push((i, j));
+                }
+            }
+        }
+        if pts.is_empty() {
+            pts.push((cx.round() as i64, cy.round() as i64));
+        }
     } else if item.rect {
         let (dx, dy) = ((a[2] - a[0]) * 0.25, (a[3] - a[1]) * 0.25);
         let (i0, i1) = ((a[0] + dx).round() as i64, (a[2] - dx).round() as i64);
@@ -499,6 +540,7 @@ fn copper(grids: &Grids, job: &Job, half: f64, bends: &[[u32; 3]], items: &mut V
             items.push(Item {
                 rect: false,
                 a: [p[1] as f64, p[2] as f64, q[1] as f64, q[2] as f64],
+                turn: (1.0, 0.0),
                 r: half / grids.step,
                 layers: vec![p[0] as usize],
                 hole: 0.0,
@@ -508,6 +550,7 @@ fn copper(grids: &Grids, job: &Job, half: f64, bends: &[[u32; 3]], items: &mut V
             items.push(Item {
                 rect: false,
                 a: [p[1] as f64, p[2] as f64, p[1] as f64, p[2] as f64],
+                turn: (1.0, 0.0),
                 r: grids.via_r / grids.step,
                 layers: (0..grids.nl).collect(),
                 hole: grids.via_hole / 2.0 / grids.step,
@@ -719,6 +762,7 @@ impl Router<'_> {
                     let centre = Item {
                         rect: false,
                         a: [x, y, x, y],
+                        turn: (1.0, 0.0),
                         r: 0.0,
                         layers: vec![],
                         hole: 0.0,
@@ -1017,6 +1061,7 @@ impl Router<'_> {
                     let hole = Item {
                         rect: false,
                         a: [x, y, x, y],
+                        turn: (1.0, 0.0),
                         r: 0.0,
                         layers: vec![],
                         hole: 0.0,
@@ -1274,6 +1319,7 @@ impl Router<'_> {
                     let hole = Item {
                         rect: false,
                         a: [x, y, x, y],
+                        turn: (1.0, 0.0),
                         r: 0.0,
                         layers: vec![],
                         hole: 0.0,
@@ -1384,6 +1430,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             let item = Item {
                 rect: true,
                 a: [(b[0] - x0) / step, (b[1] - y0) / step, (b[2] - x0) / step, (b[3] - y0) / step],
+                turn: (1.0, 0.0),
                 r: 0.0,
                 layers: vec![],
                 hole: 0.0,

@@ -232,3 +232,27 @@ fn a_pad_off_its_plane_is_given_a_way_into_it() {
         into
     );
 }
+
+/// A pad of a part that lies at 45 degrees is that pad turned, not the box round it.
+#[test]
+fn a_pad_at_an_angle_keeps_its_shape() {
+    let text = board_text()
+        .replace("(at 5 6 90)", "(at 5 6 45)")
+        .replace("(at -1 0 90)", "(at -1 0 45)")
+        .replace("(at 1 0 90)", "(at 1 0 45)");
+    let board = Board::parse(&text).unwrap();
+    let pad = board.pads.iter().find(|p| p.reference == "R1" && p.number == "1").unwrap();
+    let (own, angle) = pad.turned.expect("turned");
+    let middle = [5.0 - 0.5f64.sqrt(), 6.0 + 0.5f64.sqrt()];
+    assert!(
+        close(own, [middle[0] - 0.5, middle[1] - 0.25, middle[0] + 0.5, middle[1] + 0.25]) && angle == 45.0,
+        "{:?}",
+        own
+    );
+    assert!(pad.rect[2] - pad.rect[0] > 1.0, "the box round it is wider than the pad is long or broad");
+    assert!(board.pads.iter().filter(|p| p.reference != "R1").all(|p| p.turned.is_none()));
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    let turned: Vec<_> = p.nets.iter().flat_map(|n| n.pieces.iter().flatten()).filter(|s| s.angle != 0.0).collect();
+    assert_eq!(turned.len(), 2);
+}

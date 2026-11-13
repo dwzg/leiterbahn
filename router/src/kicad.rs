@@ -15,6 +15,11 @@ pub struct Pad {
     pub at: [f64; 2],
     /// Bounding box of its copper.
     pub rect: [f64; 4],
+    /// For a plain pad that lies at an angle: its copper as a box about its middle, and the
+    /// degrees that box is turned by. (As its bounding box, a pad of a part at 45 degrees is
+    /// nearly three times as wide as it is, and the pins of such a part shut each other in: a
+    /// board with 39 of its 94 parts at 45 degrees had a third of its connections left open.)
+    pub turned: Option<([f64; 4], f64)>,
     /// Copper layers it is on, as indices into `Board::copper`.
     pub layers: Vec<usize>,
     /// Radius of the drilled hole, 0 for none.
@@ -293,6 +298,19 @@ impl Board {
                                 grow(&mut rect, [middle[0] + corner[0], middle[1] + corner[1]]);
                             }
                         }
+                        let slant = own.rem_euclid(90.0);
+                        let plain = pad.find("primitives").is_none() && pad.text(3) != Some("circle");
+                        let turned = (plain && slant > 0.01 && slant < 89.99).then(|| {
+                            (
+                                [
+                                    middle[0] - size[0] / 2.0,
+                                    middle[1] - size[1] / 2.0,
+                                    middle[0] + size[0] / 2.0,
+                                    middle[1] + size[1] / 2.0,
+                                ],
+                                own,
+                            )
+                        });
                         for shape in pad.find("primitives").map(|p| p.items()).unwrap_or(&[]) {
                             let mut pts = points(shape);
                             pts.extend(["start", "end", "mid", "center"].iter().filter_map(|k| shape.find(k)).map(xy));
@@ -320,6 +338,7 @@ impl Board {
                             net: net(pad),
                             at: centre,
                             rect,
+                            turned,
                             layers,
                             hole: hole.unwrap_or(0.0),
                         });
@@ -537,6 +556,8 @@ struct Copper {
     /// Copper layers (all of the board's, for a via or a drilled pad).
     layers: Vec<usize>,
     rect: Option<[f64; 4]>,
+    /// A pad at an angle (`Pad::turned`): `rect` is then the box round it.
+    turned: Option<([f64; 4], f64)>,
     seg: [f64; 4],
     r: f64,
     hole: f64,
@@ -547,7 +568,8 @@ impl Copper {
         let layers = self.layers.iter().filter_map(|&l| routing[l]).collect();
         match self.rect {
             Some(rect) => Shape {
-                rect: Some(rect),
+                rect: Some(self.turned.map_or(rect, |t| t.0)),
+                angle: self.turned.map_or(0.0, |t| t.1),
                 seg: None,
                 r: 0.0,
                 layers,
@@ -558,6 +580,7 @@ impl Copper {
             },
             None => Shape {
                 rect: None,
+                angle: 0.0,
                 seg: Some(self.seg),
                 r: self.r,
                 layers,
@@ -689,6 +712,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             net: pad.net.clone(),
             layers,
             rect: Some(pad.rect),
+            turned: pad.turned,
             seg: [pad.at[0], pad.at[1], pad.at[0], pad.at[1]],
             r: 0.0,
             hole: pad.hole,
@@ -699,6 +723,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             net: s.net.clone(),
             layers: vec![s.layer],
             rect: None,
+            turned: None,
             seg: [s.a[0], s.a[1], s.b[0], s.b[1]],
             r: s.width / 2.0,
             hole: 0.0,
@@ -709,6 +734,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             net: v.net.clone(),
             layers: all.clone(),
             rect: None,
+            turned: None,
             seg: [v.at[0], v.at[1], v.at[0], v.at[1]],
             r: v.size / 2.0,
             hole: v.drill / 2.0,
@@ -719,6 +745,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             net: String::new(),
             layers: vec![d.layer],
             rect: d.rect,
+            turned: None,
             seg: d.seg,
             r: d.r,
             hole: 0.0,
@@ -765,7 +792,8 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
                 // joined by tracks or not, the pour will hold the pad by its spokes
                 if let (Some(rect), Some(on), true) = (copper[a].rect, routing[*layer], options.room > 0.0) {
                     rooms.push(Shape {
-                        rect: Some(rect),
+                        rect: Some(copper[a].turned.map_or(rect, |t| t.0)),
+                        angle: copper[a].turned.map_or(0.0, |t| t.1),
                         seg: None,
                         r: 0.0,
                         layers: vec![on],

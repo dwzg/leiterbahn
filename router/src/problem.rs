@@ -139,6 +139,10 @@ pub struct Keepout {
 pub struct Shape {
     #[serde(rename = "box")]
     pub rect: Option<[f64; 4]>,
+    /// A box may be turned about its middle by this many degrees, anticlockwise on a sheet whose
+    /// y axis points down (as KiCad counts): a pad of a part that lies at 45 degrees.
+    #[serde(default)]
+    pub angle: f64,
     pub seg: Option<[f64; 4]>,
     #[serde(default)]
     pub r: f64,

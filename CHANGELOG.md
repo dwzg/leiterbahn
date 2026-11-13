@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.30.0
+
+Fixed
+- A pad of a part that lies at an angle is that pad turned, not the box round it
+  (`Shape::angle` in a problem; `leiterbahn-route board` reads it from the board). At 45
+  degrees the box round a pad of 0.25 x 0.8 mm is 0.74 mm square: the pins of such a part
+  shut each other in. A board of 94 parts, 39 of them at 45 degrees: 5 connections left
+  open of 128, before this 52, in 8 s on a 0.05 mm grid.
+
 ## 0.29.0
 
 `leiterbahn-route board` (a KiCad board routed without KiCad) on boards it had never seen:
