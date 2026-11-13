@@ -526,6 +526,34 @@ fn a_pushed_net_does_not_search_further_than_the_pusher_has_won() {
     assert!(s.expanded < 150_000, "{} cells opened", s.expanded); // 92515; without the limit 282664
 }
 
+/// A net that is pushed off its way and finds none free may push another in turn. H has two ways
+/// through the wall: the gap B lies in, or a longer one that only it can reach (its pads fill the
+/// doors to it). B has one other gap, where C lies, and only C can reach the last one.
+#[test]
+fn a_pushed_net_with_no_way_left_pushes_in_turn() {
+    let wall = |x0: f64, x1: f64| json!({"box": [x0, 4.9, x1, 5.1], "layers": [0]});
+    let post = |x: f64, y0: f64, y1: f64| json!({"box": [x - 0.1, y0, x + 0.1, y1], "layers": [0]});
+    let doors = |x: f64| [post(x, 0.0, 3.6), post(x, 4.4, 5.6), post(x, 6.4, 10.0)];
+    let net = |name: &str, x: f64, weight: f64| json!({"name": name, "width": 0.2, "clearance": 0.2, "weight": weight, "pieces": [[pad(x, 4.0, 0)], [pad(x, 6.0, 0)]]});
+    let mut fixed = vec![wall(-6.0, -0.4), wall(0.4, 5.6), wall(6.4, 9.6), wall(10.4, 14.6), wall(15.4, 24.0)];
+    fixed.extend(doors(4.0));
+    fixed.extend(doors(12.0));
+    let run = |weight: f64| {
+        let s = solve(json!({
+            "box": [-6, 0, 24, 10], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+            "fixed": fixed, "nets": [net("H", 4.0, weight), net("B", 7.0, 1.0), net("C", 12.0, 1.0)]
+        }));
+        assert!(s.nets.iter().all(|n| n.open.is_empty()));
+        s.nets.iter().map(|n| n.cost - n.alone).collect::<Vec<f64>>()
+    };
+    // all of one weight: H on its longer way is less copper than B and C on theirs
+    let more = run(1.0);
+    assert!(more[0] > 3.0 && more[1] < 0.5 && more[2] < 0.5, "{:?}", more);
+    // H heavy: it gets the gap, B the next one and C the last
+    let more = run(5.0);
+    assert!(more[0] < 0.5 && more[1] > 3.0 && more[2] > 1.0, "{:?}", more);
+}
+
 /// A seed lays the nets in another order: the result is still a clean board, and seed 0 is the order as it was.
 #[test]
 fn another_seed_routes_the_same_board_clean() {

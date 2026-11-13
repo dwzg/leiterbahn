@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.35.0
+
+Changed
+- In the passes that shorten, a net that is pushed off its way and finds none free may push
+  in turn, and those it crosses again, up to a dozen nets; the nets moved so far are closed
+  to it, or it would go back across the one that pushed. It was given up at the first net
+  without a free way. A current sense net of 7 mm alone on the board lay 67 mm long round
+  half of it: its short way shut two nets in, one of which had a way only across seven
+  others, one of those shut in again. Fifteen nets moved, and the net is 7.6 mm. Only where
+  a push fails and the pusher has won 2 mm or more: letting every pushed net push had taken
+  four times as long and saved no more. On a board of 159 nets, the same 24 placements
+  before and after: all clean, the 13 nets that should be short 4.1 % shorter (in 12, longer
+  in 2; the worst placement 259 -> 193 mm), all tracks 0.5 % shorter, 30 % less narrow
+  track, routing 2 % longer. Ten demo boards: the same connections open, no error added.
+
 ## 0.34.0
 
 Changed

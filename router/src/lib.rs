@@ -231,7 +231,13 @@ impl Grids {
         let (nx, ny, nl, step) = (self.nx, self.ny, self.nl, self.step);
         // (Laid copper lies on the grid, but the same holds between two cells of it: a track past a
         // via on a 0.1 mm grid came 2 um nearer than a clearance of 0.254 mm allows.)
-        let with = |r: f64| if fixed { (r * r + step * step / 4.0).sqrt() + 0.02 * step } else { (r * r + step * step / 2.0).sqrt() };
+        let with = |r: f64| {
+            if fixed {
+                (r * r + step * step / 4.0).sqrt() + 0.02 * step
+            } else {
+                (r * r + step * step / 2.0).sqrt()
+            }
+        };
         let centre = Item {
             rect: false,
             turn: (1.0, 0.0),
@@ -806,6 +812,15 @@ impl Router<'_> {
         }
     }
 
+    /// Count the net's tracks and vias as copper that stays, or take that back: closed to the
+    /// others, not crossed at a price.
+    fn hard(&mut self, n: usize, delta: i32) {
+        for k in 0..self.laid[n].items.len() {
+            let item = self.laid[n].items[k].clone();
+            self.grids.stamp(&item, false, false, delta);
+        }
+    }
+
     /// The cells (a diagonal step as its length) of the net's tracks that are nearer than they
     /// should be to copper the net is to keep away from.
     fn beside_of(&self, n: usize, laid: &Laid) -> f32 {
@@ -970,7 +985,17 @@ impl Router<'_> {
             found = found
                 || self
                     .search
-                    .run(&self.grids, kind, job.via_kind, &sources, &goals, Some(0.0), 0.0, self.via_cost, self.problem.limit)
+                    .run(
+                        &self.grids,
+                        kind,
+                        job.via_kind,
+                        &sources,
+                        &goals,
+                        Some(0.0),
+                        0.0,
+                        self.via_cost,
+                        self.problem.limit,
+                    )
                     .is_some();
         }
         self.search.plane = None;
@@ -1397,7 +1422,7 @@ impl Router<'_> {
                     };
                     let least = (0.8 / self.grids.step) as usize;
                     let mut runs: Vec<(usize, usize)> = Vec::new(); // stretches of the way that fit, first and last cell
-                    // (at full width only where no other net is in the way now, whatever crossing costs)
+                                                                    // (at full width only where no other net is in the way now, whatever crossing costs)
                     let fits = |c: u32| wide[c as usize].hard == 0 && wide[c as usize].soft == 0;
                     let mut a = 0;
                     while a < thin.len() {
@@ -1775,7 +1800,10 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         for p in (0..router.jobs[n].cells.len()).filter(|_| apart) {
             if !router.jobs[n].cells[p].is_empty() && !router.reaches(n, p) {
                 router.jobs[n].cells[p].clear();
-                say(format!("{}: a piece of it has no way to the rest with the net alone on the board, and is left open", problem.nets[n].name));
+                say(format!(
+                    "{}: a piece of it has no way to the rest with the net alone on the board, and is left open",
+                    problem.nets[n].name
+                ));
             }
         }
     }
@@ -2098,8 +2126,36 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                     // Only what the net that pushes lies on, and no dearer than the pusher has won:
                     // a pushed net with no other way searched its whole area to find that out (a
                     // supply net of forty pads: 4.5 million cells, in every pass).
-                    router.budget = Some(gain.max(0.0) / weight(m).max(1e-3));
+                    let won = gain;
+                    router.budget = Some(won.max(0.0) / weight(m).max(1e-3));
                     router.relay(m, None, 0.0);
+                    // It has no way in what is free, and the pusher has won much: then it may cross
+                    // others in turn, and those take what is free, or cross in turn, up to a dozen
+                    // nets. The nets moved so far are closed to it, or it would go back across the
+                    // pusher. (A current sense net of 7 mm alone lay 67 mm long round half the
+                    // board: its short way shut two nets in, one of which had a way across seven
+                    // others, one of them shut in then. Fifteen nets moved, and their tracks were
+                    // 46 mm shorter together. Two levels for every push took four times as long and
+                    // saved no more; this is only where a net is left with no way.)
+                    if moved.len() < 12 && won * step as f32 >= 2.0 && router.laid[m].open.len() > old.open.len() {
+                        router.laid[m] = old.clone();
+                        for (o, _) in &moved {
+                            router.soft(*o, -1);
+                            router.hard(*o, 1);
+                        }
+                        router.relay(m, Some(1.5 / weight(m).max(0.1)), 0.0);
+                        for (o, _) in &moved {
+                            router.hard(*o, -1);
+                            router.soft(*o, 1);
+                        }
+                        let fresh = &router.laid[m];
+                        crossed = order
+                            .iter()
+                            .copied()
+                            .filter(|&o| o != m && !moved.iter().any(|t| t.0 == o))
+                            .filter(|&o| fresh.items.iter().any(|a| router.laid[o].items.iter().any(|b| clash(a, b, step))))
+                            .collect();
+                    }
                     router.budget = None;
                     gain -= weight(m) * (router.cost(m) - router.cost_of(m, &old));
                     lost = router.laid[m].open.len() > old.open.len();
