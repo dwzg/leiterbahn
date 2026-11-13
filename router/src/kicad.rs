@@ -60,8 +60,19 @@ pub struct Board {
     pub segments: Vec<Segment>,
     pub vias: Vec<Hole>,
     pub zones: Vec<Zone>,
+    /// Text and drawings on copper layers: copper of no net, in the way of every track.
+    pub drawn: Vec<Drawn>,
     /// Bounding box of the outline's centre lines.
     pub edge: Option<[f64; 4]>,
+}
+
+/// A piece of a drawing or a text on a copper layer: a box, or a line with half its width.
+#[derive(Debug, Clone)]
+pub struct Drawn {
+    pub layer: usize,
+    pub rect: Option<[f64; 4]>,
+    pub seg: [f64; 4],
+    pub r: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +106,127 @@ fn xy(s: &Sexp) -> [f64; 2] {
 
 fn points(s: &Sexp) -> Vec<[f64; 2]> {
     s.find("pts").map(|p| p.all("xy").map(xy).collect()).unwrap_or_default()
+}
+
+/// What a drawing or a text on a copper layer covers, as boxes and lines. `origin` and `angle`:
+/// where the footprint it belongs to lies (the board's own drawings: the origin, unturned).
+/// A text is taken as the box round it, generously: its glyphs are not known here.
+fn drawn(item: &Sexp, layer: usize, origin: [f64; 2], angle: f64, out: &mut Vec<Drawn>) {
+    let place = |p: [f64; 2]| {
+        let t = turn(p, angle);
+        [origin[0] + t[0], origin[1] + t[1]]
+    };
+    let half = item
+        .find("stroke")
+        .and_then(|s| s.find("width"))
+        .or_else(|| item.find("width"))
+        .and_then(|w| w.num(1))
+        .unwrap_or(0.0)
+        / 2.0;
+    let filled = item
+        .find("fill")
+        .map(|f| !matches!(f.text(1), Some("none") | Some("no") | None))
+        .unwrap_or(false);
+    let line = |a: [f64; 2], b: [f64; 2], out: &mut Vec<Drawn>| {
+        out.push(Drawn {
+            layer,
+            rect: None,
+            seg: [a[0], a[1], b[0], b[1]],
+            r: half,
+        })
+    };
+    let boxed = |pts: &[[f64; 2]], out: &mut Vec<Drawn>| {
+        let mut rect = EMPTY;
+        pts.iter().for_each(|&p| grow(&mut rect, p));
+        out.push(Drawn {
+            layer,
+            rect: Some([rect[0] - half, rect[1] - half, rect[2] + half, rect[3] + half]),
+            seg: [rect[0], rect[1], rect[2], rect[3]],
+            r: 0.0,
+        })
+    };
+    let head = item.head().unwrap_or("");
+    match &head[head.find('_').map(|i| i + 1).unwrap_or(0)..] {
+        "line" => {
+            if let (Some(a), Some(b)) = (item.find("start"), item.find("end")) {
+                line(place(xy(a)), place(xy(b)), out);
+            }
+        }
+        "arc" => {
+            if let (Some(a), Some(m), Some(b)) = (item.find("start"), item.find("mid"), item.find("end")) {
+                line(place(xy(a)), place(xy(m)), out);
+                line(place(xy(m)), place(xy(b)), out);
+            }
+        }
+        "rect" => {
+            if let (Some(a), Some(b)) = (item.find("start").map(xy), item.find("end").map(xy)) {
+                let corners: Vec<[f64; 2]> = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]].into_iter().map(place).collect();
+                if filled {
+                    boxed(&corners, out);
+                } else {
+                    for k in 0..4 {
+                        line(corners[k], corners[(k + 1) % 4], out);
+                    }
+                }
+            }
+        }
+        "poly" => {
+            let pts: Vec<[f64; 2]> = points(item).into_iter().map(place).collect();
+            if filled {
+                boxed(&pts, out);
+            } else {
+                for k in 0..pts.len() {
+                    line(pts[k], pts[(k + 1) % pts.len()], out);
+                }
+            }
+        }
+        "circle" => {
+            if let (Some(c), Some(e)) = (item.find("center").map(xy), item.find("end").map(xy)) {
+                let r = ((e[0] - c[0]).powi(2) + (e[1] - c[1]).powi(2)).sqrt();
+                let round: Vec<[f64; 2]> = (0..16)
+                    .map(|k| (k as f64 * std::f64::consts::TAU / 16.0).sin_cos())
+                    .map(|(sin, cos)| place([c[0] + r * cos, c[1] + r * sin]))
+                    .collect();
+                if filled {
+                    boxed(&round, out);
+                } else {
+                    for k in 0..16 {
+                        line(round[k], round[(k + 1) % 16], out);
+                    }
+                }
+            }
+        }
+        "text" => {
+            // (gr_text "words" ...) or (fp_text kind "words" ...)
+            let words = item.text(if head == "gr_text" { 1 } else { 2 }).unwrap_or("");
+            let Some(at) = item.find("at") else { return };
+            let font = item.find("effects").and_then(|e| e.find("font"));
+            let size = font.and_then(|f| f.find("size")).map(xy).unwrap_or([1.0, 1.0]); // height, width
+            let thick = font.and_then(|f| f.find("thickness")).and_then(|t| t.num(1)).unwrap_or(0.15);
+            let lines: Vec<&str> = words.split("\\n").collect();
+            let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * size[1] * 1.3 + thick + 0.4;
+            let height = lines.len() as f64 * size[0] * 1.6 + thick + 0.4;
+            // to one side of its place or about it: either way within its width on both sides
+            let aside = item.find("effects").and_then(|e| e.find("justify")).is_some();
+            let (w, h) = (if aside { width } else { width / 2.0 }, if aside { height } else { height / 2.0 });
+            let own = at.num(3).unwrap_or(0.0);
+            let centre = place(xy(at));
+            let corners: Vec<[f64; 2]> = [[-w, -h], [w, -h], [w, h], [-w, h]]
+                .into_iter()
+                .map(|c| turn(c, own))
+                .map(|c| [centre[0] + c[0], centre[1] + c[1]])
+                .collect();
+            let mut rect = EMPTY;
+            corners.iter().for_each(|&p| grow(&mut rect, p));
+            out.push(Drawn {
+                layer,
+                rect: Some(rect),
+                seg: [rect[0], rect[1], rect[2], rect[3]],
+                r: 0.0,
+            });
+        }
+        _ => {}
+    }
 }
 
 impl Board {
@@ -145,14 +277,20 @@ impl Board {
                         let centre = [origin[0] + local[0], origin[1] + local[1]];
                         let own = place.num(3).unwrap_or(0.0);
                         let size = pad.find("size").map(xy).unwrap_or([0.0, 0.0]);
+                        // The copper may lie off the hole: (drill 0.75 (offset 0 0.4)). Read without
+                        // that, a transistor's pads were taken to be 0.4 mm from where they are, and a
+                        // track was laid across one.
+                        let off = pad.find("drill").and_then(|d| d.find("offset")).map(xy).unwrap_or([0.0, 0.0]);
+                        let off = turn(off, own);
+                        let middle = [centre[0] + off[0], centre[1] + off[1]];
                         let mut rect = EMPTY;
                         if pad.text(3) == Some("circle") {
-                            grow(&mut rect, [centre[0] - size[0] / 2.0, centre[1] - size[1] / 2.0]);
-                            grow(&mut rect, [centre[0] + size[0] / 2.0, centre[1] + size[1] / 2.0]);
+                            grow(&mut rect, [middle[0] - size[0] / 2.0, middle[1] - size[1] / 2.0]);
+                            grow(&mut rect, [middle[0] + size[0] / 2.0, middle[1] + size[1] / 2.0]);
                         } else {
                             for (sx, sy) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
                                 let corner = turn([sx * size[0], sy * size[1]], own);
-                                grow(&mut rect, [centre[0] + corner[0], centre[1] + corner[1]]);
+                                grow(&mut rect, [middle[0] + corner[0], middle[1] + corner[1]]);
                             }
                         }
                         for shape in pad.find("primitives").map(|p| p.items()).unwrap_or(&[]) {
@@ -185,6 +323,18 @@ impl Board {
                             layers,
                             hole: hole.unwrap_or(0.0),
                         });
+                    }
+                    for part in item.items() {
+                        if matches!(part.head(), Some("fp_text" | "fp_line" | "fp_arc" | "fp_rect" | "fp_poly" | "fp_circle")) {
+                            if let Some(&layer) = part.find("layer").and_then(|l| l.text(1)).and_then(|l| index.get(l)) {
+                                drawn(part, layer, origin, angle, &mut board.drawn);
+                            }
+                        }
+                    }
+                }
+                Some("gr_text") => {
+                    if let Some(&layer) = item.find("layer").and_then(|l| l.text(1)).and_then(|l| index.get(l)) {
+                        drawn(item, layer, [0.0, 0.0], 0.0, &mut board.drawn);
                     }
                 }
                 Some("segment") => {
@@ -237,6 +387,9 @@ impl Board {
                     });
                 }
                 Some("gr_line") | Some("gr_arc") | Some("gr_rect") | Some("gr_poly") | Some("gr_circle") => {
+                    if let Some(&layer) = item.find("layer").and_then(|l| l.text(1)).and_then(|l| index.get(l)) {
+                        drawn(item, layer, [0.0, 0.0], 0.0, &mut board.drawn);
+                    }
                     if item.find("layer").and_then(|l| l.text(1)) != Some("Edge.Cuts") {
                         continue;
                     }
@@ -282,10 +435,21 @@ impl Rules {
         let default = class("Default").ok_or("the project file has no Default net class")?;
         let get = |c: &serde_json::Value, key: &str| c[key].as_f64().unwrap_or(0.0);
         let limits = &root["board"]["design_settings"]["rules"];
+        // What the board's constraints ask for at least goes before what a net class says: a
+        // project with a Default class of 0.2 mm tracks and 0.6 mm vias and constraints of 0.3 mm
+        // and 1.5 mm was routed with the class's, 199 tracks and 32 vias against its own rules.
+        let least = |key: &str| limits[key].as_f64().unwrap_or(0.0);
+        let thinnest = least("min_track_width").max(least("min_connection"));
+        let drill = get(default, "via_drill").max(least("min_through_hole_diameter"));
         let mut rules = Rules {
-            track: get(default, "track_width"),
-            clearance: get(default, "clearance"),
-            via: (get(default, "via_diameter"), get(default, "via_drill")),
+            track: get(default, "track_width").max(thinnest),
+            clearance: get(default, "clearance").max(least("min_clearance")),
+            via: (
+                get(default, "via_diameter")
+                    .max(least("min_via_diameter"))
+                    .max(drill + 2.0 * least("min_via_annular_width")),
+                drill,
+            ),
             width: HashMap::new(),
             wider: HashMap::new(),
             hole_clear: limits["min_hole_clearance"].as_f64().unwrap_or(0.25),
@@ -301,7 +465,19 @@ impl Rules {
             };
             for net in nets.iter().filter(|n| matches(pattern.as_bytes(), n.as_bytes())) {
                 if !rules.width.contains_key(*net) {
-                    rules.width.insert(net.to_string(), get(found, "track_width"));
+                    rules.width.insert(net.to_string(), get(found, "track_width").max(thinnest));
+                    if get(found, "clearance") > rules.clearance {
+                        rules.wider.insert(net.to_string(), get(found, "clearance"));
+                    }
+                }
+            }
+        }
+        // (projects of KiCad 6 and 7 name the class per net: {"net": "class"} or {"net": ["class"]})
+        if let Some(by_net) = root["net_settings"]["netclass_assignments"].as_object() {
+            for (net, named) in by_net {
+                let name = named.as_str().or_else(|| named.as_array().and_then(|a| a.first()).and_then(|n| n.as_str()));
+                if let (Some(found), false) = (name.and_then(class), rules.width.contains_key(net)) {
+                    rules.width.insert(net.to_string(), get(found, "track_width").max(thinnest));
                     if get(found, "clearance") > rules.clearance {
                         rules.wider.insert(net.to_string(), get(found, "clearance"));
                     }
@@ -477,6 +653,16 @@ pub struct Options {
     pub weights: HashMap<String, f64>,
     /// Route these nets only (empty: all); the others' copper is in the way as it is.
     pub only: Vec<String>,
+    /// A pad on a filled pour of its net counts as joined to all else on that pour, also on a
+    /// layer that tracks are laid on. Without it (the default from the command line) only the
+    /// pours on plane layers join: on a layer with tracks the new tracks cut a pour apart or
+    /// shut a pad off from it, and what the pour had joined is then open (six boards routed
+    /// both ways: 54 connections left open with the pours trusted, 16 without).
+    pub pours: bool,
+    /// Tracks keep this far from a pad that hangs in a pour, where a way exists that is not much
+    /// longer (mm; 0: no such wish): the pour reaches the pad by spokes, and a track past it at
+    /// clearance cuts them.
+    pub room: f64,
 }
 
 /// The board as a routing problem: every net that is in more than one piece is to be joined,
@@ -528,6 +714,16 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             hole: v.drill / 2.0,
         });
     }
+    for d in &board.drawn {
+        copper.push(Copper {
+            net: String::new(),
+            layers: vec![d.layer],
+            rect: d.rect,
+            seg: d.seg,
+            r: d.r,
+            hole: 0.0,
+        });
+    }
     // what is one piece already: copper of a net that touches, and copper on the same island of a pour
     let mut by_net: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (n, c) in copper.iter().enumerate() {
@@ -558,11 +754,27 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             }
         }
     }
+    let mut rooms: Vec<Shape> = Vec::new();
     for (i, (net, layer, pts, bounds)) in islands.iter().enumerate() {
         for &a in by_net.get(net).map(|m| m.as_slice()).unwrap_or(&[]) {
             if copper[a].layers.contains(layer) && copper[a].on(pts, *bounds) {
-                let (ra, rb) = (root(&mut parent, a), root(&mut parent, copper.len() + i));
-                parent[ra.max(rb)] = ra.min(rb);
+                if options.pours || routing[*layer].is_none() {
+                    let (ra, rb) = (root(&mut parent, a), root(&mut parent, copper.len() + i));
+                    parent[ra.max(rb)] = ra.min(rb);
+                }
+                // joined by tracks or not, the pour will hold the pad by its spokes
+                if let (Some(rect), Some(on), true) = (copper[a].rect, routing[*layer], options.room > 0.0) {
+                    rooms.push(Shape {
+                        rect: Some(rect),
+                        seg: None,
+                        r: 0.0,
+                        layers: vec![on],
+                        hole: 0.0,
+                        clearance: 0.0,
+                        role: Role::None,
+                        room: options.room,
+                    });
+                }
             }
         }
     }
@@ -575,34 +787,59 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
     };
     let mut nets = Vec::new();
     let mut routed: HashSet<&str> = HashSet::new();
+    let mut held: Vec<usize> = Vec::new(); // copper of routed nets that is on their plane: joined, and in the way
     for (name, members) in &by_net {
         let mut pieces: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for &m in members {
             pieces.entry(root(&mut parent, m)).or_default().push(m);
         }
-        if pieces.len() < 2 || !(options.only.is_empty() || options.only.iter().any(|o| o == name)) {
+        // The net's pours on plane layers. What lies on one is joined; every other piece is joined
+        // by a way of its own that ends in a via into the plane, wherever that suits it.
+        let planes: Vec<usize> = (0..islands.len())
+            .filter(|&i| islands[i].0 == *name && routing[islands[i].1].is_none())
+            .collect();
+        let on_plane: HashSet<usize> = planes.iter().map(|&i| root(&mut parent, copper.len() + i)).collect();
+        let apart = pieces.keys().filter(|k| !on_plane.contains(k)).count();
+        let wanted = options.only.is_empty() || options.only.iter().any(|o| o == name);
+        if !wanted || (planes.is_empty() && pieces.len() < 2) || (!planes.is_empty() && apart == 0) {
             continue;
         }
-        let mut pieces: Vec<Vec<usize>> = pieces.into_values().collect();
+        let mut pieces: Vec<(usize, Vec<usize>)> = pieces.into_iter().collect();
         for piece in pieces.iter_mut() {
-            piece.sort_by_key(|&m| (place(&copper[m]), m));
+            piece.1.sort_by_key(|&m| (place(&copper[m]), m));
         }
-        pieces.sort_by_key(|piece| place(&copper[piece[0]]));
+        pieces.sort_by_key(|piece| place(&copper[piece.1[0]]));
         routed.insert(name);
-        nets.push(Net {
+        let net = |pieces: Vec<Vec<Shape>>, plane: Vec<Vec<[f64; 2]>>| Net {
             name: name.to_string(),
             width: rules.width.get(*name).copied().unwrap_or(rules.track),
             narrow: Some(rules.track),
             clearance: rules.keep(name),
             weight: options.weights.get(*name).copied().unwrap_or(1.0),
             role: Role::None,
-            pieces: pieces.iter().map(|piece| piece.iter().map(|&m| copper[m].shape(&routing)).collect()).collect(),
-        });
+            pieces,
+            plane,
+        };
+        let shapes = |piece: &Vec<usize>| -> Vec<Shape> { piece.iter().map(|&m| copper[m].shape(&routing)).collect() };
+        if planes.is_empty() {
+            nets.push(net(pieces.iter().map(|piece| shapes(&piece.1)).collect(), Vec::new()));
+        } else {
+            let polygons: Vec<Vec<[f64; 2]>> = planes.iter().map(|&i| islands[i].2.clone()).collect();
+            for (key, piece) in &pieces {
+                if on_plane.contains(key) {
+                    held.extend(piece.iter().copied());
+                } else {
+                    nets.push(net(vec![shapes(piece)], polygons.clone()));
+                }
+            }
+        }
     }
+    let held: HashSet<usize> = held.into_iter().collect();
     let fixed = copper
         .iter()
-        .filter(|c| !routed.contains(c.net.as_str()))
-        .map(|c| Shape {
+        .enumerate()
+        .filter(|(n, c)| !routed.contains(c.net.as_str()) || held.contains(n))
+        .map(|(_, c)| Shape {
             clearance: rules.keep(&c.net),
             ..c.shape(&routing)
         })
@@ -634,7 +871,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         edge_clear: rules.edge_clear,
         keepouts,
         fixed,
-        rooms: Vec::new(),
+        rooms,
         nets,
         max_iter: options.max_iter,
         relax: 12,

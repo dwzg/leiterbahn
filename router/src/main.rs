@@ -3,10 +3,14 @@
 //!
 //! leiterbahn-route board in.kicad_pcb out.kicad_pcb [--step 0.05] [--via-cost 3] [--max-iter 200]
 //!                        [--hole-clear mm] [--weight NET=4]... [--only NET]... [--problem file.json] [--report file.tsv]
+//!                        [--pours trust|ignore] [--room 0.8]
 //!     Routes every net of a KiCad board that is in more than one piece and writes the board with
 //!     the new tracks. The rules come from the .kicad_pro beside the board. --problem also writes
 //!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
-//!     in mm, their cost with the net alone on the board, pieces left apart.
+//!     in mm, their cost with the net alone on the board, pieces left apart. A pad on a pour of
+//!     its net is joined by tracks like any other, unless the pour is on a plane layer; --pours
+//!     trust takes every filled pour as a connection (new tracks may cut it apart). Tracks keep
+//!     --room mm from a pad on a pour where they can, for the spokes that hold it.
 //!
 //! leiterbahn-route place problem.json result.json
 //!     Improves a placement (see `place.rs`): parts are shifted, turned and exchanged where that
@@ -33,6 +37,8 @@ fn main() {
             hole_clear: None,
             weights: Default::default(),
             only: Vec::new(),
+            pours: false,
+            room: 0.8,
         };
         let mut dump = None;
         let mut report = None;
@@ -48,6 +54,12 @@ fn main() {
                 "--problem" => dump = Some(value.clone()),
                 "--report" => report = Some(value.clone()),
                 "--only" => options.only.push(value.clone()),
+                "--room" => options.room = number(),
+                "--pours" => match value.as_str() {
+                    "trust" => options.pours = true,
+                    "ignore" => options.pours = false,
+                    _ => fail(format!("--pours {}: trust or ignore", value)),
+                },
                 "--weight" => match value.rsplit_once('=').and_then(|(net, w)| Some((net, w.parse::<f64>().ok()?))) {
                     Some((net, w)) => drop(options.weights.insert(net.to_string(), w)),
                     None => fail(format!("--weight {}: write NET=number", value)),

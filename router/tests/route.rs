@@ -590,3 +590,34 @@ fn a_track_is_narrow_only_through_each_tight_place() {
         length(true)
     );
 }
+
+/// A net with a plane: its pad is joined by a way that ends in a via inside the plane's outline,
+/// as near as that is, and nothing else needs to be reached.
+#[test]
+fn a_pad_is_joined_to_its_plane_by_a_via_inside_it() {
+    let s = solve(json!({
+        "box": [0, 0, 20, 10], "step": 0.1, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+        "fixed": [{"box": [4.0, 0.0, 4.2, 10.0], "layers": [0]}],
+        "nets": [{"name": "GND", "width": 0.2, "clearance": 0.2, "pieces": [[pad(2.0, 5.0, 0)]],
+                  "plane": [[[8.0, 1.0], [19.0, 1.0], [19.0, 9.0], [8.0, 9.0]]]},
+                 {"name": "A", "width": 0.2, "clearance": 0.2, "pieces": [[pad(10.0, 2.0, 0)], [pad(10.0, 8.0, 0)]]}]
+    }));
+    assert!(
+        s.nets.iter().all(|n| n.open.is_empty()),
+        "{:?}",
+        s.nets.iter().map(|n| n.open.clone()).collect::<Vec<_>>()
+    );
+    let gnd = &s.nets[0];
+    // every way of the net: a layer change is a via; the one that joins the plane lies inside it
+    let vias: Vec<[u32; 3]> = gnd
+        .paths
+        .iter()
+        .flat_map(|p| p.cells.windows(2).filter(|w| w[0][0] != w[1][0]).map(|w| w[0]))
+        .collect();
+    assert!(!vias.is_empty());
+    let last = gnd.paths.last().unwrap().cells.last().unwrap();
+    assert!(last[1] >= 80 && last[1] <= 190 && last[2] >= 10 && last[2] <= 90, "the way ends at {:?}", last);
+    assert!(last[1] <= 90, "at the plane's near edge, not deep inside: {:?}", last);
+    // the wall on the front between pad and plane: over it on the back, so the way has two vias or starts with one
+    assert!(gnd.cost < 6.0 + 2.0 * 3.0 + 1.5, "{}", gnd.cost);
+}

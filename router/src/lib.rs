@@ -113,6 +113,8 @@ struct Grids {
     /// of noisy nets (0) and of quiet nets (1) a track's centre there would be too near to.
     apart: f64,
     near: [Vec<Cell>; 3],
+    /// The planes of nets that have one: per cell of a layer, whether a via there is in the plane.
+    planes: Vec<Vec<bool>>,
 }
 
 /// What a track's centre (or a via's) finds at one place: how much copper that stays is too
@@ -296,6 +298,8 @@ struct Job {
     boxes: Vec<[i32; 4]>,
     /// The copper its tracks are to keep away from: `Grids::near` 0 (it is quiet) or 1 (noisy).
     shy: Option<usize>,
+    /// Its plane, if it has one (`Grids::planes`): then its last piece is that plane, with no cells.
+    plane: Option<usize>,
 }
 
 /// The cells a search has reached and not yet gone on from, cheapest first to a quarter of a
@@ -406,6 +410,9 @@ struct Search {
     far_seen: Vec<u32>,
     /// A way that costs more than this is not looked for.
     bound: f32,
+    /// The plane of the net being laid, while that is still to be joined (`Grids::planes`): a way
+    /// may end in a via anywhere inside it.
+    plane: Option<usize>,
 }
 
 /// The side of a tile of `Search::far`, in cells.
@@ -588,7 +595,13 @@ impl Search {
             if self.queue.at as f32 / 4.0 > self.bound {
                 break; // whatever is found from here on costs more than the caller will pay
             }
-            if self.target[n] != 0 {
+            // (a way that has just changed layers inside the net's plane has reached the plane)
+            let in_plane = self.plane.is_some_and(|m| {
+                let prev = self.marks[n].prev;
+                let area = (nx * ny) as u32;
+                prev != NONE && prev / area != node / area && grids.planes[m][(node % area) as usize]
+            });
+            if self.target[n] != 0 || in_plane {
                 let mut path = vec![node];
                 while self.marks[*path.last().unwrap() as usize].prev != NONE {
                     path.push(self.marks[*path.last().unwrap() as usize].prev);
@@ -1070,6 +1083,7 @@ impl Router<'_> {
                 }
             }
             let mut kind = job.kind;
+            self.search.plane = job.plane.filter(|_| !joined[pieces - 1]);
             self.search.bound = left.unwrap_or(f32::INFINITY);
             let mut found = self.search.run(
                 &self.grids,
@@ -1115,7 +1129,12 @@ impl Router<'_> {
             if let (Some(left), Some(path)) = (left.as_mut(), &found) {
                 *left -= self.search.marks[*path.last().unwrap() as usize].g;
             }
-            let mut piece = found.as_ref().map(|path| self.search.target[*path.last().unwrap() as usize] as usize - 1);
+            // (a way that ends on no marked cell has ended in the net's plane, its last piece)
+            let mut piece = found.as_ref().map(|path| match self.search.target[*path.last().unwrap() as usize] {
+                0 => pieces - 1,
+                p => p as usize - 1,
+            });
+            self.search.plane = None;
             // A narrow track only as long as it must be: it was laid because a pin had no way out at the
             // net's width, and then ran narrow all the way (7 mm of 0.127 mm to a 100 uF capacitor). From
             // the first cell of it where the full width has room to the last such cell, at full width
@@ -1335,6 +1354,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         } else {
             [Vec::new(), Vec::new(), Vec::new()]
         },
+        planes: Vec::new(),
     };
     let margin = step / 2.0;
     // the board's edge and the keep-out areas: no track centre within half a track of them
@@ -1397,6 +1417,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         grids.room(&item, shape.room);
     }
     let mut jobs = Vec::new();
+    let mut plane_of: Vec<(&Vec<Vec<[f64; 2]>>, usize)> = Vec::new(); // the planes made so far: nets may share one
     for net in &problem.nets {
         let kind = grids.kinds.iter().position(|k| *k == (net.width / 2.0, net.clearance)).unwrap();
         let via_kind = grids.via_kinds.iter().position(|c| *c == net.clearance).unwrap();
@@ -1413,6 +1434,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             cells: Vec::new(),
             boxes: Vec::new(),
             shy: Some(which(net.role).map_or(2, |w| 1 - w)),
+            plane: None,
         };
         for piece in &net.pieces {
             let items: Vec<Item> = piece.iter().map(|s| item_of(s, x0, y0, step, net.clearance)).collect();
@@ -1437,6 +1459,49 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             job.items.push(items);
             job.cells.push(cells);
             job.boxes.push(bounds);
+        }
+        if !net.plane.is_empty() {
+            // the plane as cells, row by row: between the crossings of a row with the polygons' sides
+            let same = plane_of.iter().position(|(polygons, _)| *polygons == &net.plane);
+            let at = same.map(|k| plane_of[k].1).unwrap_or_else(|| {
+                let mut mask = vec![false; nx * ny];
+                for polygon in &net.plane {
+                    for j in 0..ny {
+                        let y = y0 + j as f64 * step;
+                        let mut cuts: Vec<f64> = Vec::new();
+                        for (k, a) in polygon.iter().enumerate() {
+                            let b = polygon[(k + 1) % polygon.len()];
+                            if (a[1] > y) != (b[1] > y) {
+                                cuts.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+                            }
+                        }
+                        cuts.sort_by(|a, b| a.total_cmp(b));
+                        for pair in cuts.windows(2).step_by(2) {
+                            let from = (((pair[0] - x0) / step).ceil().max(0.0)) as usize;
+                            let to = (((pair[1] - x0) / step).floor()).min(nx as f64 - 1.0);
+                            if to >= 0.0 {
+                                for cell in mask[j * nx..j * nx + nx].iter_mut().take(to as usize + 1).skip(from) {
+                                    *cell = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                grids.planes.push(mask);
+                plane_of.push((&net.plane, grids.planes.len() - 1));
+                grids.planes.len() - 1
+            });
+            let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+            for (flat, _) in grids.planes[at].iter().enumerate().filter(|c| *c.1) {
+                let (i, j) = ((flat % nx) as i32, (flat / nx) as i32);
+                bounds = [bounds[0].min(i), bounds[1].min(j), bounds[2].max(i), bounds[3].max(j)];
+            }
+            if bounds[0] <= bounds[2] {
+                job.plane = Some(at);
+                job.items.push(Vec::new());
+                job.cells.push(Vec::new());
+                job.boxes.push(bounds);
+            }
         }
         jobs.push(job);
     }
@@ -1476,6 +1541,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             far: vec![0.0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
             far_seen: vec![0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
             bound: f32::INFINITY,
+            plane: None,
         },
         via_cost: (problem.via.cost / step) as f32,
         whole: [0, 0, nx as i32 - 1, ny as i32 - 1],

@@ -50,6 +50,8 @@ fn options() -> Options {
         hole_clear: None,
         weights: Default::default(),
         only: Vec::new(),
+        pours: true,
+        room: 0.8,
     }
 }
 
@@ -133,4 +135,100 @@ fn the_routed_board_read_again_has_nothing_in_pieces() {
     assert!(again.segments[1..].iter().all(|s| !s.locked));
     let left = problem(&again, &rules, &options()).unwrap();
     assert!(left.nets.is_empty(), "{:?}", left.nets.iter().map(|n| &n.name).collect::<Vec<_>>());
+}
+
+/// A pad whose copper lies off its hole, and a text on copper: both are where a track must not
+/// go. (Read without them, a transistor's pad was 0.4 mm from where it is and a track ran
+/// across it; a text on the front was written over.)
+#[test]
+fn a_pad_off_its_hole_and_a_text_on_copper_are_in_the_way() {
+    let text = board_text().replace(
+        "(gr_line (start 0 0)",
+        r#"(footprint "Q" (layer "F.Cu") (at 4 10 90) (property "Reference" "Q1" (at 0 0 0))
+    (pad "1" thru_hole rect (at 0 0 90) (size 1.1 1.8) (drill 0.75 (offset 0 0.4)) (layers "*.Cu") (net "SIG") (uuid "u")))
+  (gr_text "AB" (at 15 9 0) (layer "F.Cu") (uuid "u") (effects (font (size 1 1) (thickness 0.15))))
+  (gr_line (start 12 4) (end 16 4) (stroke (width 0.3) (type default)) (layer "F.Cu"))
+  (gr_line (start 0 0)"#,
+    );
+    let board = Board::parse(&text).unwrap();
+    let q = board.pads.iter().find(|p| p.reference == "Q1").unwrap();
+    // turned by 90 degrees the offset (0, 0.4) points to the right, and the pad is 1.8 wide and 1.1 high
+    assert!(close(q.rect, [4.4 - 0.9, 10.0 - 0.55, 4.4 + 0.9, 10.0 + 0.55]), "{:?}", q.rect);
+    assert_eq!(q.at, [4.0, 10.0]);
+    assert_eq!(board.drawn.len(), 2);
+    let words = board.drawn.iter().find(|d| d.rect.is_some()).unwrap().rect.unwrap();
+    assert!(words[0] < 14.2 && words[2] > 15.8 && words[1] < 8.6 && words[3] > 9.4, "{:?}", words);
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    let nobody: Vec<_> = p.fixed.iter().filter(|s| s.layers == vec![0] && s.hole == 0.0).collect();
+    assert_eq!(nobody.len(), 2, "the text and the line, on the front, of no net");
+}
+
+/// What the board's constraints ask for at least goes before the net class.
+#[test]
+fn the_boards_least_widths_go_before_the_net_class() {
+    let project = PROJECT.replace(
+        r#""min_hole_clearance": 0.25,"#,
+        r#""min_hole_clearance": 0.25, "min_track_width": 0.3, "min_clearance": 0.3, "min_via_diameter": 1.5,
+           "min_via_annular_width": 0.3, "min_through_hole_diameter": 0.4,"#,
+    );
+    let board = Board::parse(&board_text()).unwrap();
+    let rules = Rules::parse(&project, &board).unwrap();
+    assert_eq!((rules.track, rules.clearance, rules.via), (0.3, 0.3, (1.5, 0.4)));
+    assert_eq!(rules.width.get("+5V"), Some(&0.5));
+    let older = PROJECT.replace(
+        r#""netclass_patterns": ["#,
+        r#""netclass_assignments": {"SIG": "Power", "GND": ["Mains"]}, "netclass_patterns": ["#,
+    );
+    let rules = Rules::parse(&older, &board).unwrap();
+    assert_eq!((rules.width.get("SIG"), rules.wider.get("GND")), (Some(&0.5), Some(&0.6)));
+}
+
+/// A pad on a pour of its net asks tracks for room. The pour joins it if pours are trusted;
+/// if not, it is a piece like any other (the pour is on a layer with tracks: they may cut it).
+#[test]
+fn pads_on_a_pour_ask_for_room_or_are_routed_like_the_rest() {
+    let board = Board::parse(&board_text()).unwrap();
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    assert_eq!(p.rooms.len(), 2, "R2's ground pad and the header's ground pin, on the back");
+    assert!(p.rooms.iter().all(|r| r.room == 0.8 && r.layers == vec![1]));
+    let all = problem(&board, &rules, &Options { pours: false, ..options() }).unwrap();
+    let names: Vec<&str> = all.nets.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, vec!["+5V", "GND", "SIG"]);
+    assert_eq!(all.rooms.len(), 2);
+}
+
+/// Four layers, the inner two planes. GND is poured on In1: the header's drilled ground pin is on
+/// it; the resistor's ground pad on the back is not, and gets a net of its own with the plane to
+/// end in. Routed, it has a via inside the plane, and read again nothing of GND is apart.
+#[test]
+fn a_pad_off_its_plane_is_given_a_way_into_it() {
+    let text = board_text()
+        .replace(
+            r#"(0 "F.Cu" signal) (2 "B.Cu" signal)"#,
+            r#"(0 "F.Cu" signal) (4 "In1.Cu" power) (6 "In2.Cu" power) (2 "B.Cu" signal)"#,
+        )
+        .replace(r#"(zone (net "GND") (layer "B.Cu")"#, r#"(zone (net "GND") (layer "In1.Cu")"#)
+        .replace(r#"(filled_polygon (layer "B.Cu")"#, r#"(filled_polygon (layer "In1.Cu")"#);
+    let board = Board::parse(&text).unwrap();
+    assert_eq!(board.copper.iter().map(|c| c.1).collect::<Vec<_>>(), vec![true, false, false, true]);
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &Options { pours: false, ..options() }).unwrap();
+    let gnd: Vec<_> = p.nets.iter().filter(|n| n.name == "GND").collect();
+    assert_eq!(gnd.len(), 1, "one way to make: the resistor's pad; the header's pin is on the plane");
+    assert_eq!((gnd[0].pieces.len(), gnd[0].plane.len(), gnd[0].plane[0].len()), (1, 1, 4));
+    assert!(
+        p.fixed.iter().any(|s| s.hole > 0.0 && s.rect.is_some_and(|r| (r[0] - 10.67).abs() < 1e-9)),
+        "the pin on the plane is in the way"
+    );
+    let solution = route(&p, &mut |_| {});
+    assert!(solution.nets.iter().all(|n| n.open.is_empty()));
+    let (_tracks, vias) = copper_of(&p, &solution);
+    let into: Vec<_> = vias.iter().filter(|v| v.0 == "GND").collect();
+    assert!(
+        !into.is_empty() && into.iter().any(|v| v.1[0] >= 9.0 && v.1[0] <= 19.0 && v.1[1] >= 1.0 && v.1[1] <= 11.0),
+        "{:?}",
+        into
+    );
 }

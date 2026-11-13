@@ -174,6 +174,10 @@ pub struct Net {
     /// What is to be joined: each piece is copper that is one already (a pad, or pads with
     /// the tracks between them).
     pub pieces: Vec<Vec<Shape>>,
+    /// The net's copper on a plane layer, as polygons in mm: one more piece, after those above,
+    /// which a way reaches by ending in a via inside one of them.
+    #[serde(default)]
+    pub plane: Vec<Vec<[f64; 2]>>,
 }
 
 #[derive(Serialize, Debug, Default)]

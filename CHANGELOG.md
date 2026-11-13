@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.29.0
+
+`leiterbahn-route board` (a KiCad board routed without KiCad) on boards it had never seen:
+eleven of KiCad's demo boards, their tracks taken out, routed again and checked with KiCad's
+DRC. It had shorts, tracks against the board's own rules and many pads left open. What that
+showed, and what is done about it:
+
+Fixed
+- A pad whose copper lies off its hole (`(drill 0.75 (offset 0 0.4))`) was taken to lie on the
+  hole: tracks were laid across the real pad (two shorts and eight clearance errors on a
+  board of 68 parts).
+- Text and drawings on copper layers were not seen, and tracks ran through them.
+- The board's constraints (least track width, clearance, via diameter, annular ring, drill)
+  now go before the net class: a project with a Default class below its own constraints was
+  routed with 199 tracks and 32 vias that broke them. Net classes given per net
+  (`netclass_assignments`, KiCad 6 and 7) are read.
+
+Changed
+- A pad on a pour of its net is joined by tracks like any other, unless the pour is on a
+  plane layer. A filled pour on a layer with tracks had counted as a connection; the new
+  tracks then cut it apart or shut pads off from it. Six boards routed both ways: 54
+  connections left open with the pours trusted, 16 without. `--pours trust` is the old way.
+  Tracks keep `--room` (0.8 mm) from pads on a pour where they can, for the spokes.
+
+Added
+- Vias into planes. A net with a pour on a plane layer: every piece of it that is not on the
+  plane gets a way of its own that ends in a via inside the plane, wherever that is nearest
+  and free (`Net::plane` in a problem; the board reader makes it). Until now such a pad was
+  joined by tracks to the nearest drilled pad of its net, if there was one. A board of four
+  layers with 210 parts: 110 more vias, 5 % less track, routed in half the time; as many
+  connections left open as before (4 of 316 on a 0.05 mm grid).
+
+Where the eleven stand now (0.1 mm grid; open connections of those to make): 0 of 14, 0 of
+86, 0 of 173, 1 of 478, 4 of 164, 8 of 87, 8 of 316 (4 at 0.05 mm), 78 of 499, and three
+boards of fine pitch with a third to a quarter open at either grid. No shorts. Left: copper
+too near a board edge that is not a rectangle, starved thermals, a few clearance errors on
+one board, and the three dense boards.
+
 ## 0.28.0
 
 Added
