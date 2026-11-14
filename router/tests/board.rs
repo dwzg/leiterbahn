@@ -183,6 +183,15 @@ fn a_text_on_copper_is_about_as_wide_as_it_is_set() {
     );
 }
 
+/// What the command line does by itself: a via costs as much as 6 mm of track, and pours on
+/// layers with tracks are not trusted.
+#[test]
+fn the_defaults_of_the_board_mode() {
+    let d = Options::default();
+    assert_eq!((d.step, d.via_cost, d.max_iter, d.pours, d.room), (0.05, 6.0, 200, false, 0.8));
+    assert!(d.hole_clear.is_none() && d.weights.is_empty() && d.only.is_empty());
+}
+
 /// What the board's constraints ask for at least goes before the net class.
 #[test]
 fn the_boards_least_widths_go_before_the_net_class() {

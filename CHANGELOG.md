@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.40.0
+
+Changed
+- `leiterbahn-route board`: a via costs as much as 6 mm of track by default, not 3
+  (`--via-cost`). Ten demo boards with KiCad's DRC, nothing unconnected on any either way:
+  1378 vias instead of 1634, fewer on every board that has any (7 instead of 22 on one of
+  87 connections, 530 instead of 611 on one of 1458), for 1.7 % more track and a ninth more
+  time. With 10 mm: 1230 vias, but one board kept 3 connections open and the ten took
+  nearly twice as long. `route_file()` uses the same default; `negotiate()` on a board built
+  with the library keeps its own (3), until it has been measured there.
+
 ## 0.39.0
 
 Added

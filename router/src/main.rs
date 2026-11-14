@@ -1,13 +1,14 @@
 //! leiterbahn-route problem.json result.json
 //!     Routes a problem (see `problem.rs`) and writes the tracks as grid paths.
 //!
-//! leiterbahn-route board in.kicad_pcb out.kicad_pcb [--step 0.05] [--via-cost 3] [--max-iter 200]
+//! leiterbahn-route board in.kicad_pcb out.kicad_pcb [--step 0.05] [--via-cost 6] [--max-iter 200]
 //!                        [--hole-clear mm] [--weight NET=4]... [--only NET]... [--problem file.json] [--report file.tsv]
 //!                        [--pours trust|ignore] [--room 0.8] [--planes found|typed]
 //!     Routes every net of a KiCad board that is in more than one piece and writes the board with
 //!     the new tracks. The rules come from the .kicad_pro beside the board. --problem also writes
 //!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
-//!     in mm, their cost with the net alone on the board, pieces left apart. A pad on a pour of
+//!     in mm, their cost with the net alone on the board, pieces left apart. --via-cost: what a
+//!     via costs, as mm of track (more: fewer vias, longer tracks). A pad on a pour of
 //!     its net is joined by tracks like any other, unless the pour is on a plane layer; --pours
 //!     trust takes every filled pour as a connection (new tracks may cut it apart). Tracks keep
 //!     --room mm from a pad on a pour where they can, for the spokes that hold it. A plane is a
@@ -35,16 +36,7 @@ fn read(path: &str) -> String {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() >= 4 && args[1] == "board" {
-        let mut options = kicad::Options {
-            step: 0.05,
-            via_cost: 3.0,
-            max_iter: 200,
-            hole_clear: None,
-            weights: Default::default(),
-            only: Vec::new(),
-            pours: false,
-            room: 0.8,
-        };
+        let mut options = kicad::Options::default();
         let mut dump = None;
         let mut find_planes = false;
         let mut report = None;

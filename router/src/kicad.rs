@@ -890,6 +890,10 @@ impl Board {
 
 pub struct Options {
     pub step: f64,
+    /// What a via costs, as mm of track. By default 6: with 3, ten boards of 14 to 1458
+    /// connections came out with 1634 vias, with 6 with 1378 (fewer on every board, one of 87
+    /// connections with 7 instead of 22) for 1.7 % more track and a ninth more time; with 10
+    /// with 1230, but one board kept 3 connections open and the time nearly doubled.
     pub via_cost: f64,
     pub max_iter: u32,
     /// Copper to a foreign hole; None: the project's limit.
@@ -908,6 +912,22 @@ pub struct Options {
     /// longer (mm; 0: no such wish): the pour reaches the pad by spokes, and a track past it at
     /// clearance cuts them.
     pub room: f64,
+}
+
+impl Default for Options {
+    /// What `leiterbahn-route board` does when no option says otherwise.
+    fn default() -> Options {
+        Options {
+            step: 0.05,
+            via_cost: 6.0,
+            max_iter: 200,
+            hole_clear: None,
+            weights: HashMap::new(),
+            only: Vec::new(),
+            pours: false,
+            room: 0.8,
+        }
+    }
 }
 
 /// The board as a routing problem: every net that is in more than one piece is to be joined,
