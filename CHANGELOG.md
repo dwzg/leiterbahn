@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.40.1
+
+Fixed
+- `route_file()` routes with a via at 3 mm of track again, as it was measured, not at the 6
+  that `leiterbahn-route board` has had by itself since 0.40.0. Where the pours are trusted,
+  fewer vias mean more track on the layers the pours lie on: eight demo boards ended with 9
+  connections apart at 6, and with 5 at 3.
+
+Tried, and on a branch (`warm-start`), not here: a net's tracks as what the router starts from
+instead of copper that stays (`--tracks move`), for the further passes of `route_file()`. It
+works, and did not help: those passes left 10 connections apart over the eight boards where
+tracks that stay left 9. The tracks a further pass lays or moves cut a pour somewhere else.
+
 ## 0.40.0
 
 Changed

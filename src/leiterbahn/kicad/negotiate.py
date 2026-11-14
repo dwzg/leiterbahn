@@ -40,8 +40,10 @@ def route_file(src, out, step=0.1, passes=3, options=(), say=None):
     33 % less track and up to 40 % fewer vias than without; six ended with nothing unconnected,
     four with one or two (islands of a pour without a pad among them): tracks of an earlier pass
     stay where they are, so a pad they shut in stays open. The board's `.kicad_pro` (its rules)
-    must lie beside `src`; it is copied beside `out`. options: more for the router, such as
-    ["--weight", "CLK=3"]. Needs kicad-cli. Returns {"unconnected": per pass, as KiCad's DRC
+    must lie beside `src`; it is copied beside `out`. A via costs 3 mm of track here, not the
+    router's 6: with fewer vias more track lies in the pours' way, and eight boards ended with
+    9 connections apart instead of 5. options: more for the router, such as ["--weight",
+    "CLK=3"], or another "--via-cost". Needs kicad-cli. Returns {"unconnected": per pass, as KiCad's DRC
     counts them after filling, "passes": how many were made}.
     """
     import shutil
@@ -50,7 +52,8 @@ def route_file(src, out, step=0.1, passes=3, options=(), say=None):
         shutil.copyfile(stem(src) + ".kicad_pro", stem(out) + ".kicad_pro")
     left, cur = [], src
     for _ in range(passes):
-        cmd = [binary(), "board", cur, out + ".part", "--step", str(step), "--pours", "trust", *options]
+        cmd = [binary(), "board", cur, out + ".part", "--step", str(step), "--pours", "trust", "--via-cost", "3"]
+        cmd += options
         done = subprocess.run(cmd, capture_output=True, text=True)
         if not os.path.exists(out + ".part"):
             raise RuntimeError("leiterbahn-route failed: " + done.stderr[-2000:])
