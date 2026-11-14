@@ -190,6 +190,7 @@ Export what an enclosure needs to know about a KiCad board, as JSON.
 Route many nets at once with the `leiterbahn-route` program (router/, Rust): negotiated congestion.
 
 - `binary()`: Path of the leiterbahn-route program; built with cargo when it is missing or older than its source.
+- `route_file(src, out, step=0.1, passes=3, options=(), say=None)`: Route the board file `src` into `out` with `leiterbahn-route board`, its pours counted as connections.
 - `shape_of(it, index)`: An item of finish.copper_items() as leiterbahn-route's shape. index: {layer id: routing layer number}.
 - `touches(it, box)`: 
 - `problem(items, piece, rules, only=None, skip=(), box=None, step=0.1, via_cost=3.0, max_iter=200, weights=None)`: (problem for leiterbahn-route, {net: [[item key]]} of the nets in it).

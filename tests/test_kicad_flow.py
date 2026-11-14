@@ -1498,6 +1498,34 @@ def test_negotiate_routes_all_nets_at_once(project, tmp_path):
 
 
 
+@pytest.mark.skipif(not shutil.which("cargo"), reason="needs cargo to build leiterbahn-route")
+def test_route_file_trusts_the_pours_and_routes_what_they_leave_apart(project, tmp_path):
+    """A board file with ground poured on the back: the header's ground pin and one resistor's pad are on the pour, the
+    other resistor's is not. Routed as a file, nothing is unconnected for KiCad, and ground has less track than with a
+    track to every pad."""
+    from leiterbahn.kicad.negotiate import binary, route_file
+    b = board(project)
+    place_all(b)
+    b.place("R2", 110, 116, back=True)                     # its ground pad lies on the pour
+    b.place("R4", 129, 116, 180, back=True)
+    b.zone("GND", pcbnew.B_Cu, rect=(100.5, 100.5, 17.5, 29))
+    b.zone("GNDA", pcbnew.B_Cu, polygon=[(120, 100.5), (139.5, 100.5), (139.5, 129.5), (120, 129.5)])
+    b.fill_zones()
+    src, out, plain = (str(tmp_path / name) for name in ("in.kicad_pcb", "out.kicad_pcb", "plain.kicad_pcb"))
+    b.save(src)
+    b.write_project(src[:-4] + "_pro")                    # the rules lie beside the board
+    lines = []
+    got = route_file(src, out, say=lines.append)
+    assert got["unconnected"][-1] == 0 and got["passes"] <= 3, (got, lines[-5:])
+    assert "Found 0 unconnected" in drc(out, str(tmp_path / "drc.rpt"))
+    subprocess.run([binary(), "board", src, plain, "--step", "0.1"], capture_output=True, check=True)
+
+    def ground(path):
+        return sum(pcbnew.ToMM(t.GetLength()) for t in pcbnew.LoadBoard(path).GetTracks()
+                   if t.GetClass() != "PCB_VIA" and t.GetNetname().split("/")[-1] in ("GND", "GNDA"))
+    assert ground(out) < ground(plain) - 1.0, (ground(out), ground(plain))
+
+
 def test_a_race_takes_the_run_that_is_clean_in_the_fewest_rounds(project, tmp_path):
     """negotiate(race=3): three runs with the nets in other orders; the same winner every time."""
     from leiterbahn.kicad.negotiate import _board_problem, solve

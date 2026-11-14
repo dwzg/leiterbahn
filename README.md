@@ -25,6 +25,7 @@ housing side, which is now [gehaeuse](https://github.com/dwzg/gehaeuse).
 | `leiterbahn.kicad.negotiate` | Routing of all nets at once with `leiterbahn-route` (`router/`, Rust): negotiated congestion on a grid, net class widths and clearances, a shortening pass, and per net how far its tracks are from what they would cost alone on the board |
 | `leiterbahn.kicad.intent` | What a circuit needs of its layout, read from the pin names and types in the netlist: supply pins and their capacitors, feedback and input nodes, boot capacitors, quiet and noisy nets. The placer uses it (`Placer.ties()`), `Placer.unmet()` reports what is not given |
 | `leiterbahn-route board` | The same router on a `.kicad_pcb` file directly, without KiCad or Python: reads the board and its rules, writes the tracks into the file |
+| `leiterbahn.kicad.negotiate.route_file` | That, with KiCad in between: the pours are trusted, filled again round the new tracks, and what they leave apart is routed in a further pass. Less track and fewer vias on a board with poured ground |
 | `leiterbahn.kicad.fab` | JLCPCB Gerbers for every copper layer, BOM and CPL with per-footprint rotation corrections |
 | `leiterbahn.kicad.planar` | Plane geometry without pcbnew: the gap between two groups of copper shapes, outline contours with notches |
 | `leiterbahn.kicad.geometry` | Board data (outline, parts, pads, keepouts) as JSON for an enclosure generator ([gehaeuse](https://github.com/dwzg/gehaeuse)) |

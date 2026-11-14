@@ -29,6 +29,48 @@ def binary():
     return exe
 
 
+def route_file(src, out, step=0.1, passes=3, options=(), say=None):
+    """Route the board file `src` into `out` with `leiterbahn-route board`, its pours counted as connections.
+
+    By itself the router lays a track to every pad of a poured net (`--pours ignore`), since a new
+    track can cut a pour apart: ground then costs track, vias and the room of the signal nets (a
+    board of 14 connections: 265 mm instead of 167). Here the pours are trusted, KiCad fills them
+    again round the new tracks, and what they then leave apart is routed in a further pass, up to
+    `passes` times or until a pass closes nothing more. Ten boards of 86 to 499 connections: 5 to
+    33 % less track and up to 40 % fewer vias than without; six ended with nothing unconnected,
+    four with one or two (islands of a pour without a pad among them): tracks of an earlier pass
+    stay where they are, so a pad they shut in stays open. The board's `.kicad_pro` (its rules)
+    must lie beside `src`; it is copied beside `out`. options: more for the router, such as
+    ["--weight", "CLK=3"]. Needs kicad-cli. Returns {"unconnected": per pass, as KiCad's DRC
+    counts them after filling, "passes": how many were made}.
+    """
+    import shutil
+    stem = lambda path: path[:-len(".kicad_pcb")] if path.endswith(".kicad_pcb") else path  # noqa: E731
+    if os.path.exists(stem(src) + ".kicad_pro") and stem(src) != stem(out):
+        shutil.copyfile(stem(src) + ".kicad_pro", stem(out) + ".kicad_pro")
+    left, cur = [], src
+    for _ in range(passes):
+        cmd = [binary(), "board", cur, out + ".part", "--step", str(step), "--pours", "trust", *options]
+        done = subprocess.run(cmd, capture_output=True, text=True)
+        if not os.path.exists(out + ".part"):
+            raise RuntimeError("leiterbahn-route failed: " + done.stderr[-2000:])
+        os.replace(out + ".part", out)
+        if say:
+            for line in done.stderr.splitlines():
+                say(line)
+        report = stem(out) + ".drc.json"
+        fill = ["kicad-cli", "pcb", "drc", "--format", "json", "--severity-all", "--refill-zones", "--save-board"]
+        subprocess.run([*fill, "-o", report, out], capture_output=True, text=True, check=True)
+        with open(report) as f:
+            left.append(len(json.load(f).get("unconnected_items", ())))
+        if say:
+            say("pass %d: %d unconnected after the pours were filled again" % (len(left), left[-1]))
+        if left[-1] == 0 or (len(left) > 1 and left[-1] >= left[-2]):
+            break
+        cur = out
+    return dict(unconnected=left, passes=len(left))
+
+
 def shape_of(it, index):
     """An item of finish.copper_items() as leiterbahn-route's shape. index: {layer id: routing layer number}."""
     if it["kind"] == "via" or it["hole"]:

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.39.0
+
+Added
+- `negotiate.route_file(src, out, step=0.1, passes=3)`: `leiterbahn-route board` on a board
+  file with its pours counted as connections, KiCad filling them again round the new tracks,
+  and a further pass for what they then leave apart. By itself the router lays a track to
+  every pad of a poured net, since a new track can cut a pour apart, and ground then costs
+  track, vias and the room of the signal nets: on a demo board of 14 connections all of the
+  100 mm more than Freerouting laid (265 against 164) were ground. Ten demo boards, against
+  the router by itself: 5 to 33 % less track and up to 40 % fewer vias (2428 mm and 138
+  vias instead of 2837 and 187 on one, 472 mm and 55 instead of 705 and 82 on another); six
+  end with nothing unconnected in KiCad's DRC, four with one or two (on two of them islands
+  of a pour without a pad). The tracks of an earlier pass stay where they are, so a pad they
+  shut in stays open: where every connection counts, the router by itself still closes all.
+
+Measured, for the record: Freerouting 2.5.0 on the same ten boards (headless from KiCad's
+DSN export, its defaults, fanout off, 20 passes, 4 threads, 30 minutes at most, one run, not
+tuned) left 0, 2, 11, 22, 22, 86, 101, 122 and 160 connections open in KiCad's DRC and gave
+no result on the tenth in 30 minutes, with 0 unrouted by its own count on three. Where it
+finishes it lays less copper than this router by itself and about as much as `route_file`:
+1511 mm and no via against 1489 and 5; 164 mm against 167; 29 vias against 89 on a third.
+
 ## 0.38.0
 
 Changed
