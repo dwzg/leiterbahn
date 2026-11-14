@@ -381,6 +381,23 @@ impl Queue {
         (self.at, self.top, self.count) = (0, 0, 0);
     }
 
+    /// Go back to a cheaper bucket, for cells that are about to be put in below the one being
+    /// emptied (`Search::wave` going on from more sources). False if the ring cannot hold both
+    /// that bucket and its highest one.
+    fn rewind(&mut self, to: u64) -> bool {
+        if to >= self.at {
+            return true;
+        }
+        if self.count > 0 && self.top >= to + RING {
+            return false;
+        }
+        if self.count == 0 {
+            self.top = to;
+        }
+        self.at = to;
+        true
+    }
+
     /// `f`: what the way through this cell will cost at least; `g`: what it cost to get here.
     fn push(&mut self, f: f32, g: f32, node: u32) {
         let b = ((f * 4.0) as u64).max(self.at);
@@ -450,6 +467,8 @@ struct Search {
     /// least, and the search that wrote this.
     far: Vec<f32>,
     far_seen: Vec<u32>,
+    /// Counts the searches made and gone on with: what `far_seen` holds.
+    far_round: u32,
     /// A way that costs more than this is not looked for.
     bound: f32,
     /// The last search found no way and had looked at every cell it could reach.
@@ -607,8 +626,35 @@ impl Search {
         via_cost: f32,
         limit: u64,
     ) -> Option<Vec<u32>> {
-        self.round += 1;
-        let round = self.round;
+        self.wave(grids, kind, via_kind, sources, None, goals, press, memory, via_cost, limit)
+    }
+
+    /// `run`, or with `more` the last search gone on with: the sources from index `more` on are
+    /// new, and what that search had reached and still had waiting stays. To be asked for only
+    /// if nothing but the goals has changed since (fewer of them) and no other search was made.
+    /// A net of 168 pads is joined pad by pad, always from all that is joined to the nearest
+    /// pad left: begun anew each time, each of those 167 searches opened 400 000 cells around
+    /// everything joined so far, 64 million for the net.
+    #[allow(clippy::too_many_arguments)]
+    fn wave(
+        &mut self,
+        grids: &Grids,
+        kind: usize,
+        via_kind: usize,
+        sources: &[u32],
+        more: Option<usize>,
+        goals: &[[i32; 4]],
+        press: Option<f32>,
+        memory: f32,
+        via_cost: f32,
+        limit: u64,
+    ) -> Option<Vec<u32>> {
+        if more.is_none() {
+            self.round += 1;
+        }
+        // (the estimates are per call: with fewer goals than the search had before, they are larger)
+        self.far_round += 1;
+        let (round, far_round) = (self.round, self.far_round);
         let window = self.window;
         let (nx, ny, nl) = (grids.nx as i32, grids.ny as i32, grids.nl);
         let (track, via) = (&grids.track[kind], &grids.via[via_kind]);
@@ -624,7 +670,7 @@ impl Search {
             let (lo, hi, at) = if many {
                 let (ti, tj) = (i / FAR, j / FAR);
                 let at = (tj * tiles + ti) as usize;
-                if far_seen[at] == round {
+                if far_seen[at] == far_round {
                     return far[at];
                 }
                 ([ti * FAR, tj * FAR], [ti * FAR + FAR - 1, tj * FAR + FAR - 1], at)
@@ -638,13 +684,33 @@ impl Search {
                 best = best.min(dx.max(dy) + (DIAG - 1.0) * dx.min(dy));
             }
             if many {
-                (far[at], far_seen[at]) = (best, round);
+                (far[at], far_seen[at]) = (best, far_round);
             }
             best
         };
-        self.queue.clear();
-        for &s in sources {
-            if track[s as usize].hard > 0 || (press.is_none() && track[s as usize].soft > 0) {
+        let usable = |s: u32| !(track[s as usize].hard > 0 || (press.is_none() && track[s as usize].soft > 0));
+        // going on: from the cheapest bucket a new source belongs in, if the ring can go back to it
+        let mut from = 0;
+        if let Some(at) = more {
+            let low = sources[at..]
+                .iter()
+                .filter(|&&s| usable(s))
+                .map(|&s| {
+                    let (_l, i, j) = grids.split(s);
+                    (h(i as i32, j as i32) * 4.0) as u64
+                })
+                .min();
+            if low.is_none_or(|low| self.queue.rewind(low)) {
+                from = at;
+            } else {
+                self.round += 1;
+                return self.wave(grids, kind, via_kind, sources, None, goals, press, memory, via_cost, limit);
+            }
+        } else {
+            self.queue.clear();
+        }
+        for &s in &sources[from..] {
+            if !usable(s) {
                 continue;
             }
             self.marks[s as usize] = Mark {
@@ -666,6 +732,17 @@ impl Search {
             if self.queue.at as f32 / 4.0 > self.bound {
                 dry = false;
                 break; // whatever is found from here on costs more than the caller will pay
+            }
+            if more.is_some() {
+                // A cell that waited since before a goal was reached waits by its distance from
+                // that goal, perhaps: it goes back by what it is from those left. (Without this
+                // going on opened more cells than beginning anew, round every goal just reached.)
+                let (_l, i, j) = grids.split(node);
+                let f = g + h(i as i32, j as i32);
+                if (f * 4.0) as u64 > self.queue.at {
+                    self.queue.push(f, g, node);
+                    continue;
+                }
             }
             // (a way that has just changed layers inside the net's plane has reached the plane)
             let in_plane = self.plane.is_some_and(|m| {
@@ -1229,6 +1306,10 @@ impl Router<'_> {
         // narrow track reaches, and each of them was looked for at full width over the whole
         // board first, 6 million cells, every time the net was laid: 12 s of it.
         let mut shut: Option<(usize, [i32; 4])> = None;
+        // The search a turn began with, if the next may go on with it: (its number, how many
+        // sources there were, its window). Not after a way with a via: the net's own vias keep
+        // others of its vias away, and what the search had reached does not know of the new one.
+        let mut going: Option<(u32, usize, [i32; 4])> = None;
         while joined.iter().any(|j| !j) {
             let mut marked = Vec::new();
             let mut goals = Vec::new();
@@ -1266,14 +1347,24 @@ impl Router<'_> {
                 sources[from..].iter().copied().filter(|&c| self.search.reach[c as usize] != token).collect()
             });
             let opened = self.search.expanded;
+            let more = going
+                .filter(|g| g.0 == self.search.round && g.2 == self.search.window && left.is_none() && fresh_sources.is_none())
+                // (only while many pads are left: towards a few, a search begun anew goes straight
+                // for the nearest, and going on means sorting again all that was waiting. With
+                // more than 12 left, a board of 371 mostly middling nets took 4 % longer over
+                // eight seeds; with more than 32, 4 % less, and the boards with a net of a hundred
+                // pads and more kept most of what they had won.)
+                .filter(|_| goals.len() > 32)
+                .map(|g| g.1);
             let mut found = if nowhere || fresh_sources.as_ref().is_some_and(|f| f.is_empty()) {
                 None
             } else {
-                self.search.run(
+                self.search.wave(
                     &self.grids,
                     kind,
                     job.via_kind,
                     fresh_sources.as_deref().unwrap_or(&sources),
+                    more,
                     &goals,
                     press,
                     memory,
@@ -1281,6 +1372,7 @@ impl Router<'_> {
                     self.problem.limit,
                 )
             };
+            going = (found.is_some() && left.is_none() && fresh_sources.is_none()).then_some((self.search.round, 0, self.search.window));
             if !nowhere && found.is_none() && left.is_none() {
                 let searched = fresh_sources.as_ref().is_none_or(|f| !f.is_empty());
                 if searched && self.search.spent && (shut.is_some() || self.search.expanded - opened > 100_000) {
@@ -1554,6 +1646,7 @@ impl Router<'_> {
             if parts.is_empty() {
                 parts.push((path, kind));
             }
+            let (had_sources, had_vias) = (sources.len(), laid.vias.len());
             sources.extend(cells_of(next, &laid));
             for (path, kind) in parts {
                 sources.extend(path.iter().copied());
@@ -1585,6 +1678,7 @@ impl Router<'_> {
                 laid.kinds.push(kind);
                 laid.nodes.push(path);
             }
+            going = going.filter(|_| laid.vias.len() == had_vias).map(|g| (g.0, had_sources, g.2));
         }
         for hole in &near {
             raster(
@@ -1833,6 +1927,7 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             shy_cost: problem.shy as f32,
             far: vec![0.0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
             far_seen: vec![0; (nx / FAR as usize + 1) * (ny / FAR as usize + 1)],
+            far_round: 0,
             bound: f32::INFINITY,
             spent: false,
             reach: vec![0; nodes],

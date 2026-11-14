@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.38.0
+
+Changed
+- A net of many pads is joined pad by pad, always from all that is joined to the nearest pad
+  left. While more than 32 are left, the search for the next goes on from where the last one
+  stopped (what it had reached stays, the new track is added to where it starts from, and
+  what was waiting is sorted again by the pads that are left) instead of beginning anew: each
+  of the 167 searches for a ground net of 168 pads had opened 400 000 cells round every pad
+  still to come, 64 million for the net each time it was laid. Not after a track with a via,
+  and not with few pads left, where beginning anew is the faster. The ways found are the
+  same but for which of two equally good ones is taken. Demo boards, four seeds each, same
+  load: the one with that ground net about a fifth faster, one with two supply nets of 100
+  and 124 pads about a third; one of 371 mostly middling nets 4 % faster over eight seeds.
+  A board of 159 nets, 24 placements: the same result in 23 and 6 mm less in one.
+
+Ten demo boards, KiCad's DRC: nothing unconnected on any, no error added. Single runs of the
+slow ones: 124 s (was 220), 121 s (was 140), and 224 s (was 144) for the third, which
+needed 32 rounds this time and 20 the last: the rounds a board needs differ two- and
+threefold with the order of its nets, and any change deals them anew.
+
 ## 0.37.0
 
 Changed
