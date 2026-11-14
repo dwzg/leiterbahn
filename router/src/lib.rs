@@ -60,6 +60,8 @@ struct Laid {
     open: Vec<usize>,
     /// A search found no way even across other nets: trying again changes nothing.
     stuck: bool,
+    /// The net has been laid: with no track and nothing open, all of it is joined as it is.
+    done: bool,
 }
 
 /// Where tracks have changed, and when: the board in tiles of `tile` cells, each with the
@@ -342,6 +344,18 @@ struct Job {
     shy: Option<usize>,
     /// Its plane, if it has one (`Grids::planes`): then its last piece is that plane, with no cells.
     plane: Option<usize>,
+    /// Its pours on layers with tracks (`problem::Net::pours`), and the kind of track that
+    /// stands for their copper.
+    pours: Vec<Pool>,
+    pour_kind: Option<usize>,
+}
+
+/// One island of a pour: its layer, its cells in that layer, and per piece that hangs in it
+/// the cells of it round that piece, where the pour takes hold of it.
+struct Pool {
+    layer: usize,
+    cells: Vec<u32>,
+    holds: Vec<(usize, Vec<u32>)>,
 }
 
 /// The cells a search has reached and not yet gone on from, cheapest first to a quarter of a
@@ -575,6 +589,40 @@ fn corners(grids: &Grids, nodes: &[u32]) -> Vec<[u32; 3]> {
         out.push(cell(nodes[nodes.len() - 1]));
     }
     out.iter().map(|c| [c[0] as u32, c[1] as u32, c[2] as u32]).collect()
+}
+
+/// What the copper of a net's pours is like, as a kind of track: (half its least width, what it
+/// keeps from other nets). None for a net without pours.
+fn pour_kind(net: &problem::Net) -> Option<(f64, f64)> {
+    (!net.pours.is_empty()).then(|| {
+        net.pours
+            .iter()
+            .fold((0.0f64, net.clearance), |k, p| (k.0.max(p.width / 2.0), k.1.max(p.clearance)))
+    })
+}
+
+/// The cells of a layer inside a polygon, row by row: between the crossings of a row with its sides.
+fn inside(polygon: &[[f64; 2]], x0: f64, y0: f64, step: f64, nx: usize, ny: usize, mask: &mut [bool]) {
+    for j in 0..ny {
+        let y = y0 + j as f64 * step;
+        let mut cuts: Vec<f64> = Vec::new();
+        for (k, a) in polygon.iter().enumerate() {
+            let b = polygon[(k + 1) % polygon.len()];
+            if (a[1] > y) != (b[1] > y) {
+                cuts.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+            }
+        }
+        cuts.sort_by(|a, b| a.total_cmp(b));
+        for pair in cuts.windows(2).step_by(2) {
+            let from = (((pair[0] - x0) / step).ceil().max(0.0)) as usize;
+            let to = (((pair[1] - x0) / step).floor()).min(nx as f64 - 1.0);
+            if to >= 0.0 {
+                for cell in mask[j * nx..j * nx + nx].iter_mut().take(to as usize + 1).skip(from) {
+                    *cell = true;
+                }
+            }
+        }
+    }
 }
 
 /// A path's copper: a line per straight piece, a via per layer change.
@@ -859,6 +907,9 @@ struct Router<'a> {
     /// They are about to stall: a way at the net's width that crosses another net is checked
     /// against a narrow one.
     pinch: bool,
+    /// Per cell of a layer: the mark of the pour that was last looked through there (`pour_pairs`).
+    poured: Vec<u32>,
+    pouring: u32,
 }
 
 impl Router<'_> {
@@ -1140,6 +1191,91 @@ impl Router<'_> {
         cost <= least * 1.05 + 1.0
     }
 
+    /// The pieces of net n that its pours join as things lie, as pairs. A pour joins two pieces
+    /// that hang in it if a way leads from one to the other through cells of it where copper of
+    /// the pour's least width has room at the pour's clearance: not within that of a pad, a
+    /// hole, or a track of another net that lies there now. (The net's own pads and tracks must
+    /// be out of the grids, as when it is laid.) So a pour holds what it held only until a
+    /// track cuts it, and then the pieces it leaves apart are joined by a track.
+    fn pour_pairs(&mut self, n: usize) -> Vec<(usize, usize)> {
+        let Some(kind) = self.jobs[n].pour_kind else {
+            return Vec::new();
+        };
+        let (nx, area) = (self.grids.nx as u32, self.grids.nx * self.grids.ny);
+        let mut pairs = Vec::new();
+        for pool in &self.jobs[n].pours {
+            let track = &self.grids.track[kind][pool.layer * area..(pool.layer + 1) * area];
+            // free cells of the pour get its mark; a piece's search turns them into the piece's
+            let open = self.pouring + 1;
+            self.pouring += pool.holds.len() as u32 + 2;
+            for &c in &pool.cells {
+                let cell = track[c as usize];
+                self.poured[c as usize] = if cell.hard == 0 && cell.soft == 0 { open } else { 0 };
+            }
+            for (k, (piece, round)) in pool.holds.iter().enumerate() {
+                let mine = open + 1 + k as u32;
+                let mut stack: Vec<u32> = Vec::new();
+                let mut met: Vec<usize> = Vec::new();
+                for &c in round {
+                    let mark = self.poured[c as usize];
+                    if mark == open {
+                        self.poured[c as usize] = mine;
+                        stack.push(c);
+                    } else if mark > open && mark != mine && !met.contains(&((mark - open - 1) as usize)) {
+                        met.push((mark - open - 1) as usize);
+                    }
+                }
+                while let Some(c) = stack.pop() {
+                    let (i, row) = (c % nx, c - c % nx);
+                    let beside = [
+                        (i > 0).then(|| c - 1),
+                        (i + 1 < nx).then(|| c + 1),
+                        (row >= nx).then(|| c - nx),
+                        (((c + nx) as usize) < area).then(|| c + nx),
+                    ];
+                    for next in beside.into_iter().flatten() {
+                        if self.poured[next as usize] == open {
+                            self.poured[next as usize] = mine;
+                            stack.push(next);
+                        }
+                    }
+                }
+                pairs.extend(met.into_iter().map(|other| (pool.holds[other].0, *piece)));
+            }
+        }
+        pairs
+    }
+
+    /// Into how many groups the net's pours leave the pieces that hang in them, as things lie:
+    /// more than before means that a track laid since has cut one.
+    fn pour_groups(&mut self, n: usize) -> usize {
+        self.soft(n, -1);
+        self.own(n, 1);
+        let pairs = self.pour_pairs(n);
+        self.own(n, -1);
+        self.soft(n, 1);
+        let mut root: Vec<usize> = (0..self.jobs[n].cells.len()).collect();
+        fn find(root: &mut [usize], mut a: usize) -> usize {
+            while root[a] != a {
+                root[a] = root[root[a]];
+                a = root[a];
+            }
+            a
+        }
+        for (p, q) in pairs {
+            let (a, b) = (find(&mut root, p), find(&mut root, q));
+            root[a.max(b)] = a.min(b);
+        }
+        let mut groups: Vec<usize> = Vec::new();
+        for hold in self.jobs[n].pours.iter().flat_map(|pool| &pool.holds) {
+            let g = find(&mut root, hold.0);
+            if !groups.contains(&g) {
+                groups.push(g);
+            }
+        }
+        groups.len()
+    }
+
     /// Has anything changed near the net's tracks or pads since `since`?
     fn is_fresh(&self, n: usize, fresh: &Fresh, since: u32) -> bool {
         self.jobs[n].boxes.iter().any(|&b| fresh.hit(b, since)) || self.laid[n].nodes.iter().any(|path| fresh.hit(self.bounds(path), since))
@@ -1148,6 +1284,7 @@ impl Router<'_> {
     fn lay_on(&mut self, n: usize, press: Option<f32>, memory: f32, keep: bool, fresh: Option<(&Fresh, u32)>) {
         self.search.shy = self.jobs[n].shy.filter(|_| self.grids.shy());
         self.own(n, 1);
+        let poured = self.pour_pairs(n);
         self.search.laying += 1;
         let before = if keep { std::mem::take(&mut self.laid[n]) } else { Laid::default() };
         let mut laid = Laid::default();
@@ -1167,6 +1304,22 @@ impl Router<'_> {
         let mut group: Vec<usize> = (0..pieces).collect();
         let mut held: Vec<usize> = Vec::new();
         let mut held_box: Vec<[i32; 4]> = Vec::new();
+        // groups: pieces are 0..pieces, tracks follow; what a pour joins is one from the start
+        let mut root: Vec<usize> = (0..pieces + before.nodes.len()).collect();
+        fn find(root: &mut [usize], mut a: usize) -> usize {
+            while root[a] != a {
+                root[a] = root[root[a]];
+                a = root[a];
+            }
+            a
+        }
+        for &(p, q) in &poured {
+            let (a, b) = (find(&mut root, p), find(&mut root, q));
+            root[a.max(b)] = a.min(b);
+        }
+        for (p, g) in group.iter_mut().enumerate() {
+            *g = find(&mut root, p);
+        }
         if !before.nodes.is_empty() {
             let plane = (self.grids.nx * self.grids.ny) as u32;
             let via_grid = &self.grids.via[job.via_kind];
@@ -1212,15 +1365,6 @@ impl Router<'_> {
                 if !changed {
                     break;
                 }
-            }
-            // groups: pieces are 0..pieces, tracks follow
-            let mut root: Vec<usize> = (0..pieces + before.nodes.len()).collect();
-            fn find(root: &mut [usize], mut a: usize) -> usize {
-                while root[a] != a {
-                    root[a] = root[root[a]];
-                    a = root[a];
-                }
-                a
             }
             for (k, path) in before.nodes.iter().enumerate() {
                 if !stays[k] {
@@ -1693,6 +1837,7 @@ impl Router<'_> {
             );
         }
         laid.open = apart_from;
+        laid.done = true;
         self.laid[n] = laid;
         self.own(n, -1);
     }
@@ -1717,6 +1862,13 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         }
         if !via_kinds.contains(&net.clearance) {
             via_kinds.push(net.clearance);
+        }
+        // (a pour's copper as a track of its least width at its clearance: where such a track
+        // has room, the pour has)
+        if let Some(kind) = pour_kind(net) {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
         }
     }
     let mut grids = Grids {
@@ -1822,6 +1974,8 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             boxes: Vec::new(),
             shy: Some(which(net.role).map_or(2, |w| 1 - w)),
             plane: None,
+            pours: Vec::new(),
+            pour_kind: pour_kind(net).and_then(|k| grids.kinds.iter().position(|&other| other == k)),
         };
         for piece in &net.pieces {
             let items: Vec<Item> = piece.iter().map(|s| item_of(s, x0, y0, step, net.clearance)).collect();
@@ -1847,32 +2001,58 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
             job.cells.push(cells);
             job.boxes.push(bounds);
         }
+        for pour in &net.pours {
+            let mut mask = vec![false; nx * ny];
+            inside(&pour.outline, x0, y0, step, nx, ny, &mut mask);
+            // A pour takes hold of a pad where its copper, as it was filled, comes up to the pad:
+            // all round it, or by spokes across a gap. Those cells, within a tenth of a millimetre
+            // of the pad's copper, are where the look through the pour begins for that pad; a track
+            // across a spoke then cuts the pad off like one across the pour. (Any cell of the pour
+            // within 0.6 mm of the pad counted at first: a pad at 0.4 mm pitch with a track past
+            // its end was taken to be held, and KiCad's fill did not reach it.)
+            let reach = (0.1 / step).max(1.0);
+            let holds = pour
+                .pieces
+                .iter()
+                .filter(|&&p| p < job.items.len())
+                .map(|&p| {
+                    let mut round: Vec<u32> = Vec::new();
+                    for item in job.items[p].iter().filter(|item| item.layers.contains(&pour.layer)) {
+                        // (a turned pad reaches beyond its box as it is given: by half its diagonal at most)
+                        let slant = if item.turn.1 != 0.0 {
+                            (item.a[2] - item.a[0]).hypot(item.a[3] - item.a[1]) / 2.0
+                        } else {
+                            0.0
+                        };
+                        let grow = (item.r + reach + slant).ceil() as i64 + 1;
+                        let (i0, i1) = (item.a[0].min(item.a[2]).floor() as i64 - grow, item.a[0].max(item.a[2]).ceil() as i64 + grow);
+                        let (j0, j1) = (item.a[1].min(item.a[3]).floor() as i64 - grow, item.a[1].max(item.a[3]).ceil() as i64 + grow);
+                        for j in j0.max(0)..=j1.min(ny as i64 - 1) {
+                            for i in i0.max(0)..=i1.min(nx as i64 - 1) {
+                                if mask[j as usize * nx + i as usize] && dist2(item, i as f64, j as f64).sqrt() <= item.r + reach {
+                                    round.push((j as usize * nx + i as usize) as u32);
+                                }
+                            }
+                        }
+                    }
+                    round.sort_unstable();
+                    round.dedup();
+                    (p, round)
+                })
+                .collect();
+            job.pours.push(Pool {
+                layer: pour.layer,
+                cells: (0..nx * ny).filter(|&c| mask[c]).map(|c| c as u32).collect(),
+                holds,
+            });
+        }
         if !net.plane.is_empty() {
             // the plane as cells, row by row: between the crossings of a row with the polygons' sides
             let same = plane_of.iter().position(|(polygons, _)| *polygons == &net.plane);
             let at = same.map(|k| plane_of[k].1).unwrap_or_else(|| {
                 let mut mask = vec![false; nx * ny];
                 for polygon in &net.plane {
-                    for j in 0..ny {
-                        let y = y0 + j as f64 * step;
-                        let mut cuts: Vec<f64> = Vec::new();
-                        for (k, a) in polygon.iter().enumerate() {
-                            let b = polygon[(k + 1) % polygon.len()];
-                            if (a[1] > y) != (b[1] > y) {
-                                cuts.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
-                            }
-                        }
-                        cuts.sort_by(|a, b| a.total_cmp(b));
-                        for pair in cuts.windows(2).step_by(2) {
-                            let from = (((pair[0] - x0) / step).ceil().max(0.0)) as usize;
-                            let to = (((pair[1] - x0) / step).floor()).min(nx as f64 - 1.0);
-                            if to >= 0.0 {
-                                for cell in mask[j * nx..j * nx + nx].iter_mut().take(to as usize + 1).skip(from) {
-                                    *cell = true;
-                                }
-                            }
-                        }
-                    }
+                    inside(polygon, x0, y0, step, nx, ny, &mut mask);
                 }
                 grids.planes.push(mask);
                 plane_of.push((&net.plane, grids.planes.len() - 1));
@@ -1940,6 +2120,8 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         direct: false,
         budget: None,
         far: false,
+        poured: vec![0; nx * ny],
+        pouring: 0,
         pinch: false,
         grids,
     };
@@ -2024,6 +2206,17 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 let retry = !router.laid[n].open.is_empty() && !router.laid[n].stuck;
                 let beside = c == 0 && since >= 12 && wide.is_some() && router.laid[n].nodes.iter().any(|path| knot.hit(router.bounds(path), 0));
                 if c == 0 && !retry && !beside {
+                    // A net with pours is looked at all the same: a track laid since may have cut
+                    // one, and what it held is then to be joined by a track. Nothing apart, nothing
+                    // laid: then it is as if it had not been looked at.
+                    if !router.jobs[n].pours.is_empty() {
+                        let had = router.laid[n].nodes.len();
+                        router.search.window = router.around(n, near);
+                        router.relay(n, Some(press / problem.nets[n].weight.max(0.1) as f32), 1.0);
+                        if router.laid[n].nodes.len() != had {
+                            again += 1;
+                        }
+                    }
                     router.soft(n, 1);
                     continue;
                 }
@@ -2248,6 +2441,28 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     }
     say(format!("each net alone: {:.0} s", clock.elapsed().as_secs_f64()));
     for pass in 0..problem.relax {
+        // What the pass before has moved may have cut a pour: what that held is joined by a track
+        // where a free way exists, and where none does the net is the first to be tried below,
+        // across others.
+        let poured: Vec<usize> = order.iter().copied().filter(|&n| pass > 0 && !router.jobs[n].pours.is_empty()).collect();
+        for n in poured {
+            let old = router.laid[n].clone();
+            router.soft(n, -1);
+            router.search.window = whole;
+            router.relay(n, None, 0.0);
+            router.soft(n, 1);
+            if router.laid[n].nodes.len() != old.nodes.len() || router.laid[n].open.len() != old.open.len() {
+                fresh.note(router.changed(&old, &router.laid[n]).into_iter(), reach + margin);
+                if !router.laid[n].open.is_empty() {
+                    tried[n] = 0;
+                }
+            }
+        }
+        // An exchange below that cuts a pour of a net it does not move is not made: mending it
+        // afterwards found no way for a pad at 0.4 mm pitch on one board. `held`: the groups each
+        // net's pours leave, as they are now.
+        let pooled: Vec<usize> = order.iter().copied().filter(|&n| !router.jobs[n].pours.is_empty()).collect();
+        let mut held: Vec<usize> = pooled.iter().map(|&n| router.pour_groups(n)).collect();
         let mut todo: Vec<(f32, usize)> = order
             .iter()
             .map(|&n| {
@@ -2372,7 +2587,15 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 router.soft(*m, 1);
             }
             let joined = router.laid[n].open.len() < moved[0].1.open.len();
+            let mut groups = held.clone();
             if fine && (joined || now < was - 0.5) {
+                for (k, &p) in pooled.iter().enumerate() {
+                    groups[k] = router.pour_groups(p);
+                    fine = fine && (groups[k] <= held[k] || moved.iter().any(|t| t.0 == p));
+                }
+            }
+            if fine && (joined || now < was - 0.5) {
+                held = groups;
                 better += 1;
                 pushed += (moved.len() > 1) as u32;
                 saved += was - now;
@@ -2399,16 +2622,26 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                 router.lay(n, None, 0.0);
             }
             let alone = router.cost(n);
-            if router.laid[n].open.len() <= old.open.len() && alone < router.cost_of(n, &old) - 0.5 {
+            router.soft(n, 1);
+            let mut keep = router.laid[n].open.len() <= old.open.len() && alone < router.cost_of(n, &old) - 0.5;
+            let mut groups = held.clone();
+            if keep {
+                for (k, &p) in pooled.iter().enumerate() {
+                    groups[k] = router.pour_groups(p);
+                    keep = keep && (groups[k] <= held[k] || p == n);
+                }
+            }
+            if keep {
+                held = groups;
                 better += 1;
                 saved += weight(n) * (router.cost_of(n, &old) - alone);
-                tried[n] = fresh.now;
                 fresh.note(router.changed(&old, &router.laid[n]).into_iter(), reach + margin);
             } else {
+                router.soft(n, -1);
                 router.laid[n] = old;
-                tried[n] = fresh.now;
+                router.soft(n, 1);
             }
-            router.soft(n, 1);
+            tried[n] = fresh.now;
         }
         solution.shortened.push(better);
         say(format!(
@@ -2444,10 +2677,40 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
         }
         say(format!("straightened: {} bends became {}, in {} nets", before, after, nets));
     }
+    // The passes above move tracks without asking the pours: what one of them holds no longer
+    // is joined by a track now, where a free way exists, until nothing more comes apart.
+    if router.jobs.iter().any(|j| !j.pours.is_empty()) {
+        let mut mended = 0;
+        for _ in 0..4 {
+            let mut changed = false;
+            for &n in &order {
+                if router.jobs[n].pours.is_empty() {
+                    continue;
+                }
+                let had = router.laid[n].nodes.len();
+                router.soft(n, -1);
+                router.search.window = whole;
+                router.relay(n, None, 0.0);
+                router.soft(n, 1);
+                if router.laid[n].nodes.len() != had {
+                    (changed, mended) = (true, mended + 1);
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        if mended > 0 {
+            say(format!(
+                "{} times a pour had been cut after the rounds, and a track was laid for what it had held",
+                mended
+            ));
+        }
+    }
     solution.expanded = router.search.expanded;
     for (n, net) in problem.nets.iter().enumerate() {
         let laid = &router.laid[n];
-        let open = if router.jobs[n].cells.len() > 1 && laid.paths.is_empty() && laid.open.is_empty() {
+        let open = if router.jobs[n].cells.len() > 1 && laid.paths.is_empty() && laid.open.is_empty() && !laid.done {
             (1..router.jobs[n].cells.len()).collect()
         } else {
             laid.open.clone()

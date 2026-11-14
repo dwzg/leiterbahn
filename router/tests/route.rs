@@ -576,6 +576,40 @@ fn a_pushed_net_with_no_way_left_pushes_in_turn() {
     assert!(more[0] < 0.5 && more[1] > 3.0 && more[2] > 1.0, "{:?}", more);
 }
 
+/// Two pads in a pour of their net need no track. A track of another net across the whole pour
+/// cuts it in two: then they are joined by a track of their own, on the other layer.
+#[test]
+fn a_pour_joins_its_pads_until_a_track_cuts_it() {
+    let pour = json!([{"layer": 0, "outline": [[1.0, 1.0], [9.0, 1.0], [9.0, 9.0], [1.0, 9.0]], "pieces": [0, 1], "width": 0.2, "clearance": 0.2}]);
+    let a = json!({"name": "A", "width": 0.2, "clearance": 0.2, "pours": pour, "pieces": [[pad(5.0, 2.0, 0)], [pad(5.0, 8.0, 0)]]});
+    let b = json!({"name": "B", "width": 0.2, "clearance": 0.2, "pieces": [[pad(0.5, 5.0, 0)], [pad(9.5, 5.0, 0)]]});
+    let run = |nets: serde_json::Value| {
+        solve(json!({
+            "box": [0, 0, 10, 10], "step": 0.1, "layers": 2, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0}, "nets": nets
+        }))
+    };
+    let s = run(json!([a]));
+    assert!(
+        s.nets[0].open.is_empty() && s.nets[0].paths.is_empty(),
+        "the pour holds both: {:?}",
+        s.nets[0].paths.len()
+    );
+    let s = run(json!([a, b]));
+    assert!(s.nets.iter().all(|n| n.open.is_empty()));
+    let across = lines(&s).iter().any(|l| l.0 == 1 && l.1 == 0);
+    assert!(across, "B lies on the pour's layer");
+    assert!(
+        !s.nets[0].paths.is_empty() && s.nets[0].cost > 6.0,
+        "A: {} mm in {} tracks",
+        s.nets[0].cost,
+        s.nets[0].paths.len()
+    );
+    // without the pour said, A is two pads like any others
+    let mut plain = a.clone();
+    plain.as_object_mut().unwrap().remove("pours");
+    assert!(!run(json!([plain])).nets[0].paths.is_empty());
+}
+
 /// A seed lays the nets in another order: the result is still a clean board, and seed 0 is the order as it was.
 #[test]
 fn another_seed_routes_the_same_board_clean() {

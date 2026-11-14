@@ -182,6 +182,25 @@ pub struct Net {
     /// which a way reaches by ending in a via inside one of them.
     #[serde(default)]
     pub plane: Vec<Vec<[f64; 2]>>,
+    /// The net's pours on layers that tracks are laid on. Pieces that hang in one are joined by
+    /// it as long as copper as wide as the pour must be, at the pour's clearance, still has a
+    /// way from one to the other through it; where the tracks of other nets have cut that, they
+    /// are joined by a track like any others.
+    #[serde(default)]
+    pub pours: Vec<Pour>,
+}
+
+/// One island of a pour as it was filled before any track was laid (see `Net::pours`).
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct Pour {
+    pub layer: usize,
+    /// Its outline in mm, cut-outs included as KiCad writes them (one line round all).
+    pub outline: Vec<[f64; 2]>,
+    /// The pieces of the net that hang in it.
+    pub pieces: Vec<usize>,
+    /// The least width of its copper and what it keeps from other nets, mm.
+    pub width: f64,
+    pub clearance: f64,
 }
 
 #[derive(Serialize, Debug, Default)]

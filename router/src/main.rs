@@ -9,8 +9,10 @@
 //!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
 //!     in mm, their cost with the net alone on the board, pieces left apart. --via-cost: what a
 //!     via costs, as mm of track (more: fewer vias, longer tracks). A pad on a pour of
-//!     its net is joined by tracks like any other, unless the pour is on a plane layer; --pours
-//!     trust takes every filled pour as a connection (new tracks may cut it apart). Tracks keep
+//!     its net is joined by tracks like any other, unless the pour is on a plane layer; with
+//!     --pours trust a pour joins the pads that hang in it for as long as its copper still has
+//!     a way from one to the other past the tracks laid, and only a pad that a track has cut
+//!     off gets one: less copper where ground is poured. Tracks keep
 //!     --room mm from a pad on a pour where they can, for the spokes that hold it. A plane is a
 //!     layer of type power: no tracks on it, vias into it (an outer one only if something is
 //!     poured on it). --planes found also takes every inner

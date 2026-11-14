@@ -3,7 +3,7 @@
 //!
 //! What is joined already is found here, not asked of KiCad: copper of one net that overlaps on
 //! a layer, and copper that lies on a filled pour of its net.
-use crate::problem::{Keepout, Net, Problem, Role, Shape, Solution, Via};
+use crate::problem::{Keepout, Net, Pour, Problem, Role, Shape, Solution, Via};
 use crate::sexp::{parse, Sexp};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -60,6 +60,9 @@ pub struct Zone {
     pub fills: Vec<(usize, Vec<[f64; 2]>)>,
     /// A teardrop at a pad or a via, which KiCad keeps as a zone: copper, but no pour.
     pub teardrop: bool,
+    /// What its copper keeps from other nets (0: what the net class says) and its least width, mm.
+    pub clearance: f64,
+    pub min_width: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -553,6 +556,12 @@ impl Board {
                         bounds,
                         fills,
                         teardrop: item.find("attr").is_some_and(|a| a.find("teardrop").is_some()),
+                        clearance: item
+                            .find("connect_pads")
+                            .and_then(|c| c.find("clearance"))
+                            .and_then(|c| c.num(1))
+                            .unwrap_or(0.0),
+                        min_width: item.find("min_thickness").and_then(|m| m.num(1)).unwrap_or(0.25),
                     });
                 }
                 Some("gr_line") | Some("gr_arc") | Some("gr_rect") | Some("gr_poly") | Some("gr_circle") => {
@@ -845,8 +854,8 @@ impl Copper {
     }
 }
 
-/// One island of a pour: net, layer, outline, bounding box.
-type Island<'a> = (&'a str, usize, &'a Vec<[f64; 2]>, [f64; 4]);
+/// One island of a pour: net, layer, outline, bounding box, (clearance, least width) of its zone.
+type Island<'a> = (&'a str, usize, &'a Vec<[f64; 2]>, [f64; 4], (f64, f64));
 
 fn root(parent: &mut [usize], mut i: usize) -> usize {
     while parent[i] != i {
@@ -902,11 +911,15 @@ pub struct Options {
     pub weights: HashMap<String, f64>,
     /// Route these nets only (empty: all); the others' copper is in the way as it is.
     pub only: Vec<String>,
-    /// A pad on a filled pour of its net counts as joined to all else on that pour, also on a
-    /// layer that tracks are laid on. Without it (the default from the command line) only the
-    /// pours on plane layers join: on a layer with tracks the new tracks cut a pour apart or
-    /// shut a pad off from it, and what the pour had joined is then open (six boards routed
-    /// both ways: 54 connections left open with the pours trusted, 16 without).
+    /// The pours on layers with tracks are trusted: the router is told which pads hang in which
+    /// pour and works out, as its tracks come to lie, what each pour still joins (see
+    /// `problem::Net::pours`); a pad a track has cut off is joined by a track. Without it (the
+    /// default from the command line) only the pours on plane layers join, and every pad of a
+    /// poured net gets a track: more copper, and right whatever the pour does. (Trusted as they
+    /// were filled, with nobody watching, six boards kept 54 connections open against 16
+    /// without. Watched, ten boards at two via prices kept one connection open in 20 runs, and
+    /// the router said so, with 5.6 % less track and 6 % fewer vias; on a board whose ground
+    /// is a pour, 167 mm of track instead of 265.)
     pub pours: bool,
     /// Tracks keep this far from a pad that hangs in a pour, where a way exists that is not much
     /// longer (mm; 0: no such wish): the pour reaches the pad by spokes, and a track past it at
@@ -1023,12 +1036,16 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         .zones
         .iter()
         .filter(|z| z.keepout.is_none() && !z.net.is_empty())
-        .flat_map(|z| z.fills.iter().map(move |(layer, pts)| (z.net.as_str(), *layer, pts)))
-        .filter(|(_, _, pts)| pts.len() > 2)
-        .map(|(net, layer, pts)| {
+        .flat_map(|z| {
+            z.fills
+                .iter()
+                .map(move |(layer, pts)| (z.net.as_str(), *layer, pts, (z.clearance, z.min_width)))
+        })
+        .filter(|(_, _, pts, _)| pts.len() > 2)
+        .map(|(net, layer, pts, zone)| {
             let mut bounds = EMPTY;
             pts.iter().for_each(|&p| grow(&mut bounds, p));
-            (net, layer, pts, bounds)
+            (net, layer, pts, bounds, zone)
         })
         .collect();
     let mut parent: Vec<usize> = (0..copper.len() + islands.len()).collect();
@@ -1043,12 +1060,17 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         }
     }
     let mut rooms: Vec<Shape> = Vec::new();
-    for (i, (net, layer, pts, bounds)) in islands.iter().enumerate() {
+    // (On a layer with tracks a trusted pour joins nothing here: the router is told what hangs in
+    // it, `hangs`, and works out what it still joins as the tracks come to lie.)
+    let mut hangs: Vec<Vec<usize>> = vec![Vec::new(); islands.len()];
+    for (i, (net, layer, pts, bounds, _)) in islands.iter().enumerate() {
         for &a in by_net.get(net).map(|m| m.as_slice()).unwrap_or(&[]) {
             if copper[a].layers.contains(layer) && copper[a].on(pts, *bounds) {
-                if options.pours || routing[*layer].is_none() {
+                if routing[*layer].is_none() {
                     let (ra, rb) = (root(&mut parent, a), root(&mut parent, copper.len() + i));
                     parent[ra.max(rb)] = ra.min(rb);
+                } else if options.pours {
+                    hangs[i].push(a);
                 }
                 // joined by tracks or not, the pour will hold the pad by its spokes
                 if let (Some(rect), Some(on), true) = (copper[a].rect, routing[*layer], options.room > 0.0) {
@@ -1087,6 +1109,20 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         let planes: Vec<usize> = (0..islands.len())
             .filter(|&i| islands[i].0 == *name && routing[islands[i].1].is_none())
             .collect();
+        // Of several islands that no copper joins, only the largest is the plane (with what hangs
+        // together with it): a way that ends in one of the others is joined to that one alone.
+        // (A supply poured as three islands on one plane layer: two pads were each given a via
+        // into another island, and KiCad found them apart.)
+        let area = |i: usize| -> f64 {
+            let pts = islands[i].2;
+            (0..pts.len())
+                .map(|k| pts[k][0] * pts[(k + 1) % pts.len()][1] - pts[(k + 1) % pts.len()][0] * pts[k][1])
+                .sum::<f64>()
+                .abs()
+        };
+        let main = planes.iter().copied().max_by(|&a, &b| area(a).total_cmp(&area(b)).then(b.cmp(&a)));
+        let main = main.map(|i| root(&mut parent, copper.len() + i));
+        let planes: Vec<usize> = planes.into_iter().filter(|&i| Some(root(&mut parent, copper.len() + i)) == main).collect();
         let on_plane: HashSet<usize> = planes.iter().map(|&i| root(&mut parent, copper.len() + i)).collect();
         let apart = pieces.keys().filter(|k| !on_plane.contains(k)).count();
         let wanted = options.only.is_empty() || options.only.iter().any(|o| o == name);
@@ -1099,6 +1135,20 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         }
         pieces.sort_by_key(|piece| place(&copper[piece.1[0]]));
         routed.insert(name);
+        // its pours on layers with tracks, each with the pieces that hang in it
+        let pours: Vec<Pour> = (0..islands.len())
+            .filter(|&i| islands[i].0 == *name && !hangs[i].is_empty())
+            .filter_map(|i| {
+                let on: Vec<usize> = (0..pieces.len()).filter(|&p| pieces[p].1.iter().any(|m| hangs[i].contains(m))).collect();
+                (on.len() > 1).then(|| Pour {
+                    layer: routing[islands[i].1].unwrap(),
+                    outline: islands[i].2.clone(),
+                    pieces: on,
+                    width: islands[i].4 .1,
+                    clearance: islands[i].4 .0.max(rules.keep(name)),
+                })
+            })
+            .collect();
         let net = |pieces: Vec<Vec<Shape>>, plane: Vec<Vec<[f64; 2]>>| Net {
             name: name.to_string(),
             width: rules.width.get(*name).copied().unwrap_or(rules.track),
@@ -1107,6 +1157,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             weight: options.weights.get(*name).copied().unwrap_or(1.0),
             role: Role::None,
             pieces,
+            pours: if plane.is_empty() { pours.clone() } else { Vec::new() },
             plane,
         };
         let shapes = |piece: &Vec<usize>| -> Vec<Shape> { piece.iter().map(|&m| copper[m].shape(&routing)).collect() };

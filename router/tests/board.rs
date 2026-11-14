@@ -87,18 +87,27 @@ fn rules_come_from_the_project_file() {
     assert!(!rules.wider.contains_key("+5V") && !rules.width.contains_key("SIG"));
 }
 
+/// A pour on a layer with tracks is given to the router with the pieces that hang in it: whether
+/// it still joins them is seen there, as the tracks come to lie.
 #[test]
-fn copper_on_a_pour_of_its_net_is_joined_already() {
+fn copper_on_a_pour_of_its_net_hangs_in_it() {
     let board = Board::parse(&board_text()).unwrap();
     let rules = Rules::parse(PROJECT, &board).unwrap();
     let p = problem(&board, &rules, &options()).unwrap();
     let names: Vec<&str> = p.nets.iter().map(|n| n.name.as_str()).collect();
-    assert_eq!(names, vec!["+5V", "SIG"], "GND hangs together by its pour");
-    let sig = &p.nets[1];
+    assert_eq!(names, vec!["+5V", "GND", "SIG"]);
+    let gnd = &p.nets[1];
+    assert_eq!((gnd.pieces.len(), gnd.pours.len()), (2, 1), "R2's pad and the header's pin, in one pour");
+    assert_eq!(
+        (gnd.pours[0].layer, gnd.pours[0].pieces.clone(), gnd.pours[0].outline.len()),
+        (1, vec![0, 1], 4)
+    );
+    assert!(p.nets[0].pours.is_empty() && p.nets[2].pours.is_empty());
+    let sig = &p.nets[2];
     assert_eq!(sig.pieces.len(), 3, "two pads and a hand-drawn track that touches neither");
     assert_eq!((p.nets[0].width, p.nets[0].narrow, sig.width), (0.5, Some(0.2), 0.2));
     assert_eq!(p.keepouts.len(), 1);
-    assert_eq!(p.fixed.len(), 2 + 4, "the two ground pads, and the four lines of the outline");
+    assert_eq!(p.fixed.len(), 4, "the four lines of the outline");
     // routing one net only: the other one's pads are in the way like any copper
     let all: usize = p.nets[0].pieces.iter().map(|piece| piece.len()).sum();
     let one = problem(
@@ -133,8 +142,11 @@ fn the_routed_board_read_again_has_nothing_in_pieces() {
     assert_eq!(again.segments.len(), 1 + tracks.len());
     assert_eq!(again.vias.len(), vias.len());
     assert!(again.segments[1..].iter().all(|s| !s.locked));
+    // read again, only the net with the pour is left to look at, and nothing of it is apart
     let left = problem(&again, &rules, &options()).unwrap();
-    assert!(left.nets.is_empty(), "{:?}", left.nets.iter().map(|n| &n.name).collect::<Vec<_>>());
+    assert_eq!(left.nets.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), vec!["GND"]);
+    let rest = route(&left, &mut |_| {});
+    assert!(rest.nets[0].open.is_empty() && rest.nets[0].paths.is_empty(), "{:?}", rest.nets[0]);
 }
 
 /// A pad whose copper lies off its hole, and a text on copper: both are where a track must not
@@ -344,6 +356,34 @@ fn an_outer_power_layer_with_no_pour_is_routed_on() {
     let front = board_text().replace(r#"(0 "F.Cu" signal)"#, r#"(0 "F.Cu" power)"#);
     let board = Board::parse(&front).unwrap();
     assert_eq!(board.copper.iter().map(|c| c.1).collect::<Vec<_>>(), vec![true, true]);
+}
+
+/// A net poured as two islands on a plane layer that nothing joins: the larger one is its plane,
+/// and what hangs on the smaller one gets a way into the larger like any other piece.
+#[test]
+fn of_two_islands_of_a_plane_the_larger_is_the_plane() {
+    let text = board_text()
+        .replace(
+            r#"(0 "F.Cu" signal) (2 "B.Cu" signal)"#,
+            r#"(0 "F.Cu" signal) (4 "In1.Cu" power) (6 "In2.Cu" power) (2 "B.Cu" signal)"#,
+        )
+        .replace(r#"(zone (net "GND") (layer "B.Cu")"#, r#"(zone (net "GND") (layer "In1.Cu")"#)
+        .replace(
+            r#"(filled_polygon (layer "B.Cu") (pts (xy 9 1) (xy 19 1) (xy 19 11) (xy 9 11)))"#,
+            r#"(filled_polygon (layer "In1.Cu") (pts (xy 13 1) (xy 19 1) (xy 19 11) (xy 13 11)))
+    (filled_polygon (layer "In1.Cu") (pts (xy 9 1) (xy 12 1) (xy 12 4) (xy 9 4)))"#,
+        );
+    let board = Board::parse(&text).unwrap();
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &Options { pours: false, ..options() }).unwrap();
+    let gnd: Vec<_> = p.nets.iter().filter(|n| n.name == "GND").collect();
+    // the header's pin (x 11.27) hangs on the small island, the resistor's pad is on no island
+    assert_eq!(gnd.len(), 2, "the pin on the small island and the pad: each gets its way into the large one");
+    assert!(
+        gnd.iter().all(|n| n.plane.len() == 1 && n.plane[0].iter().all(|q| q[0] >= 13.0)),
+        "{:?}",
+        gnd[0].plane
+    );
 }
 
 /// The outline as it is drawn: a corner cut off by an arc, and a slot. Copper keeps the edge

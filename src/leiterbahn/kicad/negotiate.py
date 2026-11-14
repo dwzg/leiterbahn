@@ -34,16 +34,16 @@ def route_file(src, out, step=0.1, passes=3, options=(), say=None):
 
     By itself the router lays a track to every pad of a poured net (`--pours ignore`), since a new
     track can cut a pour apart: ground then costs track, vias and the room of the signal nets (a
-    board of 14 connections: 265 mm instead of 167). Here the pours are trusted, KiCad fills them
-    again round the new tracks, and what they then leave apart is routed in a further pass, up to
-    `passes` times or until a pass closes nothing more. Ten boards of 86 to 499 connections: 5 to
-    33 % less track and up to 40 % fewer vias than without; six ended with nothing unconnected,
-    four with one or two (islands of a pour without a pad among them): tracks of an earlier pass
-    stay where they are, so a pad they shut in stays open. The board's `.kicad_pro` (its rules)
-    must lie beside `src`; it is copied beside `out`. A via costs 3 mm of track here, not the
-    router's 6: with fewer vias more track lies in the pours' way, and eight boards ended with
-    9 connections apart instead of 5. options: more for the router, such as ["--weight",
-    "CLK=3"], or another "--via-cost". Needs kicad-cli. Returns {"unconnected": per pass, as KiCad's DRC
+    board of 14 connections: 265 mm instead of 167). Here the pours are trusted: the router
+    works out what each still joins as its tracks come to lie, and lays a track only to a pad
+    that has been cut off. KiCad then fills the pours again and says what is unconnected; if
+    anything is, that is routed in a further pass, up to `passes` times or until a pass closes
+    nothing more. Ten boards of 14 to 1458 connections: nothing unconnected after the first
+    pass on any, with 5 % less track and 5 % fewer vias than without, up to a third less on
+    a board whose ground is a pour. The board's `.kicad_pro` (its rules)
+    must lie beside `src`; it is copied beside `out`. A via costs 3 mm of track here, as it was
+    measured, not the router's 6. options: more for the router, such as ["--weight", "CLK=3"],
+    or another "--via-cost". Needs kicad-cli. Returns {"unconnected": per pass, as KiCad's DRC
     counts them after filling, "passes": how many were made}.
     """
     import shutil

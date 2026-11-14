@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.41.0
+
+Changed
+- `leiterbahn-route board --pours trust`: the router watches the pours. It is told which pads
+  hang in which pour, as the pours were filled before any track, and each time a poured net
+  is laid it looks whether copper of the pour's least width, at the pour's clearance, still
+  has a way from pad to pad through the pour past the tracks that lie there then. What the
+  pour still joins needs no track; a pad a track has cut off, across the pour or across the
+  spoke that held it, gets one. Such a net is looked at in every round, and no exchange in
+  the passes that shorten is made that cuts a pour of a net it does not move. Until now a
+  trusted pour was a connection whatever was laid across it afterwards. Ten demo boards,
+  KiCad's DRC with the pours filled again, at a via price of 6 and of 3 mm: nothing
+  unconnected in 19 of the 20 runs, one connection in the other, which the router reports
+  open itself (two supply pins at 0.5 mm pitch that a track had cut off from their pour).
+  5.6 % less track and 6 % fewer vias than with a track to every pad: 167 mm for 265,
+  524 for 625, 2481 for 2892, 1075 for 1376 on boards whose ground is a pour, 2 to 5 % on
+  the three largest. The default stays `--pours ignore`, which is right whatever a pour does.
+- `route_file()` gains by it: the same ten boards have nothing unconnected after its first
+  pass, as KiCad counts (it left 5 connections over eight of them), with 5 % less track and
+  5 % fewer vias than the router by itself.
+
+Fixed
+- `leiterbahn-route board`: of several islands of a net on a plane layer that no copper joins,
+  only the largest is its plane, and what hangs on another gets a way into that one. All of
+  them counted as the plane: a supply poured as three islands had two pads each given a via
+  into another island, and they were apart. (Seen once in 30 runs, when nothing else
+  happened to join the islands. Two of the ten boards have such planes and come out
+  otherwise now, one with 3.8 % more track; nothing unconnected on any, as before.)
+
 ## 0.40.1
 
 Fixed
