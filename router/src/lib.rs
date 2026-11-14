@@ -577,6 +577,41 @@ fn corners(grids: &Grids, nodes: &[u32]) -> Vec<[u32; 3]> {
     out.iter().map(|c| [c[0] as u32, c[1] as u32, c[2] as u32]).collect()
 }
 
+/// All the cells of a track given by its bends; None if a piece of it is not straight or slanted
+/// by 45 degrees, a layer change moves, or a bend is off the board.
+fn expand(grids: &Grids, bends: &[[u32; 3]]) -> Option<Vec<u32>> {
+    let mut nodes: Vec<u32> = Vec::new();
+    for (k, b) in bends.iter().enumerate() {
+        if b[0] as usize >= grids.nl || b[1] as usize >= grids.nx || b[2] as usize >= grids.ny {
+            return None;
+        }
+        let here = grids.node(b[0] as usize, b[1] as usize, b[2] as usize);
+        if k == 0 {
+            nodes.push(here);
+            continue;
+        }
+        let p = bends[k - 1];
+        let (dx, dy) = (b[1] as i64 - p[1] as i64, b[2] as i64 - p[2] as i64);
+        if p[0] != b[0] {
+            if dx != 0 || dy != 0 {
+                return None;
+            }
+            nodes.push(here);
+        } else if dx != 0 && dy != 0 && dx.abs() != dy.abs() {
+            return None;
+        } else {
+            for s in 1..=dx.abs().max(dy.abs()) {
+                nodes.push(grids.node(
+                    b[0] as usize,
+                    (p[1] as i64 + s * dx.signum()) as usize,
+                    (p[2] as i64 + s * dy.signum()) as usize,
+                ));
+            }
+        }
+    }
+    (nodes.len() > 1).then_some(nodes)
+}
+
 /// A path's copper: a line per straight piece, a via per layer change.
 fn copper(grids: &Grids, job: &Job, half: f64, bends: &[[u32; 3]], items: &mut Vec<Item>, vias: &mut Vec<u32>) {
     for w in bends.windows(2) {
@@ -1989,6 +2024,37 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
     // heavy nets feel congestion less (one came out six times longer, rounds doubled), heavy nets
     // laid first and slow to give way (308 mm), heavy nets laid first and held (320 mm, rounds
     // three times as long). None is worth its code; weights act in the shortening below.
+    // Tracks given to start from (`Net::laid`): they lie as they were given, and the first round
+    // lays each such net as every later round does, keeping what is free and joining the rest.
+    let mut warm = vec![false; router.jobs.len()];
+    for (n, net) in problem.nets.iter().enumerate() {
+        let job = &router.jobs[n];
+        let mut laid = Laid::default();
+        for path in &net.laid {
+            let kind = [Some(job.kind), job.narrow]
+                .into_iter()
+                .flatten()
+                .find(|&k| (router.grids.kinds[k].0 * 2.0 - path.width).abs() < 1e-6);
+            let (Some(kind), Some(nodes)) = (kind, expand(&router.grids, &path.cells)) else {
+                continue;
+            };
+            let bends = corners(&router.grids, &nodes);
+            copper(&router.grids, job, router.grids.kinds[kind].0, &bends, &mut laid.items, &mut laid.vias);
+            laid.paths.push(Path {
+                cells: bends,
+                width: path.width,
+                from: None,
+                to: None,
+            });
+            laid.kinds.push(kind);
+            laid.nodes.push(nodes);
+        }
+        if !laid.nodes.is_empty() {
+            router.laid[n] = laid;
+            router.soft(n, 1);
+            warm[n] = true;
+        }
+    }
     let mut press = 0.5f32;
     let mut clean = false;
     let (mut fewest, mut since, mut restarts) = (u64::MAX, 0u32, 0u32);
@@ -2032,6 +2098,8 @@ pub fn route(problem: &Problem, say: &mut dyn FnMut(String)) -> Solution {
                     let b = b.map(|v| v as i32);
                     knot.note([(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])].into_iter(), reach);
                 }
+            } else if warm[n] {
+                router.soft(n, -1);
             }
             // a search stays within 4 mm of the net's pads and tracks, unless there is no way there:
             // without this bound the supply board's 158 nets took 146 s, nearly all of it searching

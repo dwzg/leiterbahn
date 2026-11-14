@@ -3,7 +3,7 @@
 //!
 //! leiterbahn-route board in.kicad_pcb out.kicad_pcb [--step 0.05] [--via-cost 6] [--max-iter 200]
 //!                        [--hole-clear mm] [--weight NET=4]... [--only NET]... [--problem file.json] [--report file.tsv]
-//!                        [--pours trust|ignore] [--room 0.8] [--planes found|typed]
+//!                        [--pours trust|ignore] [--room 0.8] [--planes found|typed] [--tracks keep|move]
 //!     Routes every net of a KiCad board that is in more than one piece and writes the board with
 //!     the new tracks. The rules come from the .kicad_pro beside the board. --problem also writes
 //!     the problem as it was read from the board, --report a line per net: name, cost of its tracks
@@ -16,7 +16,10 @@
 //!     poured on it). --planes found also takes every inner
 //!     layer for one that pours fill by more than half. (No share tells a plane from a signal
 //!     layer flooded with ground: of five boards, the inner layers their designers left without
-//!     tracks were filled by 68 to 73 %, those with up to 539 tracks by 58 to 74 %.)
+//!     tracks were filled by 68 to 73 %, those with up to 539 tracks by 58 to 74 %.) --tracks
+//!     move: the tracks and vias a net has already (not locked, on the grid, at one of its widths)
+//!     are what the router starts from, kept where nothing speaks against them and laid anew
+//!     where another net needs the room; by default they are copper that stays.
 //!
 //! leiterbahn-route place problem.json result.json
 //!     Improves a placement (see `place.rs`): parts are shifted, turned and exchanged where that
@@ -57,6 +60,11 @@ fn main() {
                     "found" => find_planes = true,
                     "typed" => find_planes = false,
                     _ => fail(format!("--planes {}: found or typed", value)),
+                },
+                "--tracks" => match value.as_str() {
+                    "move" => options.moved = true,
+                    "keep" => options.moved = false,
+                    _ => fail(format!("--tracks {}: move or keep", value)),
                 },
                 "--pours" => match value.as_str() {
                     "trust" => options.pours = true,

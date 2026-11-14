@@ -576,6 +576,30 @@ fn a_pushed_net_with_no_way_left_pushes_in_turn() {
     assert!(more[0] < 0.5 && more[1] > 3.0 && more[2] > 1.0, "{:?}", more);
 }
 
+/// Tracks a net is given to start from stay where they are free: here a way round by 6 mm more
+/// than the straight one. With the passes that shorten it is then given the straight one.
+#[test]
+fn tracks_given_to_start_from_stay_until_something_better_is_found() {
+    let given = json!([{"cells": [[0, 20, 50], [0, 20, 20], [0, 80, 20], [0, 80, 50]], "width": 0.2}]);
+    let run = |relax: u32, fixed: serde_json::Value| {
+        solve(json!({
+            "box": [0, 0, 10, 10], "step": 0.1, "layers": 1, "via": {"d": 0.6, "hole": 0.3, "cost": 3.0},
+            "relax": relax, "straight": false, "fixed": fixed,
+            "nets": [{"name": "A", "width": 0.2, "clearance": 0.2, "laid": given,
+                      "pieces": [[pad(2.0, 5.0, 0)], [pad(8.0, 5.0, 0)]]}]
+        }))
+    };
+    let s = run(0, json!([]));
+    assert!(s.nets[0].open.is_empty() && s.nets[0].paths.len() == 1);
+    assert_eq!(s.nets[0].paths[0].cells, vec![[0, 20, 50], [0, 20, 20], [0, 80, 20], [0, 80, 50]]);
+    assert!((s.nets[0].cost - 12.0).abs() < 1e-6, "{}", s.nets[0].cost);
+    let s = run(12, json!([]));
+    assert!(s.nets[0].open.is_empty() && s.nets[0].cost < 6.5, "{}", s.nets[0].cost);
+    // across copper that stays, a track given is no track: the net is laid as if it had none
+    let s = run(0, json!([{"box": [4.9, 1.0, 5.1, 3.0], "layers": [0]}]));
+    assert!(s.nets[0].open.is_empty() && s.nets[0].cost < 6.5, "{}", s.nets[0].cost);
+}
+
 /// A seed lays the nets in another order: the result is still a clean board, and seed 0 is the order as it was.
 #[test]
 fn another_seed_routes_the_same_board_clean() {

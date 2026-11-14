@@ -52,6 +52,7 @@ fn options() -> Options {
         only: Vec::new(),
         pours: true,
         room: 0.8,
+        moved: false,
     }
 }
 
@@ -183,12 +184,55 @@ fn a_text_on_copper_is_about_as_wide_as_it_is_set() {
     );
 }
 
+/// A board that is routed already, read with its tracks as a start: the router keeps them, the
+/// file holds each of them once, and nothing is apart. Without that they are copper that stays,
+/// and nothing is left to route at all.
+#[test]
+fn tracks_that_may_move_are_a_start_and_are_written_once() {
+    let text = board_text();
+    let board = Board::parse(&text).unwrap();
+    let rules = Rules::parse(PROJECT, &board).unwrap();
+    let p = problem(&board, &rules, &options()).unwrap();
+    let first = write(&text, &board, &p, &route(&p, &mut |_| {}), 1).unwrap();
+    let routed = Board::parse(&first).unwrap();
+    let laid = routed.segments.iter().filter(|s| !s.locked).count();
+    assert!(laid >= 3 && !routed.vias.is_empty(), "{} tracks, {} vias", laid, routed.vias.len());
+    assert!(
+        problem(&routed, &rules, &options()).unwrap().nets.is_empty(),
+        "as copper that stays, all is joined"
+    );
+    let moved = Options { moved: true, ..options() };
+    let again = problem(&routed, &rules, &moved).unwrap();
+    let begun: usize = again.nets.iter().map(|n| n.laid.len()).sum();
+    assert!(
+        !again.nets.is_empty() && begun >= laid,
+        "{} nets, {} tracks to start from, {} laid",
+        again.nets.len(),
+        begun,
+        laid
+    );
+    let solution = route(&again, &mut |_| {});
+    assert!(solution.nets.iter().all(|n| n.open.is_empty()));
+    let second = write(&first, &routed, &again, &solution, 2).unwrap();
+    let twice = Board::parse(&second).unwrap();
+    assert_eq!(twice.segments.iter().filter(|s| s.locked).count(), 1, "the hand-drawn track is still there");
+    assert!(
+        twice.segments.len() <= routed.segments.len() && twice.vias.len() <= routed.vias.len(),
+        "{} and {} tracks, {} and {} vias",
+        routed.segments.len(),
+        twice.segments.len(),
+        routed.vias.len(),
+        twice.vias.len()
+    );
+    assert!(problem(&twice, &rules, &options()).unwrap().nets.is_empty(), "read again, nothing is apart");
+}
+
 /// What the command line does by itself: a via costs as much as 6 mm of track, and pours on
 /// layers with tracks are not trusted.
 #[test]
 fn the_defaults_of_the_board_mode() {
     let d = Options::default();
-    assert_eq!((d.step, d.via_cost, d.max_iter, d.pours, d.room), (0.05, 6.0, 200, false, 0.8));
+    assert_eq!((d.step, d.via_cost, d.max_iter, d.pours, d.room, d.moved), (0.05, 6.0, 200, false, 0.8, false));
     assert!(d.hole_clear.is_none() && d.weights.is_empty() && d.only.is_empty());
 }
 

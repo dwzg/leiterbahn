@@ -3,7 +3,7 @@
 //!
 //! What is joined already is found here, not asked of KiCad: copper of one net that overlaps on
 //! a layer, and copper that lies on a filled pour of its net.
-use crate::problem::{Keepout, Net, Problem, Role, Shape, Solution, Via};
+use crate::problem::{Keepout, Net, Path, Problem, Role, Shape, Solution, Via};
 use crate::sexp::{parse, Sexp};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -37,6 +37,8 @@ pub struct Segment {
     pub layer: usize,
     pub net: String,
     pub locked: bool,
+    /// Which of the file's items it is: the lists inside the outermost one, counted from 0.
+    pub item: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,8 @@ pub struct Hole {
     pub drill: f64,
     pub net: String,
     pub locked: bool,
+    /// As `Segment::item`.
+    pub item: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -357,7 +361,12 @@ impl Board {
             }
         };
         let mut outline = EMPTY;
+        let mut lists = 0;
         for item in root.items() {
+            if !matches!(item, Sexp::List(_)) {
+                continue;
+            }
+            lists += 1;
             match item.head() {
                 Some("footprint") => {
                     let at = item.find("at").ok_or("a footprint without a position")?;
@@ -515,6 +524,7 @@ impl Board {
                             layer,
                             net: net(item),
                             locked: locked(item),
+                            item: lists - 1,
                         });
                     }
                 }
@@ -527,6 +537,7 @@ impl Board {
                         drill: item.find("drill").and_then(|s| s.num(1)).unwrap_or(0.0),
                         net: net(item),
                         locked: locked(item),
+                        item: lists - 1,
                     });
                 }
                 Some("zone") => {
@@ -912,6 +923,13 @@ pub struct Options {
     /// longer (mm; 0: no such wish): the pour reaches the pad by spokes, and a track past it at
     /// clearance cuts them.
     pub room: f64,
+    /// The tracks and vias a net to be routed has already are where the router starts from, not
+    /// copper that stays: they are kept where nothing speaks against them and give way where
+    /// another net has no way otherwise. Only those that are not locked, lie on the grid at one
+    /// of the net's widths, and belong to a net without a plane; the others stay as they are.
+    /// (A board routed once and then again for what a pour had left apart: a pad shut in by a
+    /// track of the first time stayed open, since that track could not move.)
+    pub moved: bool,
 }
 
 impl Default for Options {
@@ -926,8 +944,79 @@ impl Default for Options {
             only: Vec::new(),
             pours: false,
             room: 0.8,
+            moved: false,
         }
     }
+}
+
+/// A point as a cell of the grid that begins at the board's corner, if it lies on one.
+fn cell_of(p: [f64; 2], edge: [f64; 4], step: f64) -> Option<[u32; 2]> {
+    let (i, j) = ((p[0] - edge[0]) / step, (p[1] - edge[1]) / step);
+    let on = |v: f64| v > -0.5 && (v - v.round()).abs() < 1e-4;
+    (on(i) && on(j)).then(|| [i.round() as u32, j.round() as u32])
+}
+
+/// The board's tracks and vias that are a start for the router (`Options::moved`), as paths per
+/// net (`problem::Net::laid`), and which segments and vias those are.
+type Start = (BTreeMap<String, Vec<Path>>, Vec<bool>, Vec<bool>);
+
+fn start(board: &Board, rules: &Rules, options: &Options, edge: [f64; 4], routing: &[Option<usize>]) -> Start {
+    let (mut paths, mut segs, mut vias): Start = (BTreeMap::new(), vec![false; board.segments.len()], vec![false; board.vias.len()]);
+    if !options.moved {
+        return (paths, segs, vias);
+    }
+    let planes: HashSet<&str> = board
+        .zones
+        .iter()
+        .filter(|z| z.keepout.is_none() && z.fills.iter().any(|f| routing[f.0].is_none()))
+        .map(|z| z.net.as_str())
+        .collect();
+    let free =
+        |net: &str, locked: bool| !locked && !net.is_empty() && !planes.contains(net) && (options.only.is_empty() || options.only.iter().any(|o| o == net));
+    for (k, s) in board.segments.iter().enumerate() {
+        let width = rules.width.get(&s.net).copied().unwrap_or(rules.track);
+        let (Some(layer), Some(a), Some(b)) = (routing[s.layer], cell_of(s.a, edge, options.step), cell_of(s.b, edge, options.step)) else {
+            continue;
+        };
+        let (dx, dy) = (a[0].abs_diff(b[0]), a[1].abs_diff(b[1]));
+        let straight = (dx == 0 || dy == 0 || dx == dy) && dx + dy > 0;
+        if free(&s.net, s.locked) && straight && ((s.width - width).abs() < 1e-6 || (s.width - rules.track).abs() < 1e-6) {
+            segs[k] = true;
+            paths.entry(s.net.clone()).or_default().push(Path {
+                cells: vec![[layer as u32, a[0], a[1]], [layer as u32, b[0], b[1]]],
+                width: s.width,
+                from: None,
+                to: None,
+            });
+        }
+    }
+    let last = routing.iter().flatten().count().saturating_sub(1) as u32;
+    for (k, v) in board.vias.iter().enumerate() {
+        let Some(at) = cell_of(v.at, edge, options.step) else { continue };
+        if !free(&v.net, v.locked) || (v.size - rules.via.0).abs() > 1e-6 || (v.drill - rules.via.1).abs() > 1e-6 || last == 0 {
+            continue;
+        }
+        // between the layers its net's tracks end on it; if that is not two, from front to back
+        let mut on: Vec<u32> = board
+            .segments
+            .iter()
+            .filter(|s| s.net == v.net && (cell_of(s.a, edge, options.step) == Some(at) || cell_of(s.b, edge, options.step) == Some(at)))
+            .filter_map(|s| routing[s.layer].map(|l| l as u32))
+            .collect();
+        on.sort_unstable();
+        let (lo, hi) = match (on.first(), on.last()) {
+            (Some(&lo), Some(&hi)) if lo != hi => (lo, hi),
+            _ => (0, last),
+        };
+        vias[k] = true;
+        paths.entry(v.net.clone()).or_default().push(Path {
+            cells: vec![[lo, at[0], at[1]], [hi, at[0], at[1]]],
+            width: rules.width.get(&v.net).copied().unwrap_or(rules.track),
+            from: None,
+            to: None,
+        });
+    }
+    (paths, segs, vias)
 }
 
 /// The board as a routing problem: every net that is in more than one piece is to be joined,
@@ -961,7 +1050,8 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             hole: pad.hole,
         });
     }
-    for s in &board.segments {
+    let (mut begun, seg_moved, via_moved) = start(board, rules, options, edge, &routing);
+    for s in board.segments.iter().zip(&seg_moved).filter(|s| !s.1).map(|s| s.0) {
         copper.push(Copper {
             net: s.net.clone(),
             layers: vec![s.layer],
@@ -973,7 +1063,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             hole: 0.0,
         });
     }
-    for v in &board.vias {
+    for v in board.vias.iter().zip(&via_moved).filter(|v| !v.1).map(|v| v.0) {
         copper.push(Copper {
             net: v.net.clone(),
             layers: all.clone(),
@@ -1099,7 +1189,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         }
         pieces.sort_by_key(|piece| place(&copper[piece.1[0]]));
         routed.insert(name);
-        let net = |pieces: Vec<Vec<Shape>>, plane: Vec<Vec<[f64; 2]>>| Net {
+        let mut net = |pieces: Vec<Vec<Shape>>, plane: Vec<Vec<[f64; 2]>>| Net {
             name: name.to_string(),
             width: rules.width.get(*name).copied().unwrap_or(rules.track),
             narrow: Some(rules.track),
@@ -1108,6 +1198,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             role: Role::None,
             pieces,
             plane,
+            laid: begun.remove(*name).unwrap_or_default(),
         };
         let shapes = |piece: &Vec<usize>| -> Vec<Shape> { piece.iter().map(|&m| copper[m].shape(&routing)).collect() };
         if planes.is_empty() {
@@ -1124,7 +1215,7 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         }
     }
     let held: HashSet<usize> = held.into_iter().collect();
-    let fixed = copper
+    let mut fixed: Vec<Shape> = copper
         .iter()
         .enumerate()
         .filter(|(n, c)| !routed.contains(c.net.as_str()) || held.contains(n))
@@ -1133,6 +1224,34 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
             ..c.shape(&routing)
         })
         .collect();
+    // (tracks that would have been a start, of a net that is not routed after all: they stay)
+    let stays = |net: &str| begun.contains_key(net);
+    for s in board.segments.iter().zip(&seg_moved).filter(|s| *s.1 && stays(&s.0.net)).map(|s| s.0) {
+        fixed.push(Shape {
+            rect: None,
+            angle: 0.0,
+            seg: Some([s.a[0], s.a[1], s.b[0], s.b[1]]),
+            r: s.width / 2.0,
+            layers: routing[s.layer].into_iter().collect(),
+            hole: 0.0,
+            clearance: rules.keep(&s.net),
+            role: Role::None,
+            room: 0.0,
+        });
+    }
+    for v in board.vias.iter().zip(&via_moved).filter(|v| *v.1 && stays(&v.0.net)).map(|v| v.0) {
+        fixed.push(Shape {
+            rect: None,
+            angle: 0.0,
+            seg: Some([v.at[0], v.at[1], v.at[0], v.at[1]]),
+            r: v.size / 2.0,
+            layers: routing.iter().flatten().copied().collect(),
+            hole: v.drill / 2.0,
+            clearance: rules.keep(&v.net),
+            role: Role::None,
+            room: 0.0,
+        });
+    }
     let keepouts = board
         .zones
         .iter()
@@ -1163,11 +1282,15 @@ pub fn problem(board: &Board, rules: &Rules, options: &Options) -> Result<Proble
         rooms,
         nets,
         max_iter: options.max_iter,
-        relax: 12,
+        // (Starting from the tracks there are, they are left as they are where nothing is in the
+        // way: shortened and straightened, the tracks of nets that were whole moved as well, and
+        // a pour that had held was cut somewhere else: three boards ended with more apart after
+        // the third pass than after the second.)
+        relax: if options.moved { 0 } else { 12 },
         alone: false,
         apart: 0.0,
         shy: 3.0,
-        straight: true,
+        straight: !options.moved,
         glance: false,
         seed: 0,
         relay: true,
@@ -1282,7 +1405,92 @@ fn number(v: f64) -> String {
 
 /// The board file with the answer's tracks and vias added. Their ids follow from `seed` and
 /// their order, so the same answer gives the same file.
+/// Where the lists inside the outermost one begin and end in the text, in order.
+fn spans(text: &str) -> Vec<(usize, usize)> {
+    let (mut depth, mut quoted, mut escaped, mut begun, mut out) = (0, false, false, 0, Vec::new());
+    for (at, c) in text.bytes().enumerate() {
+        if quoted {
+            (quoted, escaped) = (escaped || c != b'"', !escaped && c == b'\\');
+        } else if c == b'"' {
+            quoted = true;
+        } else if c == b'(' {
+            depth += 1;
+            if depth == 2 {
+                begun = at;
+            }
+        } else if c == b')' {
+            if depth == 2 {
+                out.push((begun, at + 1));
+            }
+            depth -= 1;
+        }
+    }
+    out
+}
+
 pub fn write(text: &str, board: &Board, problem: &Problem, solution: &Solution, seed: u64) -> Result<String, String> {
+    // The tracks and vias the router started from (`Options::moved`) are in its answer, where
+    // they stayed: out of the text they go, or they would be there twice, or still there after
+    // they had given way.
+    let given: HashSet<(&str, [u32; 3], [u32; 3])> = problem
+        .nets
+        .iter()
+        .flat_map(|n| {
+            n.laid
+                .iter()
+                .filter(|p| p.cells.len() == 2)
+                .map(move |p| (n.name.as_str(), p.cells[0], p.cells[1]))
+        })
+        .collect();
+    let mut gone: Vec<usize> = Vec::new();
+    if !given.is_empty() {
+        let mut number = 0;
+        let routing: Vec<Option<u32>> = board
+            .copper
+            .iter()
+            .map(|c| {
+                c.1.then(|| {
+                    number += 1;
+                    number - 1
+                })
+            })
+            .collect();
+        for s in &board.segments {
+            if let (Some(l), Some(a), Some(b)) = (
+                routing[s.layer],
+                cell_of(s.a, problem.area, problem.step),
+                cell_of(s.b, problem.area, problem.step),
+            ) {
+                if given.contains(&(s.net.as_str(), [l, a[0], a[1]], [l, b[0], b[1]])) {
+                    gone.push(s.item);
+                }
+            }
+        }
+        for v in &board.vias {
+            if let Some(at) = cell_of(v.at, problem.area, problem.step) {
+                if given.iter().any(|g| g.0 == v.net && g.1[0] != g.2[0] && g.1[1..] == at && g.2[1..] == at) {
+                    gone.push(v.item);
+                }
+            }
+        }
+    }
+    let mut cut = text.to_string();
+    if !gone.is_empty() {
+        let spans = spans(text);
+        gone.sort_unstable();
+        gone.dedup();
+        for &item in gone.iter().rev() {
+            let (mut from, mut to) = *spans.get(item).ok_or("the board file has fewer items than were read from it")?;
+            while from > 0 && matches!(cut.as_bytes()[from - 1], b' ' | b'\t') {
+                from -= 1;
+            }
+            if cut.as_bytes().get(to) == Some(&b'\n') {
+                to += 1;
+            }
+            cut.replace_range(from..to, "");
+        }
+    }
+    let text = cut.as_str();
     let names: Vec<&str> = board.copper.iter().filter(|c| c.1).map(|c| c.0.as_str()).collect();
     let (first, last) = (
         board.copper.first().ok_or("no copper layers")?.0.as_str(),

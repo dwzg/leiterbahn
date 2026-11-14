@@ -182,6 +182,13 @@ pub struct Net {
     /// which a way reaches by ending in a via inside one of them.
     #[serde(default)]
     pub plane: Vec<Vec<[f64; 2]>>,
+    /// Tracks the net has already, to start from (as `Routed::paths` gives them: an earlier
+    /// answer, or what a board holds): those that are free and hang on the net's pieces stay,
+    /// what they leave apart is joined, and in the rounds they give way like any other track.
+    /// One that is not on the grid, slants otherwise than by 45 degrees or has another width
+    /// than `width` or `narrow` is left out.
+    #[serde(default)]
+    pub laid: Vec<Path>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -236,10 +243,12 @@ pub struct Routed {
 
 /// One track: the cells of its bends and layer changes, [layer, i, j]. `from` and `to` name the
 /// copper it starts and ends on as [piece, shape]; none: it starts on an earlier path of the net.
-#[derive(Serialize, Debug, Default, Clone)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
 pub struct Path {
     pub cells: Vec<[u32; 3]>,
     pub width: f64,
+    #[serde(default)]
     pub from: Option<[usize; 2]>,
+    #[serde(default)]
     pub to: Option<[usize; 2]>,
 }
